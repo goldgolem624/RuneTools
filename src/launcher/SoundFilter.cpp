@@ -1,5 +1,6 @@
 #include "SoundFilter.h"
 #include "../../companion/SoundShare.h"   // per-pid section name + layout
+#include "../../companion/Signatures.h"
 
 #include <Windows.h>
 
@@ -90,15 +91,7 @@ std::string StatusJson(std::uint32_t pid) {
         // sound (0x5F), 0x115478/0x115750 zone sounds (0xA4 and the zone-update sub-packets),
         // 0x3E70F0 actor animation slots, 0x3E89EB engine. Unknown call sites are reported by RVA.
         const char* origin = "other";
-        switch (e.caller) {
-        case 0x949CC: case 0x94AEE: case 0x9515E: origin = "script"; break;
-        case 0xF0718: origin = "server"; break;
-        case 0xF0B71: origin = "server_tile"; break;
-        case 0x115478: case 0x115750: origin = "zone"; break;
-        case 0x3E70F0: origin = "actor"; break;
-        case 0x3E89EB: origin = "engine"; break;
-        default: break;
-        }
+        for (const auto& s : rtx::sig::kSoundSites) if (s.ret == e.caller) { origin = s.origin; break; }
         out += "{\"n\":" + std::to_string(abs) +
                ",\"id\":" + std::to_string(e.id) +
                ",\"idx\":" + std::to_string(e.idx) +

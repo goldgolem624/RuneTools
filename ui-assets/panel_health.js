@@ -1,7 +1,10 @@
-// RuneToolsX panel: Health check (Developer) -- on-demand diagnostic of every major read chain,
+// RuneToolsX panel: Health check (Developer): on-demand update check, client code, calibration, live
+// layout, packets, cache content and the companion, grouped in dependency order.
 (function () {
 
-  let hcData = null, hcBusy = false;
+  let hcData = null, hcBusy = false, hcSeq = -1, hcPollTimer = 0;
+  let hcDiff = null, hcHist = [], hcCmp = null, hcCmpA = '', hcCmpB = '';
+  const hcOpen = {};          // group -> expanded (user toggles survive re-renders)
   let icMisses = null, icCov = null, icNames = {}, icTimer = 0;
   let hcKeepScroll = [];   // .hc-list scrollTop values captured before a rebuild
   let hcSig = '';          // last rendered data signature
@@ -19,33 +22,84 @@
     }
     paneRun('health', renderHealth);
   }
-  async function hcRun() {
-    if (hcBusy || !bridge() || !bridge().readerHealth) return;
-    hcBusy = true; paneRun('health', renderHealth);
-    try { hcData = JSON.parse(await rtxData.raw('host.readerHealth')); } catch (e) { hcData = null; }
-    hcBusy = false;
-    icFetch();
+  function hcParse(t) { try { return JSON.parse(t); } catch (e) { return null; } }
+  async function hcHistory() {
+    hcHist = hcParse(await rtxData.raw('host.healthHistory')) || [];
+    if (Array.isArray(hcHist) && hcHist.length) {
+      hcDiff = hcParse(await rtxData.raw('host.healthDiff', '', hcHist[0].name));
+      if (!hcCmpB) hcCmpB = hcHist[0].name;
+      if (!hcCmpA && hcHist.length > 1) hcCmpA = hcHist[1].name;
+    }
+  }
+  async function hcPoll() {
+    clearTimeout(hcPollTimer);
+    const p = hcParse(await rtxData.raw('host.readerHealthPoll'));
+    if (p && !p.running && p.seq !== hcSeq) {
+      hcSeq = p.seq; hcData = p.run; hcBusy = false;
+      try { await hcHistory(); } catch (e) {}
+      icFetch();
+    } else if (p && p.running) {
+      hcPollTimer = setTimeout(hcPoll, 400);
+    } else { hcBusy = false; }
     paneRun('health', renderHealth);
   }
+  async function hcRun() {
+    if (hcBusy || !bridge() || !bridge().readerHealthStart) return;
+    hcBusy = true; paneRun('health', renderHealth);
+    let pins = '{}';
+    try { pins = JSON.stringify(window.RTX_PINS || {}); } catch (e) {}
+    try { hcSeq = Number(await rtxData.raw('host.readerHealthStart', pins)); } catch (e) { hcBusy = false; }
+    hcPollTimer = setTimeout(hcPoll, 400);
+  }
+  async function hcMarkReviewed() {
+    const b = hcData && hcData.build;
+    if (!b) return;
+    try { await rtxData.raw('host.healthMarkReviewed', hcData.version || '', b.stamp || ''); } catch (e) {}
+    hcRun();
+  }
+  function hcCopy() {
+    if (!hcData || !bridge() || !bridge().copyClipboard) return;
+    try { bridge().copyClipboard(JSON.stringify(hcData, null, 1)); if (typeof uiNotify === 'function') uiNotify('Report copied'); } catch (e) {}
+  }
+  async function hcCompare() {
+    if (!hcCmpA || !hcCmpB) return;
+    hcCmp = hcParse(await rtxData.raw('host.healthDiff', hcCmpA, hcCmpB));
+    paneRun('health', renderHealth);
+  }
+
+  const DOT = s => s === 1 ? 'ok' : s === 0 ? 'bad' : s === 2 ? 'warn' : 'na';
+  const WORD = s => s === 1 ? 'pass' : s === 0 ? 'fail' : s === 2 ? 'warn' : 'not checked';
+  // which part of the game a failing row says moved
+  const CAUSE = { 'Client code': 'code', 'Calibration': 'code', 'Content': 'content', 'Cache format': 'content', 'Companion': 'companion' };
+  function el(tag, cls, text) { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
+
   function renderHealth() {
     const c = $('content');
     let wrap = $('hcWrap');
     if (!wrap) {
       injectStyle('hcCss', `
-          .hc-head { display: flex; align-items: center; gap: 8px; padding: 12px 14px 8px; }
+          .hc-head { display: flex; align-items: center; gap: 6px; padding: 12px 14px 8px; }
           .hc-title { flex: 1; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; color: var(--accent-hi); }
-          .hc-ver { padding: 0 14px 8px; font-size: 11px; color: var(--text-dim); }
+          .hc-ver { padding: 0 14px 8px; font-size: 11px; color: var(--text-dim); display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+          .hc-chip { border: 1px solid var(--border); border-radius: 6px; padding: 1px 6px; background: var(--bg-elev); }
+          .hc-chip.warn { border-color: rgba(224,180,87,.5); color: #e0b457; }
           .hc-card { margin: 0 12px; background: var(--bg-elev); border: 1px solid var(--border); border-radius: 10px; }
+          .hc-card + .hc-card { margin-top: 8px; }
           .hc-row { display: flex; align-items: center; gap: 8px; padding: 7px 12px; font-size: 12px; }
-          .hc-row + .hc-row { border-top: 1px solid var(--border); }
+          .hc-row + .hc-row, .hc-grp + .hc-row, .hc-row + .hc-sub2 { border-top: 1px solid var(--border); }
           .hc-dot { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto; }
           .hc-dot.ok { background: #4dd28a; box-shadow: 0 0 6px rgba(77,210,138,.35); }
-          .hc-dot.warn { background: var(--text-dim); }
+          .hc-dot.warn { background: #e0b457; }
+          .hc-dot.na { background: var(--text-mute, #666); opacity: .6; }
           .hc-dot.bad { background: #e05656; box-shadow: 0 0 6px rgba(224,86,86,.35); }
           .hc-k { flex: 0 0 auto; color: var(--text); }
-          .hc-d { margin-left: auto; color: var(--text-dim); font-size: 11px; text-align: right; overflow: hidden; text-overflow: ellipsis; }
-          /* Verdict banner: the panel's headline answer, so it leads rather than trailing
-             the check list. Colour lives on the container and the dot inherits it. */
+          .hc-k.na { color: var(--text-dim); }
+          .hc-d { margin-left: auto; color: var(--text-dim); font-size: 11px; text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 62%; }
+          .hc-row.wrap .hc-d { white-space: normal; }
+          .hc-why { padding: 0 12px 7px 28px; font-size: 10.5px; color: var(--text-dim); }
+          .hc-why b { color: var(--text); font-weight: 600; }
+          .hc-grp { display: flex; align-items: center; gap: 8px; padding: 8px 12px; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; color: var(--accent-hi); cursor: pointer; }
+          .hc-grp .hc-n { margin-left: auto; color: var(--text-dim); font-weight: 600; letter-spacing: 0; text-transform: none; }
           .hc-status { display: flex; align-items: center; gap: 9px; margin: 0 14px 10px;
               padding: 9px 11px; border-radius: 8px; border: 1px solid; line-height: 1.35; }
           .hc-sdot { width: 9px; height: 9px; border-radius: 50%; flex: 0 0 auto;
@@ -57,9 +111,8 @@
           .hc-status.warn { color: #e0b457; border-color: rgba(224,180,87,.35); background: rgba(224,180,87,.09); }
           .hc-status.bad { color: #e05656; border-color: rgba(224,86,86,.38); background: rgba(224,86,86,.10); }
           .hc-btnrow { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 14px 8px; align-items: center; }
-          .hc-idin { flex: 1 1 190px; min-width: 0; background: var(--bg-elev); border: 1px solid var(--border);
-              border-radius: 7px; color: var(--text); font-size: 12px; padding: 6px 9px; outline: none; }
-          .hc-idin:focus { border-color: var(--accent); }
+          .hc-ab { padding: 1px 7px; font-size: 10.5px; margin-left: 4px; }
+          .hc-ab.on { border-color: var(--accent); color: var(--accent-hi); }
           .hc-hint { margin: 10px 14px; font-size: 11.5px; color: var(--text-dim); line-height: 1.5; }
           .hc-sub { margin: 14px 14px 6px; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; color: var(--accent-hi); }
           .hc-list { max-height: 260px; overflow-y: auto; overflow-x: hidden; border-top: 1px solid var(--border); }
@@ -71,65 +124,195 @@
     let body = document.getElementById('hcBody');
     if (!body) {
       wrap.innerHTML = '';
-      const head = document.createElement('div'); head.className = 'hc-head';
-      const t = document.createElement('span'); t.className = 'hc-title'; t.textContent = 'Reader health check';
-      const btn = document.createElement('button'); btn.className = 'vw-btn'; btn.id = 'hcRunBtn';
-      btn.dataset.tip = 'Verify every feature can read the game correctly (useful after a game update)';
+      const head = el('div', 'hc-head');
+      head.appendChild(el('span', 'hc-title', 'Health check'));
+      const btn = el('button', 'vw-btn'); btn.id = 'hcRunBtn';
+      btn.dataset.tip = 'Check everything the app reads from the game (run after a game update)';
       btn.addEventListener('click', hcRun);
-      head.appendChild(t); head.appendChild(btn);
+      const cp = el('button', 'vw-btn', 'Copy report'); cp.id = 'hcCopyBtn';
+      cp.dataset.tip = 'Copy this run as JSON';
+      cp.addEventListener('click', hcCopy);
+      head.appendChild(btn); head.appendChild(cp);
       wrap.appendChild(head);
-
       body = document.createElement('div'); body.id = 'hcBody'; wrap.appendChild(body);
     }
     const runBtn = document.getElementById('hcRunBtn');
     if (runBtn) runBtn.textContent = hcBusy ? 'Checking...' : 'Run check';
-    const hcSigNow = JSON.stringify([hcData, hcBusy, icMisses, icCov]);
+    const hcSigNow = JSON.stringify([hcData && hcData.summary, hcSeq, hcBusy, hcDiff, hcCmp, hcHist.length, hcCmpA, hcCmpB, hcOpen, icMisses, icCov]);
     if (hcSigNow === hcSig && body.childNodes.length) return;
     hcSig = hcSigNow;
     hcKeepScroll = Array.from(document.querySelectorAll('.hc-list')).map(l => l.scrollTop);
     body.innerHTML = '';
 
     if (!hcData || !Array.isArray(hcData.checks)) {
-      const e2 = document.createElement('div'); e2.className = 'hc-hint';
-      e2.textContent = 'Checks that every feature can read the game correctly. Worth running after a game update if something looks off.';
-      body.appendChild(e2);
+      body.appendChild(el('div', 'hc-hint', hcBusy ? 'Checking the game client...' : 'Checks the client code, offsets, live layout, packets, cache content and the companion. Run it after a game update.'));
+      renderIcons(body);
       return;
     }
+    const checks = hcData.checks;
+    const s = hcData.summary || {};
+    const byId = {};
+    for (const r of checks) if (r.id) byId[r.id] = r;
+    // verdict banner: the first failing link and what kind of change it is
     {
-      const bad = hcData.checks.filter(x => x.ok === 0).length;
-      const warn = hcData.checks.filter(x => x.ok === 2).length;
-      const state = bad ? 'bad' : (warn ? 'warn' : 'ok');
-      const n = hcData.checks.length;
-      const st = document.createElement('div'); st.className = 'hc-status ' + state;
-      const dot = document.createElement('span'); dot.className = 'hc-sdot';
-      const tx = document.createElement('div'); tx.className = 'hc-stx';
-      const t1 = document.createElement('div'); t1.className = 'hc-st';
-      const t2 = document.createElement('div'); t2.className = 'hc-sd';
-      t1.textContent = bad ? (bad + ' check' + (bad === 1 ? '' : 's') + ' failing')
-                     : warn ? (warn === 1 ? '1 check needs attention' : warn + ' checks need attention')
-                     : 'Everything is working';
-      t2.textContent = bad ? 'A recent game update may be the cause. An app update will fix this.'
-                     : warn ? (n - warn) + ' of ' + n + ' checks fully passed.'
-                     : 'All ' + n + ' checks passed.';
-      tx.appendChild(t1); tx.appendChild(t2);
-      st.appendChild(dot); st.appendChild(tx);
+      const bad = checks.filter(x => x.ok === 0);
+      const warn = checks.filter(x => x.ok === 2).length;
+      const state = bad.length ? 'bad' : (warn ? 'warn' : 'ok');
+      const st = el('div', 'hc-status ' + state);
+      st.appendChild(el('span', 'hc-sdot'));
+      const tx = el('div', 'hc-stx');
+      let title, sub;
+      if (bad.length) {
+        const first = byId[s.firstFail] || bad[0];
+        const deps = checks.filter(x => x.dep === (first.id || '')).length;
+        title = (first.k || 'A check') + ' failed' + (deps ? '. ' + deps + ' check' + (deps === 1 ? '' : 's') + ' depend on it.' : '');
+        const cnt = {};
+        for (const r of bad) { const k = CAUSE[r.g] || 'layout'; cnt[k] = (cnt[k] || 0) + 1; }
+        const parts = [];
+        if (cnt.code) parts.push('Game code moved: ' + cnt.code);
+        if (cnt.layout) parts.push('Live layout: ' + cnt.layout);
+        if (cnt.content) parts.push('Content moved: ' + cnt.content);
+        if (cnt.companion) parts.push('Companion: ' + cnt.companion);
+        sub = parts.join('. ') + '.';
+      } else if (warn) {
+        title = warn === 1 ? '1 check needs attention' : warn + ' checks need attention';
+        sub = 'Nothing failed.';
+      } else {
+        title = 'Everything is working';
+        sub = 'All ' + (s.pass || checks.length) + ' checks passed.';
+      }
+      tx.appendChild(el('div', 'hc-st', title));
+      tx.appendChild(el('div', 'hc-sd', sub));
+      st.appendChild(tx);
       body.appendChild(st);
     }
-    if (hcData.version) {
-      const v = document.createElement('div'); v.className = 'hc-ver';
-      v.textContent = 'client ' + hcData.version; body.appendChild(v);
+    // build strip and run summary
+    {
+      const b = hcData.build || {};
+      const v = el('div', 'hc-ver');
+      const flav = b.flavour === 'vulkan' ? 'Vulkan' : b.flavour === 'opengl' ? 'OpenGL' : (b.flavour || '');
+      v.appendChild(el('span', 'hc-chip', hcData.version || 'unknown build'));
+      if (flav) v.appendChild(el('span', 'hc-chip', flav));
+      if (b.stamp) v.appendChild(el('span', 'hc-chip', b.stamp));
+      v.appendChild(el('span', 'hc-chip' + (b.known ? '' : ' warn'), b.known ? 'validated' + (b.validated ? ' ' + b.validated : '') : 'new build'));
+      v.appendChild(el('span', null, (s.pass | 0) + ' pass  ' + (s.fail | 0) + ' fail  ' + (s.warn | 0) + ' warn  ' + (s.unchecked | 0) + ' not checked  ' + (s.ms | 0) + ' ms'));
+      const gb = byId['build.game'];
+      if (gb && gb.ok === 2) {
+        const mr = el('button', 'vw-btn', 'Mark reviewed');
+        mr.dataset.tip = 'Clear the update notice for this game build';
+        mr.addEventListener('click', hcMarkReviewed);
+        v.appendChild(mr);
+      }
+      body.appendChild(v);
     }
-    const card = document.createElement('div'); card.className = 'hc-card';
-    for (const chk of hcData.checks) {
-      const r = document.createElement('div'); r.className = 'hc-row';
-      const dot = document.createElement('span');
-      dot.className = 'hc-dot ' + (chk.ok === 1 ? 'ok' : chk.ok === 2 ? 'warn' : 'bad');
-      const nm = document.createElement('span'); nm.className = 'hc-k'; nm.textContent = chk.k;
-      const dt = document.createElement('span'); dt.className = 'hc-d'; dt.textContent = chk.d || '';
-      r.appendChild(dot); r.appendChild(nm); r.appendChild(dt);
-      card.appendChild(r);
+    // groups, in the order the check ran them (each depends on the ones before)
+    const groups = [];
+    const gmap = {};
+    for (const r of checks) {
+      const g = r.g || 'Other';
+      if (!gmap[g]) { gmap[g] = []; groups.push(g); }
+      gmap[g].push(r);
     }
-    body.appendChild(card);
+    for (const g of groups) {
+      const rows = gmap[g];
+      const worst = rows.some(r => r.ok === 0) ? 0 : rows.some(r => r.ok === 2) ? 2 : rows.every(r => r.ok === 3) ? 3 : 1;
+      const pass = rows.filter(r => r.ok === 1).length;
+      if (!(g in hcOpen)) hcOpen[g] = worst === 0;
+      const card = el('div', 'hc-card');
+      const gh = el('div', 'hc-grp');
+      gh.appendChild(el('span', 'hc-dot ' + DOT(worst)));
+      gh.appendChild(el('span', null, g));
+      gh.appendChild(el('span', 'hc-n', pass + '/' + rows.length + (hcOpen[g] ? '' : '  +')));
+      gh.addEventListener('click', () => { hcOpen[g] = !hcOpen[g]; hcSig = ''; paneRun('health', renderHealth); });
+      card.appendChild(gh);
+      if (hcOpen[g]) {
+        for (const chk of rows) {
+          const r = el('div', 'hc-row' + (chk.ok === 0 ? ' wrap' : ''));
+          r.appendChild(el('span', 'hc-dot ' + DOT(chk.ok)));
+          r.appendChild(el('span', 'hc-k' + (chk.ok === 3 ? ' na' : ''), chk.k));
+          const dt = el('span', 'hc-d', chk.d || ''); dt.title = chk.d || '';
+          r.appendChild(dt);
+          card.appendChild(r);
+          if (chk.ok === 0 && (Array.isArray(chk.f) && chk.f.length || chk.exp || chk.got)) {
+            const why = el('div', 'hc-why');
+            if (chk.exp || chk.got) why.appendChild(document.createTextNode('Expected ' + (chk.exp || '?') + ', found ' + (chk.got || '?') + '. '));
+            if (Array.isArray(chk.f) && chk.f.length) { why.appendChild(el('b', null, 'Breaks: ')); why.appendChild(document.createTextNode(chk.f.join(', '))); }
+            card.appendChild(why);
+          }
+        }
+      }
+      body.appendChild(card);
+    }
+    // what changed since the last clean run, else the previous build's, else the previous run
+    if (hcDiff && hcDiff.ok && ((hcDiff.rows || []).length || (hcDiff.facts || []).length)) {
+      const since = { 'last clean': 'the last clean run', 'previous build': 'the previous build', 'previous run': 'the previous run',
+                      'earlier run': 'the previous run (more failures)' };
+      body.appendChild(el('div', 'hc-sub', 'Changed since ' + (since[hcDiff.against] || 'the last clean run')));
+      const card = el('div', 'hc-card');
+      const list = el('div', 'hc-list');
+      for (const r0 of (hcDiff.rows || []).slice(0, 60)) {
+        const r = el('div', 'hc-row');
+        r.appendChild(el('span', 'hc-dot ' + DOT(r0.now)));
+        r.appendChild(el('span', 'hc-k', r0.k || r0.id));
+        r.appendChild(el('span', 'hc-d', (r0.was < 0 ? 'new' : WORD(r0.was)) + ' to ' + (r0.now < 0 ? 'gone' : WORD(r0.now))));
+        list.appendChild(r);
+      }
+      for (const f of (hcDiff.facts || []).slice(0, 80)) {
+        const r = el('div', 'hc-row');
+        r.appendChild(el('span', 'hc-id', f.k));
+        const d = el('span', 'hc-d', f.was + '  to  ' + f.now); d.title = f.was + ' to ' + f.now;
+        r.appendChild(d);
+        list.appendChild(r);
+      }
+      card.appendChild(list);
+      body.appendChild(card);
+    }
+    // compare any two runs from the history
+    if (hcHist.length > 1) {
+      body.appendChild(el('div', 'hc-sub', 'Compare runs'));
+      const card = el('div', 'hc-card');
+      const list = el('div', 'hc-list');
+      for (const h of hcHist.slice(0, 30)) {
+        const r = el('div', 'hc-row');
+        r.appendChild(el('span', 'hc-dot ' + (h.fail ? 'bad' : h.warn ? 'warn' : 'ok')));
+        r.appendChild(el('span', 'hc-id', h.name.replace('.json', '')));
+        r.appendChild(el('span', 'hc-d', h.fail + ' fail  ' + h.warn + ' warn'));
+        for (const side of ['A', 'B']) {
+          const picked = (side === 'A' ? hcCmpA : hcCmpB) === h.name;
+          const b = el('button', 'vw-btn hc-ab' + (picked ? ' on' : ''), side);
+          b.addEventListener('click', () => { if (side === 'A') hcCmpA = h.name; else hcCmpB = h.name; hcCmp = null; hcSig = ''; paneRun('health', renderHealth); });
+          r.appendChild(b);
+        }
+        list.appendChild(r);
+      }
+      card.appendChild(list);
+      body.appendChild(card);
+      const row = el('div', 'hc-btnrow');
+      const go = el('button', 'vw-btn', 'Compare A with B');
+      go.addEventListener('click', hcCompare);
+      row.appendChild(go);
+      body.appendChild(row);
+      if (hcCmp && hcCmp.ok) {
+        const card = el('div', 'hc-card');
+        const list = el('div', 'hc-list');
+        if (!(hcCmp.rows || []).length && !(hcCmp.facts || []).length) list.appendChild(el('div', 'hc-row', 'No difference'));
+        for (const r0 of (hcCmp.rows || []).slice(0, 80)) {
+          const r = el('div', 'hc-row');
+          r.appendChild(el('span', 'hc-dot ' + DOT(r0.now)));
+          r.appendChild(el('span', 'hc-k', r0.k || r0.id));
+          r.appendChild(el('span', 'hc-d', (r0.was < 0 ? 'new' : WORD(r0.was)) + ' to ' + (r0.now < 0 ? 'gone' : WORD(r0.now))));
+          list.appendChild(r);
+        }
+        for (const f of (hcCmp.facts || []).slice(0, 120)) {
+          const r = el('div', 'hc-row');
+          r.appendChild(el('span', 'hc-id', f.k));
+          r.appendChild(el('span', 'hc-d', f.was + '  to  ' + f.now));
+          list.appendChild(r);
+        }
+        card.appendChild(list);
+        body.appendChild(card);
+      }
+    }
     renderIcons(body);
     if (hcKeepScroll.length) { const keep = hcKeepScroll; hcKeepScroll = []; setTimeout(() => { const ls = body.querySelectorAll('.hc-list'); ls.forEach((l, i) => { if (keep[i] != null) l.scrollTop = keep[i]; }); }, 0); }   // after layout, or Ultralight clamps it to 0
   }

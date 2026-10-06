@@ -66,6 +66,18 @@ bool          CheckCacheUpdate();
 std::uint64_t CacheGeneration();
 std::string CacheProbeUnknownOps();
 
+// Update check. What the code relies on about one cache entry, as "k=v;k=v" in a fixed order:
+// empty when the entry is gone, "?" when the cache cannot be read. `want` selects the parts a
+// kind reports a selection of: enum keys, struct params, dbtable columns ("1,5"). Kinds: varbit,
+// varp, varc, var ("archive:id"), enum, enumhash, struct, param, dbtable, iface ("group" or
+// "group:comp"), inv, sprite, script, model, spotanim, archive ("index/archive"), item, npc, loc.
+std::string PinFingerprint(const std::string& kind, const std::string& key, const std::string& want);
+struct IndexFacts { bool open = false; int archives = 0, maxArchive = -1, maxFile = -1, protocol = 0, revision = 0, failed = 0; };
+IndexFacts IndexInfo(int index);
+int ArchiveRevision(int index, int archive);   // the archive's reference-table version, -1 when absent
+std::string CacheRoot();
+int MaxId(const std::string& kind);             // largest id in use: item, npc, loc, enum, struct, varbit, param, sprite, iface, achievement, script
+
 std::string ItemIconCoverageJson(bool (*has)(int item_id));
 
 std::string MapAreasJson();

@@ -13,6 +13,7 @@
 #include <fstream>
 
 #include "SceneOffsets.h"
+#include "Signatures.h"
 #include "SceneHover.h"
 #include "ScenePlayer.h"
 #include "TooltipHook.h"
@@ -94,6 +95,18 @@ bool TryRead(std::uint64_t addr, T& out) {
     __try { out = *reinterpret_cast<const T*>(addr); return true; }
     __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
 }
+// Boot record: every hook in one grammar, under the names the update check uses.
+int g_hooksAttached = 0, g_hooksMissing = 0;
+void HookLine(const char* name, std::uint64_t at, bool attached) {
+    if (!at) { ++g_hooksMissing; RingLog("hook: %s NOT FOUND", name); return; }
+    if (!attached) { ++g_hooksMissing; RingLog("hook: %s attach FAILED", name); return; }
+    ++g_hooksAttached;
+    RingLog("hook: %s ATTACHED rva=0x%llx", name, (unsigned long long)(at - g_base));
+}
+void HookState(const char* name, bool attached) {
+    if (attached) { ++g_hooksAttached; RingLog("hook: %s ATTACHED", name); }
+    else { ++g_hooksMissing; RingLog("hook: %s NOT FOUND", name); }
+}
 std::uint64_t R64(std::uint64_t a) { std::uint64_t v = 0; return TryRead(a, v) ? v : 0; }
 std::int32_t  R32(std::uint64_t a) { std::int32_t  v = 0; return TryRead(a, v) ? v : 0; }
 float         RF (std::uint64_t a) { float         v = 0; return TryRead(a, v) ? v : 0.f; }
@@ -146,7 +159,7 @@ std::uint64_t ScanRootGlobal() {
     const std::uint8_t* img = reinterpret_cast<const std::uint8_t*>(g_base);
     std::uint64_t n = (g_size ? g_size : 0x2000000);
     if (n < 0x1300) return 0;
-    static const std::uint8_t kAnchor[] = { 0x48, 0x2D, 0xA8, 0x00, 0x00, 0x00, 0x48, 0x83 };
+    constexpr const auto& kAnchor = rtx::sig::kMainAnchor;
     if (!g_anchorSearched) {
         g_anchorSearched = true;
         __try {
@@ -979,22 +992,27 @@ void ResolveRenderHooks() {
     // npc-display: mov rax,[rcx]; mov rdi,r9; mov rsi,r8; mov rbp,rdx; mov rbx,rcx; call [rax+0x110]
     // player-vis : mov rax,[rcx+0x1078]; mov rbp,r9
     // render-thr : mov rax,[rcx+8]; mov r15,rcx; mov r14,[rip+..]
-    static const unsigned char kNpcDisBody[] = {0x48,0x8B,0x01,0x49,0x8B,0xF9,0x49,0x8B,0xF0,0x48,0x8B,0xEA,0x48,0x8B,0xD9,0xFF,0x90,0x10,0x01,0x00,0x00};
-    static const unsigned char kPlDisBody[]  = {0x48,0x8B,0x81,0x78,0x10,0x00,0x00,0x49,0x8B,0xE9};
-    static const unsigned char kRenderBody[] = {0x48,0x8B,0x41,0x08,0x4C,0x8B,0xF9,0x4C,0x8B,0x35};
+    using rtx::sig::kNpcDisBody;
+    using rtx::sig::kPlDisBody;
+    using rtx::sig::kRenderBody;
     std::uint64_t pNpc = FindVarOp(kNpcDisBody, sizeof(kNpcDisBody));
     std::uint64_t pDis = FindVarOp(kPlDisBody,  sizeof(kPlDisBody));
+    bool renderCommitted = false;
     if (pNpc || pDis) {
         DetourTransactionBegin();
         DetourUpdateThread(GetCurrentThread());
         if (pNpc) { g_origNpcDis = (NpcDis_t)pNpc; DetourAttach(&(PVOID&)g_origNpcDis, (PVOID)Detour_NpcDis); }
         if (pDis) { g_origPlDis  = (PlDis_t)pDis;  DetourAttach(&(PVOID&)g_origPlDis,  (PVOID)Detour_PlDis); }
-        if (DetourTransactionCommit() == NO_ERROR && g_renderShare) {
+        renderCommitted = DetourTransactionCommit() == NO_ERROR;
+        if (renderCommitted && g_renderShare) {
             if (pNpc) g_renderShare->installed |= 1;   // bit0: hide NPCs
             if (pDis) g_renderShare->installed |= 2;   // bit1: hide other players
         }
     }
-    std::uint64_t pRender = rtx::scn::KnownBuild(g_base) ? FindVarOp(kRenderBody, sizeof(kRenderBody)) : 0;
+    HookLine("npc-display", pNpc, renderCommitted);
+    HookLine("player-display", pDis, renderCommitted);
+    const bool knownBuild = rtx::scn::KnownBuild(g_base);
+    std::uint64_t pRender = knownBuild ? FindVarOp(kRenderBody, sizeof(kRenderBody)) : 0;
     if (pRender) {
         std::uint64_t spot = pRender + 0x266;
         std::uint8_t op = R8(spot);
@@ -1003,6 +1021,9 @@ void ResolveRenderHooks() {
             if (g_renderShare) g_renderShare->installed |= 4;
         }
     }
+    if (!knownBuild) RingLog("hook: scene-blank REFUSED build not validated");
+    else if (pRender && !g_sceneBlankAddr) RingLog("hook: scene-blank REFUSED no Jcc at +0x266");
+    else HookLine("scene-blank", pRender, g_sceneBlankAddr != 0);
 }
 
 rtx::special::Share* g_specialShare = nullptr;
@@ -1082,7 +1103,7 @@ Display_t g_origT13Display = nullptr;
 static inline void RecordDisplay(std::uint64_t sub, int type) {
     if (sub <= 0xfffff || sub >= g_base) return;
     auto& s = g_hiRing[g_hiIdx.fetch_add(1, std::memory_order_relaxed) % kHiRingCap];
-    s.gfx   = (type == 4) ? R32(sub + 0x74) : -1;    // +0x74 is a gfx id for type 4 only
+    s.gfx   = (type == 4) ? R32(sub + rtx::scn::kT4Gfx) : -1;    // a gfx id for type 4 only
     s.uid   = R32(sub + 0x88);
     s.plane = (std::int16_t)R32(sub + kFloor);
     s.type  = (std::int16_t)type;
@@ -1159,7 +1180,7 @@ static void ScanOneEnt(std::uint64_t ent) {
         int type = R8(sub + kType);
         if (g_specialShare) g_specialShare->diag[4] |= (1u << (type & 31));
         if (type != 4) return;
-        int gfx = R32(sub + 0x74);                                 // proj_otherId
+        int gfx = R32(sub + rtx::scn::kT4Gfx);
         if (g_specialShare) {
             g_specialShare->diag[1]++;
             std::uint32_t prev = g_specialShare->diag[2];
@@ -1477,30 +1498,19 @@ void ResolveNetProbe() {
         RingLog("events: share map FAILED");
     }
     // Framer entry prologue; the `test rcx,rcx; jz; cmp dword[rcx],2` tail makes it unique, jz rel32 wildcarded.
-    static const unsigned char body[] = {
-        0x40,0x53,0x56,0x41,0x56,0x41,0x57,0x48,0x83,0xEC,0x28,0x33,0xF6,0x48,0x8B,0xD9,
-        0x48,0x8B,0x49,0x08,0x4C,0x8B,0xF2,0x44,0x8B,0xFE,0x48,0x85,0xC9,0x0F,0x84,
-        0x00,0x00,0x00,0x00,                                            // jz rel32 (wildcard)
-        0x83,0x39,0x02 };
-    static const unsigned char mask[] = {
-        1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,
-        1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,
-        0,0,0,0,
-        1,1,1 };
-    std::uint64_t p = FindVarOpWild(body, mask, sizeof(body));
-    if (!p) { RingLog("netprobe: framer NOT FOUND (re-derive signature)"); return; }
+    std::uint64_t p = FindVarOpWild(rtx::sig::kFramerBody, rtx::sig::kFramerMask, sizeof(rtx::sig::kFramerBody));
+    if (!p) { HookLine("framer", 0, false); return; }
     sh->framerRva = (std::uint32_t)(p - g_base);
     DetourTransactionBegin();
     DetourUpdateThread(GetCurrentThread());
     g_origFramer = (Framer_t)p;
     DetourAttach(&(PVOID&)g_origFramer, (PVOID)Detour_Framer);
-    if (DetourTransactionCommit() == NO_ERROR) {
+    const bool framerOk = DetourTransactionCommit() == NO_ERROR;
+    if (framerOk) {
         sh->flags |= 1;
         if (g_eventShare) g_eventShare->flags |= 1;
-        RingLog("netprobe: framer hook ATTACHED rva=0x%llx", (unsigned long long)(p - g_base));
-    } else {
-        RingLog("netprobe: framer hook attach FAILED");
     }
+    HookLine("framer", p, framerOk);
 }
 
 void ResolveSpecialObserver() {
@@ -1515,66 +1525,47 @@ void ResolveSpecialObserver() {
         g_specialShare->diag[8] = g_specialShare->diag[9] = g_specialShare->diag[10] = g_specialShare->diag[11] = 0;
     }
     // Object-submit fn: mov rcx,rdx; mov r8d,0x47; mov r14,rdx; call <rel32>; mov rcx,[rbx+0x140]; cmp rcx,[rbx+0x148]
-    static const unsigned char body[] = {
-        0x00,0x00,0x48,0x8B,0xCA,0x41,0xB8,0x47,0x00,0x00,0x00,0x4C,0x8B,0xF2,0xE8,
-        0x00,0x00,0x00,0x00,                                          // CALL rel32 (wildcard)
-        0x48,0x8B,0x8B,0x40,0x01,0x00,0x00,0x48,0x3B,0x8B,0x48,0x01,0x00 };
-    static const unsigned char mask[] = {
-        1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,
-        0,0,0,0,
-        1,1,1,1,1,1,1,1,1,1,1,1,1 };
-    std::uint64_t p = FindVarOpWild(body, mask, sizeof(body));
+    std::uint64_t p = FindVarOpWild(rtx::sig::kObjSubmitBody, rtx::sig::kObjSubmitMask, sizeof(rtx::sig::kObjSubmitBody));
     if (p) {
         if (g_specialShare) g_specialShare->diag[5] = (std::uint32_t)(p - g_base);   // resolved fn RVA
         DetourTransactionBegin();
         DetourUpdateThread(GetCurrentThread());
         g_origObjSubmit = (ObjSubmit_t)p;
         DetourAttach(&(PVOID&)g_origObjSubmit, (PVOID)Detour_ObjSubmit);
-        if (DetourTransactionCommit() == NO_ERROR && g_specialShare) { g_specialShare->flags |= 1; g_specialShare->diag[3] = 1; g_hookInstallMs = GetTickCount64(); RingLog("hook: spawn-hook ATTACHED rva=0x%llx", (unsigned long long)(p - g_base)); }
-        else RingLog("hook: spawn-hook attach FAILED");
-    }
+        const bool ok = DetourTransactionCommit() == NO_ERROR;
+        if (ok && g_specialShare) { g_specialShare->flags |= 1; g_specialShare->diag[3] = 1; g_hookInstallMs = GetTickCount64(); }
+        HookLine("spawn-hook", p, ok);
+    } else HookLine("spawn-hook", 0, false);
 
     // Object-delete fn (rs2client+0x50AA40): prologue + rcx+0x140 / rdi+0x138 worker-vec compare.
-    static const unsigned char delBody[] = {
-        0x48,0x89,0x5C,0x24,0x08,0x57,0x48,0x83,0xEC,0x20,0x48,0x8B,0xF9,0x48,0x8B,0xDA,
-        0x48,0x8B,0x89,0x40,0x01,0x00,0x00,0x48,0x8B,0x87,0x38,0x01,0x00,0x00,0x48,0x3B,0xC1 };
-    std::uint64_t pd = FindVarOp(delBody, sizeof(delBody));
+    std::uint64_t pd = FindVarOp(rtx::sig::kObjDelBody, sizeof(rtx::sig::kObjDelBody));
     if (pd) {
         DetourTransactionBegin();
         DetourUpdateThread(GetCurrentThread());
         g_origObjDel = (ObjDel_t)pd;
         DetourAttach(&(PVOID&)g_origObjDel, (PVOID)Detour_ObjDel);
-        if (DetourTransactionCommit() == NO_ERROR) RingLog("hook: del-hook ATTACHED rva=0x%llx", (unsigned long long)(pd - g_base));
-        else RingLog("hook: del-hook attach FAILED");
-    } else RingLog("hook: del-hook NOT FOUND");
+        HookLine("del-hook", pd, DetourTransactionCommit() == NO_ERROR);
+    } else HookLine("del-hook", 0, false);
 
-    // Per-type display hooks (vtable slot 7). Build 940: type-4 0x326690 == *(0xB73A50 + 7*8),
-    // type-13 0x1ABBB0 == *(0xB5E878 + 7*8). The type-4 pattern starts mid-function (0x32669D).
-    static const unsigned char t4Body[] = {
-        0x80,0xB9,0xAD,0x01,0x00,0x00,0x00,
-        0x49,0x8B,0xD9, 0x49,0x8B,0xE8, 0x4C,0x8B,0xF2, 0x48,0x8B,0xF9 };
-    std::uint64_t p4 = FindVarOp(t4Body, sizeof(t4Body));
+    // Per-type display hooks (vtable slot 7). The type-4 pattern starts mid-function at the flag
+    // byte test; the hook goes on the function start.
+    std::uint64_t p4 = FindVarOp(rtx::sig::kT4DisplayBody, sizeof(rtx::sig::kT4DisplayBody));
     if (p4) {
         DetourTransactionBegin();
         DetourUpdateThread(GetCurrentThread());
         g_origT4Display = (Display_t)p4;
         DetourAttach(&(PVOID&)g_origT4Display, (PVOID)Detour_T4Display);
-        if (DetourTransactionCommit() == NO_ERROR) RingLog("hook: t4-display ATTACHED rva=0x%llx", (unsigned long long)(p4 - g_base));
-        else RingLog("hook: t4-display attach FAILED");
-    } else RingLog("hook: t4-display NOT FOUND");
+        HookLine("t4-display", p4, DetourTransactionCommit() == NO_ERROR);
+    } else HookLine("t4-display", 0, false);
 
-    static const unsigned char t13Body[] = {
-        0x48,0x89,0x5C,0x24,0x10, 0x48,0x89,0x6C,0x24,0x18,
-        0x56, 0x48,0x81,0xEC,0xE0,0x00,0x00,0x00 };
-    std::uint64_t p13 = FindVarOp(t13Body, sizeof(t13Body));
+    std::uint64_t p13 = FindVarOp(rtx::sig::kT13DisplayBody, sizeof(rtx::sig::kT13DisplayBody));
     if (p13) {
         DetourTransactionBegin();
         DetourUpdateThread(GetCurrentThread());
         g_origT13Display = (Display_t)p13;
         DetourAttach(&(PVOID&)g_origT13Display, (PVOID)Detour_T13Display);
-        if (DetourTransactionCommit() == NO_ERROR) RingLog("hook: t13-display ATTACHED rva=0x%llx", (unsigned long long)(p13 - g_base));
-        else RingLog("hook: t13-display attach FAILED");
-    } else RingLog("hook: t13-display NOT FOUND");
+        HookLine("t13-display", p13, DetourTransactionCommit() == NO_ERROR);
+    } else HookLine("t13-display", 0, false);
 
 }
 
@@ -1788,10 +1779,8 @@ DWORD WINAPI Worker(LPVOID) {
         for (int i = 0; i < 8; ++i) vs->diag[i] = 0;
         g_varcShare.store(vs, std::memory_order_release);
         // Same body up to the final bucket-load register: varp ends ...49 8B 0C C2, varc ...49 8B 04 C2.
-        static const unsigned char kVarpBody[] = {0x4C,0x8B,0x4A,0x10,0x48,0x8B,0xDA,0x44,0x0F,0xB7,0x42,0x24,
-            0x33,0xD2,0x41,0x8B,0xC0,0x41,0x8B,0x49,0x60,0x4D,0x8B,0x51,0x58,0x48,0xF7,0xF1,0x8B,0xC2,0x49,0x8B,0x0C,0xC2};
-        static const unsigned char kVarcBody[] = {0x4C,0x8B,0x4A,0x10,0x48,0x8B,0xDA,0x44,0x0F,0xB7,0x42,0x24,
-            0x33,0xD2,0x41,0x8B,0xC0,0x41,0x8B,0x49,0x60,0x4D,0x8B,0x51,0x58,0x48,0xF7,0xF1,0x8B,0xC2,0x49,0x8B,0x04,0xC2};
+        using rtx::sig::kVarpBody;
+        using rtx::sig::kVarcBody;
         std::uint64_t pVarp = FindVarOp(kVarpBody, sizeof(kVarpBody));
         std::uint64_t pVarc = FindVarOp(kVarcBody, sizeof(kVarcBody));
         if (pVarp || pVarc) {
@@ -1799,17 +1788,25 @@ DWORD WINAPI Worker(LPVOID) {
             DetourUpdateThread(GetCurrentThread());
             if (pVarp) { g_origVarp = (VarOp_t)pVarp; DetourAttach(&(PVOID&)g_origVarp, (PVOID)Detour_Varp); }
             if (pVarc) { g_origVarc = (VarOp_t)pVarc; DetourAttach(&(PVOID&)g_origVarc, (PVOID)Detour_Varc); }
-            if (DetourTransactionCommit() == NO_ERROR) vs->flags = 1;
+            const bool ok = DetourTransactionCommit() == NO_ERROR;
+            if (ok) vs->flags = 1;
+            HookLine("varp-observer", pVarp, ok);
+            HookLine("varc-observer", pVarc, ok);
+        } else {
+            HookLine("varp-observer", 0, false);
+            HookLine("varc-observer", 0, false);
         }
         // cc_if_setdraggable body: add dword [r9+0x10A0],-2; mov rbp,rcx; mov eax,[r9+..]
-        static const unsigned char kCcDragBody[] = {0x41,0x83,0x81,0xA0,0x10,0x00,0x00,0xFE,0x48,0x8B,0xE9,0x41,0x8B,0x81};
+        using rtx::sig::kCcDragBody;
         std::uint64_t pCc = FindVarOp(kCcDragBody, sizeof(kCcDragBody));
         if (pCc) {
             DetourTransactionBegin();
             DetourUpdateThread(GetCurrentThread());
             g_origCcDrag = (CcOp_t)pCc; DetourAttach(&(PVOID&)g_origCcDrag, (PVOID)Detour_CcIfSetDraggable);
-            if (DetourTransactionCommit() == NO_ERROR) vs->flags |= 2;   // bit1 = cc_if_setdraggable observed
-        }
+            const bool ok = DetourTransactionCommit() == NO_ERROR;
+            if (ok) vs->flags |= 2;   // bit1 = cc_if_setdraggable observed
+            HookLine("ccdrag-observer", pCc, ok);
+        } else HookLine("ccdrag-observer", 0, false);
     }
 
     ResolveRenderHooks();
@@ -1826,18 +1823,13 @@ DWORD WINAPI Worker(LPVOID) {
         RingLog(up ? "compositor: %s" : "compositor: present entry not found (off)", rtx::present::Mode());
     }
 
-    RingLog(rtx::soundfilter::Install() ? "sound: mix hook ATTACHED"
-                                        : "sound: mix fn not found (observation/mute off)");
-    RingLog(rtx::chatfilter::Install() ? "chat: message store hook attached"
-                                       : "chat: message store routine not recognised (mute off)");
-
+    HookState("sound-synth", rtx::soundfilter::Install());
+    HookState("chat-notify", rtx::chatfilter::Install());
     // Menu probe dump only runs with RTX_MENU_PROBE=1 set.
-    RingLog(rtx::menuprobe::Install() ? "menu: probe installed"
-                                      : "menu: string-init pattern not found");
-    RingLog(rtx::tooltip::Install() ? "tooltip: text hook installed"
-                                    : "tooltip: hover entry op not recognised (off)");
-    RingLog(rtx::enginemark::Install() ? "markers: game arrow and tile routines found"
-                                       : "markers: game arrow and tile routines not recognised (off)");
+    HookState("menu-init", rtx::menuprobe::Install());
+    HookState("tooltip-stub", rtx::tooltip::Install());
+    HookState("arrow-frame", rtx::enginemark::Install());
+    RingLog("hooks: %d attached, %d missing", g_hooksAttached, g_hooksMissing);
 
     constexpr ULONGLONG kRescanMs = 12000;               // base deep-sweep period
     constexpr ULONGLONG kRescanMaxMs = 300000;           // backoff ceiling (5 min)
@@ -1945,16 +1937,15 @@ bool rtx::sceneplayer::Tile(int& x, int& y) {
 // and that is the call made here. The method is checked by how it starts before it is trusted:
 //   mov rax, [rcx+18h] ; test rax, rax ; je ; mov rax, [rax+130h]
 namespace {
-constexpr std::uint64_t kHoverSlot = 0xF8;
+using rtx::sig::kHoverSlot;
+using rtx::sig::kKeepSlot;
+using rtx::sig::kHoverProlog;
 constexpr std::uint64_t kHlOwner = 0x60, kHlSettings = 0x20, kHlFrame = 0xBC;
-constexpr std::uint8_t  kHoverProlog[] = { 0x48, 0x8B, 0x41, 0x18, 0x48, 0x85, 0xC0, 0x74, 0x1F,
-                                           0x48, 0x8B, 0x80, 0x30, 0x01, 0x00, 0x00 };
 
 // The game's own sequence for something under the cursor: "hovered" once, which also starts the
 // short pulse a fresh hover gets, then the plain setter every frame to keep it lit. Repeating
 // "hovered" instead holds the pulse at its start, and it then plays as a flash when the cursor
 // leaves. Both methods begin the same way, which is what is checked before either is called.
-constexpr std::uint64_t kKeepSlot = 0x100;
 constexpr std::uint64_t kHlId = 0x10C;
 
 bool LooksLikeHoverMethod(std::uint64_t fn) {

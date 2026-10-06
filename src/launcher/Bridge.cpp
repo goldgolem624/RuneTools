@@ -27,6 +27,7 @@
 #include "../../companion/HudShare.h"
 #include "../../companion/MarkerShare.h"
 #include "../reader/Reader.h"
+#include "../reader/HealthRun.h"
 #include "../shared/Log.h"
 #include "IpcGuard.h"
 #include "../shared/MachineFingerprint.h"
@@ -556,83 +557,92 @@ JSValueRef GameSnapshots(JSContextRef ctx, JSObjectRef, JSObjectRef,
     return utf8_to_js(ctx, rtx::reader::SamplesJson());
 }
 
+// The update check. readerHealth runs it and answers with the run (blocking); the panel uses
+// readerHealthStart / readerHealthPoll so the page keeps drawing while it runs. The first argument
+// after the pid is the panels' own id declaration (RTX_PINS), passed through to the content check.
 JSValueRef ReaderHealth(JSContextRef ctx, JSObjectRef, JSObjectRef,
                         size_t argc, const JSValueRef argv[], JSValueRef*) {
     auto pid = (argc >= 1) ? (std::uint32_t)JSValueToNumber(ctx, argv[0], nullptr) : 0;
-    std::string j = rtx::reader::ReaderHealthJson(pid);
-    auto tail = j.rfind("]}");
-    if (pid && tail != std::string::npos) {
-        std::string extra;
-        auto add = [&](const char* k, int ok, const std::string& d) {
-            extra += ",{\"k\":\""; extra += k; extra += "\",\"ok\":" + std::to_string(ok) +
-                     ",\"d\":\"" + d + "\"}";
-        };
-        {
-            wchar_t name[rtx::ipc::kNameChars]; rtx::frame::MakeSectionName(pid, name);
-            HANDLE m = OpenFileMappingW(FILE_MAP_READ, FALSE, name);
-            int ok = 2; std::string d = "inactive (loads with the game client)";
-            if (m) {
-                auto* sh = reinterpret_cast<const rtx::frame::Share*>(
-                    MapViewOfFile(m, FILE_MAP_READ, 0, 0, sizeof(rtx::frame::Share)));
-                if (sh) {
-                    if (sh->magic == rtx::frame::kMagic && sh->module_seq > 0 &&
-                        sh->client_w > 0 && sh->client_h > 0) {
-                        ok = 1;
-                        d = "compositing at " + std::to_string(sh->client_w) + "x" +
-                            std::to_string(sh->client_h);
-                    } else if (sh->magic == rtx::frame::kMagic) {
-                        ok = 0; d = "layer mapped but the game never presented through it";
-                    }
-                    UnmapViewOfFile((void*)sh);
-                }
-                CloseHandle(m);
-            }
-            add("Companion: in-game UI frame", ok, d);
-        }
-        {
-            std::string st = rtx::launcher::soundfilter::StatusJson(pid);
-            int ok; std::string d;
-            if (st.find("\"hooked\":true") != std::string::npos) { ok = 1; d = "observing playback"; }
-            else if (st.find("\"ok\":true") != std::string::npos) {
-                ok = 0; d = "play function not found in this game build";
-            } else { ok = 2; d = "inactive (loads with the game client)"; }
-            add("Companion: sound observation", ok, d);
-        }
-        {
-            // Chat capture: framer hook + op-0x15 ring.
-            wchar_t name[rtx::ipc::kNameChars]; rtx::netprobe::MakeSectionName(pid, name);
-            HANDLE m = OpenFileMappingW(FILE_MAP_READ, FALSE, name);
-            int ok = 2; std::string d = "inactive (loads with the game client)";
-            if (m) {
-                auto* sh = reinterpret_cast<const rtx::netprobe::Share*>(
-                    MapViewOfFile(m, FILE_MAP_READ, 0, 0, 0));
-                MEMORY_BASIC_INFORMATION mbi{};
-                if (sh && (VirtualQuery(sh, &mbi, sizeof(mbi)) == 0 || mbi.RegionSize < sizeof(rtx::netprobe::Share))) {
-                    UnmapViewOfFile((void*)sh); sh = nullptr;
-                }
-                if (sh) {
-                    if (sh->magic == rtx::netprobe::kMagic && sh->version >= 3) {
-                        if (!(sh->flags & 1)) {
-                            ok = 0; d = "framer hook not attached (signature may have moved)";
-                        } else if (sh->chatSeen == 0) {
-                            ok = 2; d = "hooked; no chat messages observed yet";
-                        } else {
-                            ok = 1;
-                            d = std::to_string((unsigned long long)sh->chatSeen) +
-                                " messages captured";
-                        }
-                    } else if (sh->magic == rtx::netprobe::kMagic) {
-                        ok = 0; d = "companion predates chat capture (restart the game client)";
-                    }
-                    UnmapViewOfFile((void*)sh);
-                }
-                CloseHandle(m);
-            }
-            add("Companion: chat packet capture", ok, d);
-        }
-        j.insert(tail, extra);
+    const std::string pins = argc >= 2 && JSValueIsString(ctx, argv[1]) ? js_to_utf8(ctx, argv[1]) : std::string();
+    return utf8_to_js(ctx, rtx::reader::ReaderHealthJson(pid, pins));
+}
+
+namespace {
+std::mutex g_healthMu;
+bool g_healthRunning = false;
+std::string g_healthResult;
+std::uint64_t g_healthSeq = 0;
+}
+
+JSValueRef ReaderHealthStart(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                             size_t argc, const JSValueRef argv[], JSValueRef*) {
+    auto pid = (argc >= 1) ? (std::uint32_t)JSValueToNumber(ctx, argv[0], nullptr) : 0;
+    const std::string pins = argc >= 2 && JSValueIsString(ctx, argv[1]) ? js_to_utf8(ctx, argv[1]) : std::string();
+    {
+        std::lock_guard<std::mutex> lk(g_healthMu);
+        if (g_healthRunning) return JSValueMakeNumber(ctx, (double)g_healthSeq);
+        g_healthRunning = true;
     }
-    return utf8_to_js(ctx, j);
+    std::thread([pid, pins] {
+        std::string out;
+        try { out = rtx::reader::ReaderHealthJson(pid, pins); }
+        catch (const std::exception& e) { rtx::log::Launcher(std::string("[health] ") + e.what()); }
+        std::lock_guard<std::mutex> lk(g_healthMu);
+        g_healthResult = std::move(out);
+        ++g_healthSeq;
+        g_healthRunning = false;
+    }).detach();
+    std::lock_guard<std::mutex> lk(g_healthMu);
+    return JSValueMakeNumber(ctx, (double)g_healthSeq);
+}
+
+// {"running":bool,"seq":n,"run":<the last finished run or null>}
+JSValueRef ReaderHealthPoll(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                            size_t, const JSValueRef[], JSValueRef*) {
+    std::lock_guard<std::mutex> lk(g_healthMu);
+    std::string out = std::string("{\"running\":") + (g_healthRunning ? "true" : "false") +
+                      ",\"seq\":" + std::to_string(g_healthSeq) + ",\"run\":" +
+                      (g_healthResult.empty() ? std::string("null") : g_healthResult) + "}";
+    return utf8_to_js(ctx, out);
+}
+
+JSValueRef HealthHistory(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                         size_t, const JSValueRef[], JSValueRef*) {
+    return utf8_to_js(ctx, rtx::health::HistoryListJson());
+}
+
+JSValueRef HealthRead(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                      size_t argc, const JSValueRef argv[], JSValueRef*) {
+    if (argc < 1 || !JSValueIsString(ctx, argv[0])) return utf8_to_js(ctx, "");
+    return utf8_to_js(ctx, rtx::health::HistoryRead(js_to_utf8(ctx, argv[0])));
+}
+
+// Two runs by history name; an empty first name means the run to compare the second with: the
+// last clean one of its flavour, else the previous build's, else the previous run with no more
+// failures, else the previous run ("against" says which).
+JSValueRef HealthDiff(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                      size_t argc, const JSValueRef argv[], JSValueRef*) {
+    if (argc < 2) return utf8_to_js(ctx, "{\"ok\":false}");
+    const std::string a = JSValueIsString(ctx, argv[0]) ? js_to_utf8(ctx, argv[0]) : std::string();
+    const std::string b = JSValueIsString(ctx, argv[1]) ? js_to_utf8(ctx, argv[1]) : std::string();
+    const std::string newer = rtx::health::HistoryRead(b);
+    std::string older, against;
+    if (!a.empty()) older = rtx::health::HistoryRead(a);
+    else {
+        rtx::health::JVal v;
+        std::string flavour;
+        if (rtx::health::ParseJson(newer, v)) if (const rtx::health::JVal* bl = v.get("build")) flavour = bl->str("flavour");
+        older = rtx::health::LastGood(flavour, b, &against);
+    }
+    if (older.empty() || newer.empty()) return utf8_to_js(ctx, "{\"ok\":false,\"why\":\"no run to compare with\"}");
+    return utf8_to_js(ctx, rtx::health::DiffJson(older, newer, against));
+}
+
+// Mark the current game build reviewed: the update notice clears until the fingerprint changes.
+JSValueRef HealthMarkReviewed(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                              size_t argc, const JSValueRef argv[], JSValueRef*) {
+    if (argc < 2 || !JSValueIsString(ctx, argv[0]) || !JSValueIsString(ctx, argv[1])) return JSValueMakeBoolean(ctx, false);
+    return JSValueMakeBoolean(ctx, rtx::health::BuildsMarkReviewed(js_to_utf8(ctx, argv[0]), js_to_utf8(ctx, argv[1])));
 }
 
 JSValueRef UiAsset(JSContextRef ctx, JSObjectRef, JSObjectRef,
@@ -6090,6 +6100,12 @@ void AttachBridge(ultralight::View* view) {
     install_fn(ctx, ns, "menuPins",          MenuSwapFn);
     install_fn(ctx, ns, "hostInfo",          HostInfo);
     install_fn(ctx, ns, "readerHealth",      ReaderHealth);
+    install_fn(ctx, ns, "readerHealthStart", ReaderHealthStart);
+    install_fn(ctx, ns, "readerHealthPoll",  ReaderHealthPoll);
+    install_fn(ctx, ns, "healthHistory",     HealthHistory);
+    install_fn(ctx, ns, "healthRead",        HealthRead);
+    install_fn(ctx, ns, "healthDiff",        HealthDiff);
+    install_fn(ctx, ns, "healthMarkReviewed", HealthMarkReviewed);
     install_fn(ctx, ns, "bridgeStatus",      BridgeStatus);
     install_fn(ctx, ns, "itemIcon",          ItemIcon);
     install_fn(ctx, ns, "iconSource",        IconSource);

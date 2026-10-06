@@ -1,4 +1,6 @@
 #include "EngineComponents.h"
+#include "Signatures.h"
+#include "MainDataOffsets.h"
 #include "EngineOps.h"
 #include "MarkerShare.h"
 
@@ -35,20 +37,13 @@ constexpr std::size_t kActiveAlt   = 0xBFE0;
 // Routines take the root in rcx and the state in rdx and return the "no error" marker or an error.
 using OpFn = void* (*)(void* root, std::uint8_t* state);
 struct Op { const char* name; const char* text; const char* fingerprint; OpFn fn; const char* fingerprint2 = nullptr; };   // both fingerprints must match when two are given
-Op g_ops[] = {
-    { "cc_create",      "_cc_create", nullptr,                          nullptr },
-    { "cc_delete",      "_cc_delete", nullptr,                          nullptr },
-    { "cc_setposition", nullptr,      "33 C9 49 83 C3 40",              nullptr },   // four ints
-    { "cc_setsize",     nullptr,      "41 B9 04 00 00 00 44 39 4A 08",  nullptr },   // four ints, modes clamped to 4
-    { "cc_setcolour",   nullptr,      "44 89 88 88 00 00 00",           nullptr },   // one int into the component at +0x88
-    { "cc_setfill",     nullptr,      "40 88 B8 88 01 00 00",           nullptr },   // one int, as a byte at +0x188
-    { "cc_settrans",    nullptr,      "F6 D1 88 8A 8C 00 00 00",        nullptr },   // one int, inverted, as a byte at +0x8C
-    { "cc_sethide",     nullptr,      "41 0F 94 C1 E8",                 nullptr },   // one int, compared with 1, handed on
-    { "cc_find",        nullptr,      "B8 C0 BF 00 00 45 8B 82 00 01 00 00 48 83 C2 38", nullptr },   // (component, slot) -> the slot made active; pushes found
-    { "cc_settext",     nullptr,      "41 FF 89 A8 8D 00 00 49 81 C1 A8 10 00 00", nullptr },   // one string, from the string stack
-    { "cc_settextfont", nullptr,      "89 70 20 41 B9 FF FF 00 00",      nullptr },   // one int into the text object at +0x20
-    { "cc_settextshadow", nullptr,    "41 FF 89 A0 10 00 00 33 D2 41 8B 81 A0 10 00 00 41 8B 9C 81 00 01 00 00", nullptr, "0F BA E9 01 88 48 28" },   // one int: sets bit 1 of the text object at +0x28
+#define RTX_CC(i) { rtx::sig::kCcOps[i].name, rtx::sig::kCcOps[i].text, rtx::sig::kCcOps[i].fingerprint, nullptr, rtx::sig::kCcOps[i].fingerprint2 }
+Op g_ops[] = {   // the fingerprints are shared with the update check (Signatures.h), in this order
+    RTX_CC(0), RTX_CC(1), RTX_CC(2), RTX_CC(3), RTX_CC(4), RTX_CC(5),
+    RTX_CC(6), RTX_CC(7), RTX_CC(8), RTX_CC(9), RTX_CC(10), RTX_CC(11),
 };
+#undef RTX_CC
+static_assert(sizeof(g_ops) / sizeof(g_ops[0]) == sizeof(rtx::sig::kCcOps) / sizeof(rtx::sig::kCcOps[0]), "one setter per shared fingerprint");
 enum { kCreate, kDelete, kSetPosition, kSetSize, kSetColour, kSetFill, kSetTrans, kSetHide, kFind, kSetText, kSetTextFont, kSetTextShadow };
 
 std::uint8_t* g_state = nullptr;
@@ -137,17 +132,13 @@ const std::uint8_t* HandlerNaming(const std::vector<const std::uint8_t*>& handle
 // ones that work on the component in the state's slot; they differ in the dispatcher called, and
 // only the latter is wanted: it begins by choosing between the two slots, 0xBFC0 and 0xBFE0.
 const std::uint8_t* WrapperCallback(const std::uint8_t* h) {
+    using namespace rtx::sig;
     if (h[0] == 0x40) ++h;                          // the push carries a REX prefix in this build
-    static const std::uint8_t head[] = { 0x53, 0x48, 0x83, 0xEC, 0x60, 0x48, 0x8D, 0x05 };
-    static const std::uint8_t mid[]  = { 0x48, 0x89, 0x44, 0x24, 0x20, 0x4C, 0x8D, 0x44, 0x24, 0x20, 0x48, 0x8D, 0x05 };
-    if (std::memcmp(h, head, sizeof(head)) != 0 || std::memcmp(h + 12, mid, sizeof(mid)) != 0) return nullptr;
-    // the call: mov [rsp+28],rax ; lea rax,[rsp+20] ; mov [rsp+58],rax ; call rel32
-    static const std::uint8_t tail[] = { 0x48, 0x89, 0x44, 0x24, 0x28, 0x48, 0x8D, 0x44, 0x24, 0x20, 0x48, 0x89, 0x44, 0x24, 0x58, 0xE8 };
-    if (std::memcmp(h + 29, tail, sizeof(tail)) != 0) return nullptr;
+    if (std::memcmp(h, kCcWrapHead, sizeof(kCcWrapHead)) != 0 || std::memcmp(h + kCcWrapMidAt, kCcWrapMid, sizeof(kCcWrapMid)) != 0) return nullptr;
+    if (std::memcmp(h + kCcWrapTailAt, kCcWrapTail, sizeof(kCcWrapTail)) != 0) return nullptr;
     std::int32_t drel; std::memcpy(&drel, h + 45, 4);
     const std::uint8_t* dispatcher = h + 49 + drel;
-    static const int slots[] = { 0xB8, 0xC0, 0xBF, 0x00, 0x00, 0x41, 0xB9, 0xE0, 0xBF, 0x00, 0x00 };
-    if (!FindIn(dispatcher, 0x20, slots, 11)) return nullptr;
+    if (!FindIn(dispatcher, 0x20, kCcWrapSlots, (int)(sizeof(kCcWrapSlots) / sizeof(int)))) return nullptr;
     std::int32_t rel; std::memcpy(&rel, h + 25, 4);
     return h + 29 + rel;
 }
@@ -531,7 +522,7 @@ void HookSetText() {
 constexpr ULONGLONG kTextWaitMs = 3000;   // the launcher sees a changed game state within this
 
 bool InWorld(const std::uint8_t* root) {
-    __try { return *reinterpret_cast<const std::int8_t*>(root + 0x19FA0) == 30; }
+    __try { return *reinterpret_cast<const std::int8_t*>(root + rtx::md::kStatus) == 30; }
     __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
 }
 bool TextGroupAllowed(std::int32_t parent, std::int32_t sub) {

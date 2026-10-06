@@ -4,7 +4,9 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <mutex>
@@ -85,6 +87,7 @@ std::string last_log_line() {
 }
 
 std::string game_client_version();
+std::uint32_t game_client_stamp();
 
 // client_version.txt names the build opcodes.json was extracted from, and the reader and the
 // companion use the table only when that is the running game's build. So it is written when a run
@@ -102,8 +105,12 @@ void label_table_locked() {
     const bool vouched = g_exit.empty() && !g_build.empty();
     const fs::path label = dir / L"client_version.txt";
     {
+        // the build, then the exe's time stamp: a fix released under the same build string is told apart
         std::ofstream vf(label, std::ios::binary | std::ios::trunc);
-        if (vouched) vf << g_build;
+        if (vouched) {
+            vf << g_build;
+            if (const std::uint32_t st = game_client_stamp()) { char sb[16]; std::snprintf(sb, sizeof(sb), " %08x", st); vf << sb; }
+        }
     }
     if (!vouched) return;
     HANDLE h = CreateFileW(label.c_str(), FILE_WRITE_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
@@ -162,6 +169,17 @@ std::string game_client_version() {
     return v;
 }
 
+// The exe's PE time stamp: OpenGL and Vulkan clients, and same-string fixes, differ in it.
+std::uint32_t game_client_stamp() {
+    std::ifstream f(L"C:\\ProgramData\\Jagex\\launcher\\rs2client.exe", std::ios::binary);
+    char hdr[0x400] = {};
+    if (!f.read(hdr, sizeof(hdr))) return 0;
+    std::uint32_t lfanew = 0; std::memcpy(&lfanew, hdr + 0x3C, 4);
+    if (lfanew + 12 > sizeof(hdr) || std::memcmp(hdr + lfanew, "PE\0\0", 4) != 0) return 0;
+    std::uint32_t stamp = 0; std::memcpy(&stamp, hdr + lfanew + 8, 4);
+    return stamp;
+}
+
 int script_id_from_name(const fs::path& p) {
     // clientscript-<id>.ts
     std::wstring st = p.stem().wstring();
@@ -193,6 +211,12 @@ std::string StatusJson() {
     std::string meta = read_file(out / L"meta.json");
     std::string prog = read_file(out / L"progress.json");
     std::string extract_ver = read_file(out / L"client_version.txt");
+    std::string extract_stamp;
+    if (const std::size_t sp = extract_ver.find(' '); sp != std::string::npos) {
+        extract_stamp = extract_ver.substr(sp + 1);
+        extract_ver.resize(sp);
+        while (!extract_stamp.empty() && (extract_stamp.back() == '\r' || extract_stamp.back() == '\n' || extract_stamp.back() == ' ')) extract_stamp.pop_back();
+    }
     bool sidecar = fs::exists(fs::path(sidecar_dir()) / L"dist" / L"cs2export.js");
     std::string clientver = game_client_version();
     std::ostringstream os;
@@ -201,6 +225,7 @@ std::string StatusJson() {
        << ",\"sidecar\":" << (sidecar ? "true" : "false")
        << ",\"clientVer\":\"" << json_escape(clientver) << "\""
        << ",\"extractVer\":\"" << json_escape(extract_ver) << "\""
+       << ",\"extractStamp\":\"" << json_escape(extract_stamp) << "\""
        << ",\"meta\":" << (meta.empty() ? "null" : meta)
        << ",\"progress\":" << (prog.empty() ? "null" : prog) << "}";
     return os.str();

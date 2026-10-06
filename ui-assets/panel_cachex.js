@@ -6,7 +6,7 @@
     { k: 'enum',    label: 'Enums',    fn: 'enumInfo',     lo: 0, hi: 20000 },
     { k: 'struct',  label: 'Structs',  fn: 'structParams', lo: 0, hi: 60000 },
     { k: 'dbtable', label: 'DBTables', fn: 'dbRows',       lo: 0, hi: 600 },
-    { k: 'item',    label: 'Items',    fn: 'itemInfo',     lo: 0, hi: 63500 },
+    { k: 'item',    label: 'Items',    fn: 'itemInfo',     lo: 0, hi: 80000 },
     { k: 'varbit',  label: 'Varbits',  bulk: 'varbitMap' },
     { k: 'varp',    label: 'Varps',    bulk: 'varpsDumpAll' },
     { k: 'varc',    label: 'Varcs',    bulk: 'varcsDumpAll' },

@@ -17,10 +17,10 @@ inline constexpr int kServerTick      = 0xA0;   // 0xB4 on 949   0 bytes  : tick
 // Var set packets, layouts confirmed live against the varp/varc stores on 2026-09-12 (docs/fieldmap-950-1.md):
 inline constexpr int kVarpInt         = 0x04;   // 6 bytes  : id = ((b0-0x80)&0xFF)|(b1<<8); value = (b4<<24)|(b5<<16)|(b2<<8)|b3   (26/27 matched)
 inline constexpr int kVarpByte        = 0x4F;   // 3 bytes  : value = i8 b0; id = ((b2-0x80)&0xFF)|(b1<<8)                            (10/14)
-inline constexpr int kVarcInt         = 0x77;   // 6 bytes  : id = ((b1-0x80)&0xFF)|(b0<<8); value = (b3<<24)|(b2<<16)|(b5<<8)|b4     (Ghidra FUN_140141e90)
-inline constexpr int kVarcByte        = 0x7E;   // 3 bytes  : id = b0|(b1<<8); value = (int8)(0x80-b2)                                 (Ghidra FUN_140141fc0)
-inline constexpr int kVarbitVarint    = 0x74;   // var-byte : two LEB128 varints (7 bits per byte, low first, high bit = continue): varbit id, value (Ghidra FUN_1401420d0, config slot +0x230)
-inline constexpr int kVarpLong        = 0xA5;   // 10 bytes : value = i64 hi=(b1<<24)|(b0<<16)|(b3<<8)|b2, lo=(b5<<24)|(b4<<16)|(b7<<8)|b6; id = (b8<<8)|b9 (Ghidra FUN_140142390; op from the live descriptor table, see tools/rtx_pkt_table.py)
+inline constexpr int kVarcInt         = 0x77;   // 6 bytes  : id = ((b1-0x80)&0xFF)|(b0<<8); value = (b3<<24)|(b2<<16)|(b5<<8)|b4     (handler 0x140141e90)
+inline constexpr int kVarcByte        = 0x7E;   // 3 bytes  : id = b0|(b1<<8); value = (int8)(0x80-b2)                                 (handler 0x140141fc0)
+inline constexpr int kVarbitVarint    = 0x74;   // var-byte : two LEB128 varints (7 bits per byte, low first, high bit = continue): varbit id, value (handler 0x1401420d0, config slot +0x230)
+inline constexpr int kVarpLong        = 0xA5;   // 10 bytes : value = i64 hi=(b1<<24)|(b0<<16)|(b3<<8)|b2, lo=(b5<<24)|(b4<<16)|(b7<<8)|b6; id = (b8<<8)|b9 (handler 0x140142390; op from the live descriptor table, see tools/rtx_pkt_table.py)
 // Zone packets (docs/fieldmap-950-1.md "Zone packets"): a zone base, then items positioned by a
 // local (x << 4 | y) byte. Decoded in src/reader/EventZone.h.
 inline constexpr int kZoneBase        = 0x60;   // 3 bytes  : y offset, -x offset (zones from the map base), plane+0x80
@@ -39,6 +39,10 @@ inline constexpr int kProjectile      = 0x9A;   // 21 bytes : projectile (manage
 inline constexpr int kSound           = 0x2C;   // 8 bytes  : sound effect
 inline constexpr int kAreaSound       = 0xA4;   // 10 bytes : sound at a zone tile
 inline constexpr int kAreaSoundAbs    = 0x5F;   // 11 bytes : sound at a packed world tile
+inline constexpr int kHintArrow       = 0x62;   // 14 bytes : the game's hint arrow (engine markers)
+inline constexpr int kProjectile20    = 0x72;   // 20 bytes : projectile, zone sub-packet 0x0F body
+inline constexpr int kProjectile28    = 0xA9;   // 28 bytes : projectile, zone sub-packet 0x10 body
+inline constexpr int kProjectile29    = 0xC4;   // 29 bytes : projectile, zone sub-packet 0x11 body
 inline constexpr int kOpMax           = 0xDE;   // framer bound (`cmp eax,0xDE; ja`); 0xE5 on 949
 
 struct Expect { int op; int len; const char* name; };
@@ -74,6 +78,10 @@ inline constexpr Expect kExpected[] = {
     { kSound,            8, "sound"            },
     { kAreaSound,       10, "area_sound"       },
     { kAreaSoundAbs,    11, "area_sound"       },
+    { kHintArrow,       14, "hint_arrow"       },
+    { kProjectile20,    20, "projectile"       },
+    { kProjectile28,    28, "projectile"       },
+    { kProjectile29,    29, "projectile"       },
 };
 
 inline constexpr int kDefaultCaptured[] = {

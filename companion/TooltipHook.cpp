@@ -1,4 +1,5 @@
 #include "TooltipHook.h"
+#include "Signatures.h"
 
 #include <windows.h>
 #include <detours.h>
@@ -23,19 +24,7 @@ constexpr int kAny = -1;
 //   add rdx, r9                49 03 D1
 //   jmp rel32                  E9 <rel32>            <- the routine
 // Two ops share the routine through the same stub; every match has to name the same target.
-constexpr int kStubSig[] = {
-    0x4C, 0x8B, 0x89, kAny, kAny, kAny, kAny,
-    0x4C, 0x8B, 0xD2,
-    0xBA, kAny, kAny, kAny, kAny,
-    0x49, 0x8B, 0x41, 0x08,
-    0x4C, 0x8B, 0x80, kAny, kAny, kAny, kAny,
-    0xB8, kAny, kAny, kAny, kAny,
-    0x41, 0x80, 0xB8, kAny, kAny, kAny, kAny, 0x00,
-    0x4D, 0x8B, 0xC2,
-    0x0F, 0x44, 0xD0,
-    0x49, 0x03, 0xD1,
-    0xE9,
-};
+constexpr const auto& kStubSig = rtx::sig::kTooltipStub;
 constexpr std::size_t kStubLen = sizeof(kStubSig) / sizeof(kStubSig[0]);
 
 // Hover object: three strings of 24 bytes each, the library's small-string layout. The last byte

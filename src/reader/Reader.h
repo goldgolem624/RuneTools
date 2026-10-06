@@ -94,7 +94,12 @@ HostInfo              ReadHost();
 std::string SamplesJson();
 std::string HostJson();
 
-std::string ReaderHealthJson(std::uint32_t pid);
+// The update check for one live client, as JSON (see HealthRun.h). `runtimePinsJson`: the ids the
+// panels declare at run time ({"Feature":{"varbit":[..]}}), checked for existence when the
+// manifest has no record of them. Each run is also kept in the run history.
+std::string ReaderHealthJson(std::uint32_t pid, const std::string& runtimePinsJson = "");
+// The command line: rows that need the launcher's own channels are reported as not checked.
+void SetHealthHeadless(bool headless);
 
 std::string AccountKey(std::uint32_t pid);
 

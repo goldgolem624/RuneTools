@@ -7,6 +7,7 @@
 // NOTIFY(store=rcx, record+8=rdx). Found by its prologue, which the last two builds share.
 
 #include "ChatFilter.h"
+#include "Signatures.h"
 #include "ChatShare.h"
 
 #include <windows.h>
@@ -27,22 +28,7 @@ std::uint64_t            g_base      = 0;
 
 constexpr std::int32_t kNpcType = 116;
 
-const unsigned char kNotify[] = {
-    0x48,0x89,0x5C,0x24,0x10,            // mov [rsp+10],rbx
-    0x48,0x89,0x6C,0x24,0x18,            // mov [rsp+18],rbp
-    0x56,0x57,0x41,0x56,                 // push rsi; push rdi; push r14
-    0x48,0x83,0xEC,0x50,                 // sub rsp,50
-    0x48,0x8B,0x41,0x30,                 // mov rax,[rcx+30]   the per-type map's root
-    0x4C,0x8D,0x41,0x20,                 // lea r8,[rcx+20]
-    0x4C,0x8D,0x4A,0x18,                 // lea r9,[rdx+18]    the record's type
-    0x48,0x8B,0xFA,                      // mov rdi,rdx
-    0x48,0x8B,0xF1,                      // mov rsi,rcx
-    0x49,0x8B,0xD8,                      // mov rbx,r8
-    0x48,0x85,0xC0,                      // test rax,rax
-    0x74,0x1A,                           // jz
-    0x41,0x8B,0x09,                      // mov ecx,[r9]
-    0x90,                                // nop
-};
+constexpr const auto& kNotify = rtx::sig::kChatNotify;
 
 std::uint64_t FindNotify() {
     auto dos = (const IMAGE_DOS_HEADER*)g_base;

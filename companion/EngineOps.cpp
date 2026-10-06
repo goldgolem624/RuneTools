@@ -1,4 +1,6 @@
 #include "EngineOps.h"
+#include "Signatures.h"
+#include "MainDataOffsets.h"
 
 #include "MarkerShare.h"
 #include "FrameShare.h"
@@ -29,8 +31,8 @@ constexpr std::size_t kStrStack  = 0x10A8;   // 1000 entries of 0x20
 constexpr std::size_t kStrSp     = 0x8DA8;
 constexpr std::size_t kEntityRef = 0xC3B0;   // the character the state holds: reference, then the character
 constexpr std::size_t kEntityObj = 0xC3B8;
-constexpr std::size_t kOffPlayers = 0x19950;
-constexpr std::size_t kOffStatusByte = 0x19FA0;   // 30 = in the world
+constexpr std::size_t kOffPlayers = rtx::md::kPlayers;
+constexpr std::size_t kOffStatusByte = rtx::md::kStatus;   // 30 = in the world
 // Status byte off the client's root: 30 is in the world. Calling the engine's own operations while
 // the client is still loading is not safe, and there is nothing to answer for anyway.
 bool InTheWorld(std::uint8_t* root) {
@@ -135,6 +137,7 @@ bool NamesMatchBuild() {
     char buf[64] = {}; DWORD got = 0;
     if (h != INVALID_HANDLE_VALUE) { ReadFile(h, buf, sizeof(buf) - 1, &got, nullptr); CloseHandle(h); }
     std::string table(buf, got);
+    table = table.substr(0, table.find(' '));   // "950.1.0.0 6a9986f8": the build, then the exe's time stamp
     while (!table.empty() && (table.back() == '\r' || table.back() == '\n' || table.back() == ' ')) table.pop_back();
     const std::string running = RunningBuild();
     if (!running.empty() && table == running) {
@@ -237,11 +240,10 @@ namespace {
 // The projection operation, recognised by its own shape rather than trusted by number: it pops the
 // terrain flag, takes a position value from the string stack (kind 3) and reads the game view. A
 // build that changes that shape loses the feature instead of calling something else by accident.
-constexpr std::uint32_t kOpProject = 1738;
-const std::uint8_t kProjHead[] = { 0x40, 0x53, 0x56, 0x41, 0x56, 0x48, 0x83, 0xEC, 0x50,
-                                   0x8B, 0x82, 0xA0, 0x10, 0x00, 0x00, 0x48, 0x8B, 0xDA, 0xFF, 0xC8 };
-const std::uint8_t kProjKind3[] = { 0x80, 0x7E, 0x18, 0x03 };          // cmp byte [rsi+0x18], 3
-const std::uint8_t kProjView[]  = { 0x48, 0x8B, 0x89, 0xD0, 0x99, 0x01, 0x00 };   // mov rcx, [rcx+0x199d0]
+constexpr std::uint32_t kOpProject = rtx::sig::kOpProject;
+constexpr const auto& kProjHead = rtx::sig::kOpProjectHead;
+constexpr const auto& kProjKind3 = rtx::sig::kOpProjectKind3;          // cmp byte [rsi+0x18], 3
+constexpr const auto& kProjView = rtx::sig::kOpProjectView;   // mov rcx, [rcx+0x199d0]
 
 bool Contains(const std::uint8_t* p, std::size_t n, const std::uint8_t* pat, std::size_t len) {
     for (std::size_t i = 0; i + len <= n; ++i) if (std::memcmp(p + i, pat, len) == 0) return true;
@@ -268,21 +270,17 @@ bool g_poisoned = false;
 
 // The operation that puts the local player's position on the stack, recognised the same way: it
 // reads the account block, then the player registry, and leaves one position value.
-constexpr std::uint32_t kOpSelfPos = 1227;
-const std::uint8_t kSelfHead[] = { 0x40, 0x53, 0x48, 0x83, 0xEC, 0x30,
-                                   0x48, 0x8B, 0x81, 0xA8, 0x9F, 0x01, 0x00, 0x48, 0x8B, 0xDA, 0x48, 0x85, 0xC0 };
+constexpr std::uint32_t kOpSelfPos = rtx::sig::kOpSelfPos;
+constexpr const auto& kSelfHead = rtx::sig::kOpSelfPosHead;
 
 // The three operations that answer for a character: put the one with this index in the state's
 // hands, ask how high the game hangs its own overheads on it, and project its position lifted by
 // that much. Each is recognised by the first bytes of its own handler, the same in both clients and
 // shared with no other operation.
-constexpr std::uint32_t kOpBindEntity = 958, kOpOverlayHeight = 1002, kOpEntityScreen = 1668;
-const std::uint8_t kBindHead[]   = { 0x48, 0x89, 0x5C, 0x24, 0x08, 0x48, 0x89, 0x74, 0x24, 0x10, 0x57,
-                                     0x48, 0x83, 0xEC, 0x20, 0x8B, 0x9A, 0xA0, 0x10, 0x00 };
-const std::uint8_t kHeightHead[] = { 0x40, 0x53, 0x48, 0x83, 0xEC, 0x20, 0x48, 0x8B, 0x8A, 0xB8, 0xC3,
-                                     0x00, 0x00, 0x48, 0x8D, 0x9A, 0x00, 0x01, 0x00, 0x00 };
-const std::uint8_t kEntScrHead[] = { 0x48, 0x89, 0x5C, 0x24, 0x08, 0x57, 0x48, 0x83, 0xEC, 0x20, 0x48,
-                                     0x8B, 0xF9, 0x48, 0x8B, 0xDA, 0x48, 0x8B, 0x8A, 0xB8 };
+constexpr std::uint32_t kOpBindEntity = rtx::sig::kOpBindEntity, kOpOverlayHeight = rtx::sig::kOpOverlayHeight, kOpEntityScreen = rtx::sig::kOpEntityScreen;
+constexpr const auto& kBindHead = rtx::sig::kOpBindHead;
+constexpr const auto& kHeightHead = rtx::sig::kOpHeightHead;
+constexpr const auto& kEntScrHead = rtx::sig::kOpEntityScreenHead;
 
 OpFn Verified(std::uint32_t op, const std::uint8_t* head, std::size_t len) {
     auto it = g_byNumber.find(op);

@@ -4952,4 +4952,360 @@ bool CheckCacheUpdate() {
 
 std::uint64_t CacheGeneration() { return g_cache_gen.load(); }
 
+// ---- update check: what the code relies on about one cache entry ----
+namespace {
+
+std::uint32_t Fnv32(const std::uint8_t* p, std::size_t n, std::uint32_t h = 2166136261u) {
+    for (std::size_t i = 0; i < n; ++i) { h ^= p[i]; h *= 16777619u; }
+    return h;
+}
+
+std::string Hex8(std::uint32_t v) {
+    char b[12]; std::snprintf(b, sizeof(b), "%08x", v);
+    return b;
+}
+
+// An index the cache view does not keep open (spot animations, models): opened on first ask and
+// dropped with the rest on a cache update.
+SqliteIndexFile* PinIndexLocked(int id) {
+    if (!g_store) return nullptr;
+    auto* f = g_store->Get(id);
+    if (!f) {
+        try { g_store->Add(id, 0); } catch (...) {}
+        f = g_store->Get(id);
+    }
+    return (f && f->ready()) ? f : nullptr;
+}
+
+std::vector<int> PinWant(const std::string& want) {
+    std::vector<int> out;
+    std::size_t at = 0;
+    while (at < want.size()) {
+        std::size_t e = want.find(',', at);
+        if (e == std::string::npos) e = want.size();
+        if (e > at) out.push_back(std::atoi(want.c_str() + at));
+        at = e + 1;
+    }
+    return out;
+}
+
+std::string PinVarbitLocked(int id) {
+    auto* cfg = g_store ? g_store->Get(kIndexConfigs) : nullptr;
+    if (!cfg || !cfg->ready()) return "?";
+    auto bytes = cfg->ReadFile(kVarbitArchive, id);
+    if (bytes.empty()) return {};
+    InputStream s(std::move(bytes));
+    int domain = -1, var = -1, lsb = -1, msb = -1;
+    while (s.remaining() > 0) {
+        int op = s.ReadUnsignedByte();
+        if (op == 0) break;
+        if (op == 1)       { domain = s.ReadUnsignedByte(); var = s.ReadUnsignedShort(); }
+        else if (op == 2)  { lsb = s.ReadUnsignedByte(); msb = s.ReadUnsignedByte(); }
+        else if (op == 16) { }
+        else return "op=" + std::to_string(op);          // a new opcode: the layout cannot be read
+    }
+    return "dom=" + std::to_string(domain) + ";var=" + std::to_string(var) + ";lo=" + std::to_string(lsb) + ";hi=" + std::to_string(msb);
+}
+
+std::string PinVarLocked(int archive, int id) {
+    auto* cfg = g_store ? g_store->Get(kIndexConfigs) : nullptr;
+    if (!cfg || !cfg->ready()) return "?";
+    auto bytes = cfg->ReadFile(archive, id);
+    if (bytes.empty()) return {};
+    InputStream s(std::move(bytes));
+    int type = 0;
+    while (s.remaining() > 0) {
+        int op = s.ReadUnsignedByte();
+        if (op == 0) break;
+        if (op == 3)        type = s.ReadUnsignedByte();
+        else if (op == 4)   s.ReadUnsignedByte();
+        else if (op == 7 || op == 8) { }
+        else if (op == 110) s.ReadUnsignedShort();
+        else return "op=" + std::to_string(op);
+    }
+    return "type=" + std::to_string(type);
+}
+
+// Enum: key and value type, entry count, the values at `want` keys; hash: every pair, sorted.
+std::string PinEnumLocked(int id, const std::string& want, bool hash) {
+    auto* index = g_store ? g_store->Get(kIndexEnums) : nullptr;
+    if (!index || !index->ready()) return "?";
+    auto bytes = index->ReadFile(id >> 8, id & 0xff);
+    if (bytes.empty()) return {};
+    InputStream s(std::move(bytes));
+    int kt = 0, vt = 0;
+    std::map<int, std::string> vals;
+    while (s.remaining() > 0) {
+        int op = s.ReadUnsignedByte();
+        if (op == 0) break;
+        if (op == 1 || op == 101)      kt = s.ReadUnsignedByte();
+        else if (op == 2 || op == 102) vt = s.ReadUnsignedByte();
+        else if (op == 3) s.ReadString();
+        else if (op == 4) s.ReadInt();
+        else if (op == 5) { int n = s.ReadUnsignedShort(); for (int i = 0; i < n; ++i) { int k = s.ReadInt(); vals[k] = "s:" + s.ReadString(); } }
+        else if (op == 6) { int n = s.ReadUnsignedShort(); for (int i = 0; i < n; ++i) { int k = s.ReadInt(); vals[k] = std::to_string(s.ReadInt()); } }
+        else if (op == 7) { s.ReadUnsignedShort(); int n = s.ReadUnsignedShort(); for (int i = 0; i < n; ++i) { int k = s.ReadUnsignedShort(); vals[k] = "s:" + s.ReadString(); } }
+        else if (op == 8) { s.ReadUnsignedShort(); int n = s.ReadUnsignedShort(); for (int i = 0; i < n; ++i) { int k = s.ReadUnsignedShort(); vals[k] = std::to_string(s.ReadInt()); } }
+        else if (op == 131 || op == 207 || op == 209) { }
+        else return "op=" + std::to_string(op);
+    }
+    if (hash) {
+        std::uint32_t h = 2166136261u;
+        for (const auto& kv : vals) {
+            const std::string one = std::to_string(kv.first) + "=" + kv.second + ";";
+            h = Fnv32(reinterpret_cast<const std::uint8_t*>(one.data()), one.size(), h);
+        }
+        return "h=" + Hex8(h) + ";n=" + std::to_string(vals.size());
+    }
+    std::string out = "kt=" + std::to_string(kt) + ";vt=" + std::to_string(vt) + ";n=" + std::to_string(vals.size());
+    for (int k : PinWant(want)) {
+        auto it = vals.find(k);
+        std::string v = it == vals.end() ? "-" : it->second;
+        if (v.size() > 40) v = "s:#" + Hex8(Fnv32(reinterpret_cast<const std::uint8_t*>(v.data()), v.size()));
+        for (char& c : v) if (c == ';' || c == '\t' || c == '=') c = '_';
+        out += ";k" + std::to_string(k) + "=" + v;
+    }
+    return out;
+}
+
+std::string PinStructLocked(int id, const std::string& want) {
+    const DecodedStruct* ds = struct_memo_locked(id);
+    if (!ds) return "?";
+    if (ds->ints.empty() && ds->strs.empty()) return {};
+    std::string out = "n=" + std::to_string(ds->ints.size() + ds->strs.size());
+    for (int k : PinWant(want))
+        out += ";p" + std::to_string(k) + "=" + (ds->ints.count(k) ? "i" : ds->strs.count(k) ? "s" : "-");
+    return out;
+}
+
+std::string PinParamLocked(int id) {
+    auto* cfg = g_store ? g_store->Get(kIndexConfigs) : nullptr;
+    if (!cfg || !cfg->ready()) return "?";
+    auto bytes = cfg->ReadFile(kParamsArchive, id);
+    if (bytes.empty()) return {};
+    ParamDef p;
+    const int st = DecodeParamFile(std::move(bytes), &p);
+    if (st) return "op=" + std::to_string(st);
+    return "type=" + std::to_string(p.type);
+}
+
+std::string PinDbTableLocked(int id, const std::string& want) {
+    auto* cfg = g_store ? g_store->Get(kIndexConfigs) : nullptr;
+    if (!cfg || !cfg->ready()) return "?";
+    auto bytes = cfg->ReadFile(kDbTablesArchive, id);
+    if (bytes.empty()) return {};
+    std::map<int, std::vector<int>> cols;
+    const int st = DecodeDbTableFile(std::move(bytes), &cols);
+    if (st) return "op=" + std::to_string(st);
+    std::string out = "cols=" + std::to_string(cols.size());
+    for (int c : PinWant(want)) {
+        auto it = cols.find(c);
+        out += ";c" + std::to_string(c) + "=";
+        if (it == cols.end()) { out += "-"; continue; }
+        for (std::size_t i = 0; i < it->second.size(); ++i) out += (i ? "." : "") + std::to_string(it->second[i]);
+    }
+    return out;
+}
+
+std::string PinIfaceLocked(int group, int comp) {
+    auto* index = g_store ? g_store->Get(kIndexInterfaces) : nullptr;
+    if (!index || !index->ready()) return "?";
+    const auto& entries = index->ref().entries();
+    if (group < 0 || group >= (int)entries.size() || entries[group].valid_file_ids.empty()) return {};
+    if (comp < 0) return "comps=" + std::to_string(entries[group].valid_file_ids.size());
+    auto bytes = index->ReadFile(group, comp);
+    if (bytes.empty()) return {};
+    IfaceCompDef d;
+    const int st = DecodeIfaceComp(std::move(bytes), d);
+    if (st == 256) return "undecodable";
+    int kids = 0;
+    for (int fid : entries[group].valid_file_ids) {
+        if (fid == comp) continue;
+        auto kb = index->ReadFile(group, fid);
+        if (kb.empty()) continue;
+        IfaceCompDef k;
+        if (DecodeIfaceComp(std::move(kb), k) != 256 && k.parent == comp) ++kids;
+    }
+    std::string out = "type=" + std::to_string(d.type) + ";parent=" + std::to_string(d.parent) + ";kids=" + std::to_string(kids);
+    if (d.type == 5) out += ";sprite=" + std::to_string(d.sprite);
+    return out;
+}
+
+// Inventory configs (archive 5): op 2 = u16 size.
+std::string PinInvLocked(int id) {
+    auto* cfg = g_store ? g_store->Get(kIndexConfigs) : nullptr;
+    if (!cfg || !cfg->ready()) return "?";
+    auto bytes = cfg->ReadFile(5, id);
+    if (bytes.empty()) return {};
+    InputStream s(std::move(bytes));
+    while (s.remaining() > 0) {
+        int op = s.ReadUnsignedByte();
+        if (op == 0) break;
+        if (op == 2) return "size=" + std::to_string(s.ReadUnsignedShort());
+        return "op=" + std::to_string(op);
+    }
+    return "size=0";
+}
+
+std::string PinSpriteLocked(int id) {
+    auto* index = g_store ? g_store->Get(kIndexSprites) : nullptr;
+    if (!index || !index->ready()) return "?";
+    auto raw = index->ReadFile(id, 0);
+    if (raw.empty()) return {};
+    int frames = 1;
+    if (!(raw.size() > 8 && raw[0] == 0x89 && raw[1] == 'P'))
+        frames = raw.size() >= 2 ? (((raw[raw.size() - 2] << 8) | raw[raw.size() - 1]) & 0x7FFF) : 0;
+    int w = 0, h = 0;
+    SpriteRawRgba(*index, id, w, h);
+    return "w=" + std::to_string(w) + ";h=" + std::to_string(h) + ";f=" + std::to_string(frames);
+}
+
+std::string PinScriptLocked(int id) {
+    auto* index = g_store ? g_store->Get(kIndexClientScript) : nullptr;
+    if (!index || !index->ready()) return "?";
+    auto bytes = index->ReadFile(id, 0);
+    if (bytes.empty()) return {};
+    return "h=" + Hex8(Fnv32(bytes.data(), bytes.size())) + ";n=" + std::to_string(bytes.size());
+}
+
+std::string PinArchiveLocked(int idx, int archive) {
+    auto* index = PinIndexLocked(idx);
+    if (!index) return "?";
+    const auto& entries = index->ref().entries();
+    if (archive < 0 || archive >= (int)entries.size() || entries[archive].valid_file_ids.empty()) return {};
+    const auto& e = entries[archive];
+    return "files=" + std::to_string(e.valid_file_ids.size()) + ";max=" + std::to_string(e.largest_file_id) +
+           ";crc=" + Hex8((std::uint32_t)e.crc);
+}
+
+bool PinExistsLocked(int idx, int archive, int file) {
+    auto* index = PinIndexLocked(idx);
+    if (!index) return false;
+    const auto& entries = index->ref().entries();
+    if (archive < 0 || archive >= (int)entries.size() || entries[archive].valid_file_ids.empty()) return false;
+    const auto& ids = entries[archive].valid_file_ids;
+    return std::find(ids.begin(), ids.end(), file) != ids.end();
+}
+
+}  // namespace
+
+std::string PinFingerprint(const std::string& kind, const std::string& key, const std::string& want) {
+    const int id = std::atoi(key.c_str());
+    // the definitions that carry a name go through their own readers, which take the lock themselves
+    auto clean = [](std::string n) {
+        for (char& c : n) if (c == ';' || c == '\t' || c == '=') c = ' ';
+        return n;
+    };
+    if (kind == "item") {
+        if (id < 0) return {};
+        ItemInfo it = GetItem(id);
+        return it.name.empty() ? std::string() : "name=" + clean(it.name);
+    }
+    if (kind == "npc") {
+        if (id < 0) return {};
+        NpcMeta m = GetNpc(id);
+        return m.name.empty() ? std::string() : "name=" + clean(m.name);
+    }
+    if (kind == "loc") {
+        if (id < 0) return {};
+        LocMeta m = GetLoc(id);
+        return m.name.empty() ? std::string() : "name=" + clean(m.name);
+    }
+    std::lock_guard<std::mutex> lk(g_mu);
+    EnsureInit();
+    if (!g_store) return "?";
+    if (kind == "varbit")   return PinVarbitLocked(id);
+    if (kind == "varp")     return PinVarLocked(60, id);
+    if (kind == "varc")     return PinVarLocked(62, id);
+    if (kind == "var") {    // "archive:id"
+        const std::size_t c = key.find(':');
+        if (c == std::string::npos) return {};
+        return PinVarLocked(std::atoi(key.c_str()), std::atoi(key.c_str() + c + 1));
+    }
+    if (kind == "enum")     return PinEnumLocked(id, want, false);
+    if (kind == "enumhash") return PinEnumLocked(id, want, true);
+    if (kind == "struct")   return PinStructLocked(id, want);
+    if (kind == "param")    return PinParamLocked(id);
+    if (kind == "dbtable")  return PinDbTableLocked(id, want);
+    if (kind == "iface") {  // "group" or "group:comp"
+        const std::size_t c = key.find(':');
+        return PinIfaceLocked(id, c == std::string::npos ? -1 : std::atoi(key.c_str() + c + 1));
+    }
+    if (kind == "inv")      return PinInvLocked(id);
+    if (kind == "sprite")   return PinSpriteLocked(id);
+    if (kind == "script")   return PinScriptLocked(id);
+    if (kind == "model")    return PinExistsLocked(47, id, 0) ? "exists=1" : std::string();
+    if (kind == "spotanim") return PinExistsLocked(21, id >> 8, id & 0xff) ? "exists=1" : std::string();
+    if (kind == "archive") {   // "index/archive"
+        const std::size_t c = key.find('/');
+        if (c == std::string::npos) return {};
+        return PinArchiveLocked(std::atoi(key.c_str()), std::atoi(key.c_str() + c + 1));
+    }
+    return "?";
+}
+
+IndexFacts IndexInfo(int index) {
+    IndexFacts f;
+    std::lock_guard<std::mutex> lk(g_mu);
+    EnsureInit();
+    auto* idx = PinIndexLocked(index);
+    if (!idx) return f;
+    f.open = true;
+    const auto& rt = idx->ref();
+    f.protocol = rt.protocol();
+    f.revision = rt.version();
+    f.archives = (int)rt.valid_archive_ids().size();
+    for (int a : rt.valid_archive_ids()) {
+        if (a > f.maxArchive) f.maxArchive = a;
+        if (a >= 0 && a < (int)rt.entries().size() && rt.entries()[a].largest_file_id > f.maxFile) f.maxFile = rt.entries()[a].largest_file_id;
+    }
+    f.failed = idx->FailedArchives();
+    return f;
+}
+
+int ArchiveRevision(int index, int archive) {
+    std::lock_guard<std::mutex> lk(g_mu);
+    EnsureInit();
+    auto* idx = PinIndexLocked(index);
+    if (!idx) return -1;
+    const auto& e = idx->ref().entries();
+    if (archive < 0 || archive >= (int)e.size() || e[archive].valid_file_ids.empty()) return -1;
+    return e[archive].version;
+}
+
+std::string CacheRoot() {
+    try { return ResolveCacheRoot(); } catch (...) { return {}; }
+}
+
+int MaxId(const std::string& kind) {
+    struct K { const char* kind; int index; int shift; int archive; };
+    static const K kKinds[] = {
+        { "item", kIndexItems, 8, -1 }, { "npc", kIndexNpcs, 7, -1 }, { "loc", kIndexLocations, 8, -1 },
+        { "enum", kIndexEnums, 8, -1 }, { "struct", kIndexStructs, 5, -1 }, { "varbit", kIndexConfigs, 0, kVarbitArchive },
+        { "param", kIndexConfigs, 0, kParamsArchive }, { "sprite", kIndexSprites, 0, -2 }, { "iface", kIndexInterfaces, 0, -2 },
+        { "achievement", kIndexAchievements, 7, -1 }, { "script", kIndexClientScript, 0, -2 },
+        { "dbtable", kIndexConfigs, 0, kDbTablesArchive },
+    };
+    std::lock_guard<std::mutex> lk(g_mu);
+    EnsureInit();
+    for (const auto& k : kKinds) {
+        if (kind != k.kind) continue;
+        auto* idx = PinIndexLocked(k.index);
+        if (!idx) return -1;
+        const auto& rt = idx->ref();
+        // the files an archive really holds (largest_file_id is the reader's split for split indexes)
+        auto maxFile = [&](int a) {
+            int m = -1;
+            if (a >= 0 && a < (int)rt.entries().size()) for (int f : rt.entries()[a].valid_file_ids) m = std::max(m, f);
+            return m;
+        };
+        if (k.archive >= 0) return maxFile(k.archive);
+        int maxA = -1;
+        for (int a : rt.valid_archive_ids()) if (a > maxA) maxA = a;
+        if (k.archive == -2 || maxA < 0) return maxA;
+        return (maxA << k.shift) | std::max(0, maxFile(maxA));
+    }
+    return -1;
+}
+
 }  // namespace rtx::cache

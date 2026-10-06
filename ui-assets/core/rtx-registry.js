@@ -104,6 +104,27 @@
     return def;
   }
   for (const k in RTX.panels) tabAdopt(RTX.panels[k]);   // anything registered before this file ran
+  // The game ids a panel reads, declared beside the tables it reads them from so the two cannot
+  // drift. The health check compares them with the cache; the pins file records what each was.
+  // spec: { varbit: [..], varp: [..], varc: [..], enum: [..], struct: [..], param: [..], iface: ['g:c'],
+  //         sprite: [..], item: [..], npc: [..], loc: [..], script: [..], dbtable: { id: [cols] } }
+  const RTX_PINS = window.RTX_PINS = window.RTX_PINS || {};
+  function rtxPins(feature, spec) {
+    if (!feature || !spec || typeof spec !== 'object') return;
+    const into = RTX_PINS[feature] || (RTX_PINS[feature] = {});
+    for (const kind of Object.keys(spec)) {
+      const v = spec[kind];
+      if (v == null) continue;
+      const ids = Array.isArray(v) ? v : (typeof v === 'object' ? Object.keys(v) : String(v).split(','));
+      const list = into[kind] || (into[kind] = []);
+      for (const id of ids) { const s = String(id).trim(); if (s && list.indexOf(s) < 0) list.push(s); }
+      if (!Array.isArray(v) && typeof v === 'object') {
+        const want = into['want:' + kind] || (into['want:' + kind] = {});
+        for (const id of Object.keys(v)) want[id] = [].concat(v[id]).map(String);
+      }
+    }
+  }
+  window.rtxPins = rtxPins;
 
   const CAT_META = [
     { id: 'Character',   icon: '<circle cx="12" cy="8" r="4"/><path d="M4 21v-1a8 8 0 0 1 16 0v1"/>' },

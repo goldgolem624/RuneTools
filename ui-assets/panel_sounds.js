@@ -6,9 +6,11 @@
   // Track names from enum 1345 (1347 = the lowercase copy the game's own search uses).
   // Unlock state = clientscript-837 `music_getvar`: bit (index & 31) of that block's varp; 50 blocks x 32 = 1600 slots.
   const MUSIC_NAME_ENUM = 1345;
+  // One varp per block of 32 tracks (script 837); 0 = a block the game counts as all unlocked.
   const MUSIC_VARPS = [37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,
-                       61,62,63,64,65,66,67,68,69,70,71,3551,3691,4263,5019,5868,6221,6448,6920,
+                       61,62,63,0,64,65,66,67,68,69,70,71,3551,3691,4263,5019,5868,6221,6448,6920,
                        7035,7923,8282,8661,9681,10620,11995];
+  rtxPins('Sounds', { varp: MUSIC_VARPS.filter(Boolean), enum: [1345], script: [837] });
   let musicNames = null;         // {index: name}
   let musicUnlocked = null;      // Set of unlocked indexes
   let musicFetchAt = 0;
@@ -95,10 +97,10 @@
       catch (e) { musicNames = {}; }
     }
     try {
-      const d = JSON.parse(await rtxData.raw('state.varps', MUSIC_VARPS.join(',')) || '{}') || {};
+      const d = JSON.parse(await rtxData.raw('state.varps', MUSIC_VARPS.filter(Boolean).join(',')) || '{}') || {};
       const set = new Set();
       for (let b = 0; b < MUSIC_VARPS.length; b++) {
-        const v = (d[String(MUSIC_VARPS[b])] || 0) >>> 0;
+        const v = MUSIC_VARPS[b] ? (d[String(MUSIC_VARPS[b])] || 0) >>> 0 : 0xFFFFFFFF;
         if (!v) continue;
         for (let bit = 0; bit < 32; bit++) if ((v >>> bit) & 1) set.add(b * 32 + bit);
       }

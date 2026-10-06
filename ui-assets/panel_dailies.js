@@ -161,6 +161,9 @@
   };
   // Clan district sprites (CS2 script10599 code -> sprite id, shown by interface 1536).
   const VOS_SPRITES = { 1: 24205, 2: 24211, 3: 24206, 4: 24209, 5: 24204, 6: 24210, 7: 24207, 8: 24208 };
+  rtxPins('D&D Tracker', { varbit: DW_IDS.split(','), varp: [5441, 5442, 6989, 6990, 3079, 6601],
+    enum: [17112, 5886, 5887], param: [1266, 4940, 2235, 1271, 1273], dbtable: { 9: [0, 2, 9] },
+    sprite: Object.values(VOS_SPRITES), iface: ['1188'] });
   let dwVosReportedHour = '';   // 'YYYY-M-D-H' already reported (once per hour)
   // The hour stamp (vb 26416) does not clear on leaving Prifddinas, so stamp === hr is only trustworthy while in Priff.
   const VOS_TRUST_HOUR0 = true;

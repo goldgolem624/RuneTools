@@ -1,4 +1,5 @@
 #include "EngineMarkers.h"
+#include "Signatures.h"
 #include "EngineComponents.h"
 #include "EngineOps.h"
 #include "EngineIface.h"
@@ -21,37 +22,21 @@ constexpr int kAny = -1;
 // byte into a slot (top three bits) and a kind, and then names the arrow manager:
 //   movzx ebx, byte ptr [r8+rax] ; mov rax,[rcx] ; mov r14d,ebx ; shr r14d,5 ; and ebx,1Fh
 //   mov rdi, [rax+disp]                                   <- the manager, inside the client's root
-constexpr int kArrowSig[] = {
-    0x48, 0x89, 0x5C, 0x24, 0x20, 0x48, 0x89, 0x4C, 0x24, 0x08, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41, 0x56,
-    0x48, 0x81, 0xEC, kAny, kAny, 0x00, 0x00,
-    0x4C, 0x8B, 0x42, 0x18, 0x4C, 0x8B, 0xE1, 0x33, 0xED, 0x48, 0x8B, 0xF2,
-    0x49, 0x8D, 0x40, 0x01, 0x48, 0x89, 0x42, 0x18, 0x48, 0x8B, 0x42, 0x10,
-    0x41, 0x0F, 0xB6, 0x1C, 0x00, 0x48, 0x8B, 0x01,
-    0x44, 0x8B, 0xF3, 0x41, 0xC1, 0xEE, 0x05, 0x83, 0xE3, 0x1F,
-    0x48, 0x8B, 0xB8, kAny, kAny, kAny, kAny,
-};
+constexpr const auto& kArrowSig = rtx::sig::kArrowMessage;
 constexpr std::size_t kArrowLen = sizeof(kArrowSig) / sizeof(kArrowSig[0]);
 constexpr std::size_t kArrowDispAt = kArrowLen - 4;
 
 // The routine for the server's "trail" message: a slot byte, then a model that is either two
 // bytes or, with the top bit set, four.
-constexpr int kTrailSig[] = {
-    0x48, 0x83, 0xEC, 0x28, 0x4C, 0x8B, 0x42, 0x18, 0x4C, 0x8B, 0xD1, 0x49, 0x8D, 0x48, 0x01,
-    0x48, 0x89, 0x4A, 0x18, 0x48, 0x8B, 0x42, 0x10, 0x80, 0x3C, 0x08, 0x7F,
-    0x46, 0x0F, 0xB6, 0x1C, 0x00,
-};
+constexpr const auto& kTrailSig = rtx::sig::kTrailMessage;
 constexpr std::size_t kTrailLen = sizeof(kTrailSig) / sizeof(kTrailSig[0]);
 // further in: add rcx, disp ; mov rcx,[rcx] ; call   <- the trail manager, inside the root
-constexpr int kTrailMgrSig[] = { 0x48, 0x81, 0xC1, kAny, kAny, kAny, kAny, 0x48, 0x8B, 0x09, 0xE8 };
+constexpr const auto& kTrailMgrSig = rtx::sig::kTrailManager;
 constexpr std::size_t kTrailMgrLen = sizeof(kTrailMgrSig) / sizeof(kTrailMgrSig[0]);
 
 // The arrow manager's turn in every frame of the game's own thread. This is what gets hooked:
 // the two routines above touch the scene, and this is a moment the game itself touches it.
-constexpr int kFrameSig[] = {
-    0x48, 0x89, 0x5C, 0x24, 0x20, 0x57, 0x48, 0x83, 0xEC, 0x40, 0x48, 0x8D, 0x79, 0x50,
-    0x48, 0x89, 0x6C, 0x24, 0x50, 0x48, 0x8D, 0x6F, 0x40, 0x4C, 0x89, 0x74, 0x24, 0x60,
-    0x4C, 0x8B, 0xF1, 0x48, 0x8B, 0xDF, 0x48, 0x3B, 0xFD,
-};
+constexpr const auto& kFrameSig = rtx::sig::kArrowFrame;
 constexpr std::size_t kFrameLen = sizeof(kFrameSig) / sizeof(kFrameSig[0]);
 
 // Both managers: the root at +8, eight object slots from +0x10. The arrow manager also keeps one
@@ -105,17 +90,11 @@ bool Offered(const T (&known)[N], T model) {
 //   call [rax+110h] ; test al,al ; je       (is it shown at all)
 //   mov r9,[rsp+60h] ; mov eax,[r9+flags]   (the pass)
 //   test al,3 ; jne ; test al,4 ; jne ; test al,20h ; je
-constexpr int kTileDrawSig[] = {
-    0x48, 0x89, 0x5C, 0x24, 0x08, 0x48, 0x89, 0x74, 0x24, 0x10, 0x57, 0x48, 0x83, 0xEC, 0x30,
-    0x48, 0x8B, 0x01, 0x49, 0x8B, 0xF8, 0x48, 0x8B, 0xF2, 0x48, 0x8B, 0xD9,
-    0xFF, 0x90, 0x10, 0x01, 0x00, 0x00, 0x84, 0xC0, 0x74, kAny,
-    0x4C, 0x8B, 0x4C, 0x24, 0x60, 0x41, 0x8B, 0x81, kAny, kAny, 0x00, 0x00,
-    0xA8, 0x03, 0x75, kAny, 0xA8, 0x04, 0x75, kAny, 0xA8, 0x20, 0x74, kAny,
-};
+constexpr const auto& kTileDrawSig = rtx::sig::kTileDraw;
 constexpr std::size_t kTileDrawLen = sizeof(kTileDrawSig) / sizeof(kTileDrawSig[0]);
 constexpr std::size_t kTileDrawFlagsAt = 45;
 // and, a little further, the hand-over itself: mov [rsp+20h],rax ; call rel32
-constexpr int kTileSubmitSig[] = { 0x48, 0x89, 0x44, 0x24, 0x20, 0xE8 };
+constexpr const auto& kTileSubmitSig = rtx::sig::kTileSubmit;
 constexpr std::size_t kTileSubmitLen = sizeof(kTileSubmitSig) / sizeof(kTileSubmitSig[0]);
 constexpr std::size_t kShownMethod = 0x110;
 constexpr std::uint32_t kPassSkipped = 0x07, kPassTile = 0x20;
@@ -123,7 +102,7 @@ constexpr std::uint32_t kPassSkipped = 0x07, kPassTile = 0x20;
 // Inside the frame routine the game turns the feet arrow and then has the node take the change in:
 //   mov r8d, 45h ; movss [rbx+..],xmm0 ; mov rdx,rbx ; mov rcx,rbx ; call rel32
 // That call is how a moved node is made to show it.
-constexpr int kRefreshSig[] = { 0x41, 0xB8, 0x45, 0x00, 0x00, 0x00 };
+constexpr const auto& kRefreshSig = rtx::sig::kArrowRefresh;
 constexpr std::size_t kRefreshLen = sizeof(kRefreshSig) / sizeof(kRefreshSig[0]);
 constexpr std::uint32_t kRefreshMoved = 0x07;
 

@@ -129,6 +129,8 @@
     <ClInclude Include="ChatFilter.h" />
     <ClInclude Include="ChatShare.h" />
     <ClInclude Include="InputFilter.h" />
+    <ClInclude Include="Signatures.h" />
+    <ClInclude Include="MainDataOffsets.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
 </Project>

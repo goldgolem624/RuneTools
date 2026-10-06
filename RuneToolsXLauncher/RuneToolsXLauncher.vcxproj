@@ -166,6 +166,12 @@
     <ClInclude Include="..\src\reader\BankCache.h" />
     <ClInclude Include="..\src\reader\Reader.h" />
     <ClInclude Include="..\src\reader\Calibrate.h" />
+    <ClInclude Include="..\src\reader\HealthRun.h" />
+    <ClInclude Include="..\src\reader\CodeScan.h" />
+    <ClInclude Include="..\src\reader\Pins.h" />
+    <ClInclude Include="..\src\reader\BootLog.h" />
+    <ClInclude Include="..\companion\Signatures.h" />
+    <ClInclude Include="..\companion\MainDataOffsets.h" />
     <ClInclude Include="..\src\shared\Log.h" />
     <ClInclude Include="..\src\shared\MachineFingerprint.h" />
   </ItemGroup>
@@ -180,6 +186,10 @@
     <ClCompile Include="..\src\cache\CachePath.cpp" />
     <ClCompile Include="..\src\cache\CacheReader.cpp" />
     <ClCompile Include="..\src\reader\Calibrate.cpp" />
+    <ClCompile Include="..\src\reader\HealthRun.cpp" />
+    <ClCompile Include="..\src\reader\CodeScan.cpp" />
+    <ClCompile Include="..\src\reader\Pins.cpp" />
+    <ClCompile Include="..\src\reader\BootLog.cpp" />
     <ClCompile Include="..\src\cache\FileContainer.cpp" />
     <ClCompile Include="..\src\cache\InputStream.cpp" />
     <ClCompile Include="..\src\cache\ItemType.cpp" />
@@ -317,6 +327,10 @@
           DestinationFolder="$(OutDir)"
           SkipUnchangedFiles="true"
           Condition="Exists('$(ProjectDir)..\ui-assets\wd_table.bin')" />
+    <Copy SourceFiles="$(ProjectDir)..\ui-assets\rtx_pins.tsv"
+          DestinationFolder="$(OutDir)"
+          SkipUnchangedFiles="true"
+          Condition="Exists('$(ProjectDir)..\ui-assets\rtx_pins.tsv')" />
     <Copy SourceFiles="$(ProjectDir)..\ui-assets\pdb_5554.bin"
           DestinationFolder="$(OutDir)"
           SkipUnchangedFiles="true"
@@ -337,7 +351,7 @@
   -->
   <Target Name="BuildInstaller" AfterTargets="StageRuntime"
           Condition="'$(Configuration)|$(Platform)'=='Release|x64'"
-          Inputs="$(OutDir)RuneToolsXLauncher.exe;$(OutDir)rtxscene.dll;$(ProjectDir)..\ui-assets\launcher.html;$(ProjectDir)..\ui-assets\client.html;$(ProjectDir)..\ui-assets\core\*;$(ProjectDir)..\ui-assets\rtx_vars.js;$(ProjectDir)..\ui-assets\quest_guides.js;$(ProjectDir)..\ui-assets\panel_*.js;$(ProjectDir)..\ui-assets\items.pack;$(ProjectDir)..\ui-assets\items_extra.pack;$(ProjectDir)..\ui-assets\wd_table.bin;$(ProjectDir)..\ui-assets\pdb_5554.bin;$(ProjectDir)..\installer\RuneToolsX.iss"
+          Inputs="$(OutDir)RuneToolsXLauncher.exe;$(OutDir)rtxscene.dll;$(ProjectDir)..\ui-assets\launcher.html;$(ProjectDir)..\ui-assets\client.html;$(ProjectDir)..\ui-assets\core\*;$(ProjectDir)..\ui-assets\rtx_vars.js;$(ProjectDir)..\ui-assets\quest_guides.js;$(ProjectDir)..\ui-assets\panel_*.js;$(ProjectDir)..\ui-assets\items.pack;$(ProjectDir)..\ui-assets\items_extra.pack;$(ProjectDir)..\ui-assets\wd_table.bin;$(ProjectDir)..\ui-assets\rtx_pins.tsv;$(ProjectDir)..\ui-assets\pdb_5554.bin;$(ProjectDir)..\installer\RuneToolsX.iss"
           Outputs="$(ProjectDir)..\installer\Output\RuneToolsXSetup.exe">
     <PropertyGroup>
       <ISCC Condition="'$(ISCC)'=='' And Exists('$(LocalAppData)\Programs\Inno Setup 6\ISCC.exe')">$(LocalAppData)\Programs\Inno Setup 6\ISCC.exe</ISCC>

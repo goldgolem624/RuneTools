@@ -16,6 +16,13 @@
 #include "../../companion/NetProbeShare.h" // decoded server->client packet feed (companion framer hook)
 #include "../../companion/EventShare.h"    // opcode-filtered event ring (the event channel)
 #include "../../companion/ServerOps.h"     // per-build server opcodes (single source, see the header)
+#include "../../companion/FrameShare.h"
+#include "../../companion/MainDataOffsets.h"
+#include "../../companion/Signatures.h"
+#include "HealthRun.h"
+#include "CodeScan.h"
+#include "Pins.h"
+#include "BootLog.h"
 
 #include <Windows.h>
 #include <TlHelp32.h>
@@ -35,7 +42,10 @@
 #include <ctime>
 #include <filesystem>
 #include <functional>
+#include <iterator>
+#include <map>
 #include <mutex>
+#include <set>
 #include <optional>
 #include <array>
 #include <string>
@@ -59,8 +69,7 @@ namespace {
 
 // MainData ctor anchor: `mov [rip+disp32], rax` publishes the MainData root pointer to a global.
 // adjust = -32 walks back to the function start.
-const std::uint8_t  kMainAnchorBytes[] =
-    { 0x48, 0x2D, 0xA8, 0x00, 0x00, 0x00, 0x48, 0x83 };
+constexpr const auto& kMainAnchorBytes = rtx::sig::kMainAnchor;
 const std::size_t   kMainAnchorLen     = sizeof(kMainAnchorBytes);
 constexpr int       kMainAnchorAdjust  = -32;
 // Client cycle counter, u32 at root + this, 50/s (20ms units). From the CLIENTCLOCK engine op
@@ -111,8 +120,7 @@ constexpr std::uint32_t kVarNodeNext     = 0x28;
 
 // Tick anchor: `FF 81 F0 DB 00 00` = INC dword [RCX+0xDBF0], preceded in the same prologue by
 // `48 8B 0D <disp32>` = MOV RCX, [rip+disp32] (the owner global).
-const std::uint8_t  kTickIncBytes[] =
-    { 0xFF, 0x81, 0xF0, 0xDB, 0x00, 0x00 };
+constexpr const auto& kTickIncBytes = rtx::sig::kTickInc;
 const std::size_t   kTickIncLen     = sizeof(kTickIncBytes);
 constexpr std::uint32_t kTickCounterOff = 0xDBF0;  // u32 at owner + this
 
@@ -921,7 +929,7 @@ Snapshot sample_one(State& s) {
 
             // Character name: account (root+0x19FA8) JagString @+0x68; empty means "not set", so
             // fall back to Player (account+0x58) @+0xF8 as CHAT_PLAYERNAME (op 220) does.
-            auto acct = rpm<std::uint64_t>(s.proc, *root + (kOffStatus + 0x8));
+            auto acct = rpm<std::uint64_t>(s.proc, *root + kOffAccount);
             if (acct && *acct > 0x10000) {
                 std::string name = read_jagstring(s.proc, *acct + 0x68);
                 if (name.empty()) {
@@ -2288,6 +2296,12 @@ std::string VarDomainStoresJson(std::uint32_t pid) {
     auto root = rpm<std::uint64_t>(h, ps.mgva);
     if (!root || *root <= 0x10000) return "{}";
     const std::uint64_t kTableVt = ps.mod_base ? ps.mod_base + 0xB609C0 : 0;
+    std::uint64_t pinnedVt = 0;   // the class vtable the pins file records for this exe
+    if (ps.mod_base) {
+        const std::int32_t lfanew = rpm<std::int32_t>(h, ps.mod_base + 0x3C).value_or(0);
+        const std::uint32_t stamp = (lfanew > 0 && lfanew < 0x1000) ? rpm<std::uint32_t>(h, ps.mod_base + (std::uint64_t)lfanew + 8).value_or(0) : 0;
+        if (const std::uint32_t rva = stamp ? rtx::pins::PinnedRva("vartableVt", stamp) : 0) pinnedVt = ps.mod_base + rva;
+    }
     // The store class vtable sits at a different RVA in each rs2client.exe build (OpenGL and Vulkan
     // are separate binaries), so beyond the pinned RVA accept any vtable that lies in the image and
     // whose first slots are code pointers into the image. No RTTI is present to name the class.
@@ -2296,6 +2310,7 @@ std::string VarDomainStoresJson(std::uint32_t pid) {
     };
     auto vt_ok = [&](std::uint64_t vt) {
         if (kTableVt && vt == kTableVt) return true;
+        if (pinnedVt && vt == pinnedVt) return true;
         if (!in_image(vt)) return false;
         for (int i = 0; i < 5; ++i)
             if (!in_image(rpm<std::uint64_t>(h, vt + (std::uint64_t)i * 8).value_or(0))) return false;
@@ -2650,9 +2665,19 @@ struct OpTableMemo { std::uint64_t base = 0, size = 0, tbl = 0, at = 0; };
 std::mutex g_optable_mu;
 std::unordered_map<std::uint32_t, OpTableMemo> g_optable;
 
+// The table global for this exe as the pins file records it (per PE time stamp), 0 when none.
+std::uint64_t pinned_optable_rva(HANDLE h, std::uint64_t base) {
+    const std::int32_t lfanew = rpm<std::int32_t>(h, base + 0x3C).value_or(0);
+    if (lfanew <= 0 || lfanew > 0x1000) return 0;
+    const std::uint32_t stamp = rpm<std::uint32_t>(h, base + (std::uint64_t)lfanew + 8).value_or(0);
+    return stamp ? rtx::pins::PinnedRva("optable", stamp) : 0;
+}
+
 std::uint64_t cached_optable(std::uint32_t pid, HANDLE h, std::uint64_t base, std::uint64_t size) {
     if (auto t = rpm<std::uint64_t>(h, base + kOpTableRva); t && optable_valid(h, *t))
         return *t;
+    if (const std::uint64_t pin = pinned_optable_rva(h, base))
+        if (auto t = rpm<std::uint64_t>(h, base + pin); t && optable_valid(h, *t)) return *t;
     OpTableMemo m;
     { std::lock_guard<std::mutex> lk(g_optable_mu);
       auto it = g_optable.find(pid);
@@ -3030,7 +3055,7 @@ std::string EventsJson(std::uint32_t pid, std::uint64_t since) {
             const std::size_t mark = out.size();
             if (!ev_decode(out, r.opcode, r.payload, n, r.length)) {
                 out.resize(mark);
-                if ((r.opcode == 0x05 || r.opcode == 0x51) && n >= 7) {
+                if (r.opcode == rtx::sops::kGeOffer && n >= 7 && r.payload[4] < kGESlotCount) {
                     // ge_offer: bytes 0-3 fixed 00 02 07 03, byte 4 slot, bytes 5-6 item id (BE); rest unknown,
                     const int slot = (int)r.payload[4];
                     const int item = ((int)r.payload[5] << 8) | (int)r.payload[6];
@@ -3067,7 +3092,7 @@ bool EventsMaskSet(std::uint32_t pid, const std::uint32_t mask[8]) {
         UnmapViewOfFile(reinterpret_cast<LPCVOID>(sh)); CloseHandle(h); return false;
     }
     for (int i = 0; i < 8; ++i) sh->mask[i] = mask[i];
-    sh->mask[0] &= ~(1u << 0x15);                             // never message_game
+    sh->mask[rtx::sops::kMessageGame >> 5] &= ~(1u << (rtx::sops::kMessageGame & 31));   // never message_game
     MemoryBarrier();
     sh->maskSet = 1;
     UnmapViewOfFile(reinterpret_cast<LPCVOID>(sh));
@@ -6020,7 +6045,7 @@ std::string HoverEntityJson(std::uint32_t pid) {
     bool targetless = verb == "Walk here" || verb == "Cancel" || verb == "Continue" || name.empty();
     if (targetless) return out + "}";
     if (ref > 0) {
-        constexpr std::uint64_t kContainer = 0x199D0, kActiveIdx = 0x70, kEntryArr = 0x58,
+        constexpr std::uint64_t kContainer = rtx::scn::kContainer, kActiveIdx = 0x70, kEntryArr = 0x58,
                                 kEntryWv = 0x8, kVecBegin = 0x138, kVecEnd = 0x140,
                                 kSecPtr = rtx::scn::kSecPtr, kType = rtx::scn::kType, kUid = rtx::scn::kUid,
                                 kPosX = 0x270, kPosY = 0x278, kNpcCfg = 0x1080;
@@ -7225,9 +7250,9 @@ static void collect_ability_names(HANDLE h, std::uint64_t root,
             while (!stack.empty() && guard < 8000) {
                 ++guard;
                 std::uint64_t node = stack.back(); stack.pop_back();
-                int id = r16(node + 0x1b0);
-                if (id > 0 && id < 0xFFFF) {
-                    std::string nm = iface_text(h, node);   // *(node+0x90), escaped UTF-8
+                int id = rpm<std::int32_t>(h, node + 0x1a8).value_or(0);   // the slot icon's sprite = the cooldown key
+                if (id > 0 && id < 0x100000) {
+                    std::string nm = iface_text(h, node);   // *(node+0xB8), escaped UTF-8
                     if (!nm.empty()) {
                         std::string clean; bool intag = false;   // strip <col=..>/</col> tags
                         for (char ch : nm) {
@@ -7373,12 +7398,17 @@ static std::string box_keybind(HANDLE h, std::uint64_t box, int& mod, std::strin
 }
 
 
-// Depth-first collect bound abilities under `node`: name at *(node+0x90), id u16 at +0x1b0.
+// Depth-first collect bound abilities under `node`: name at *(node+0xB8), ability id = the slot icon's
+// sprite at +0x1A8 (the cooldown key; +0x188 through 949-5), item slots carry the item at +0x1D8.
 static void abar_collect(HANDLE h, std::uint64_t node, std::uint64_t parent, std::uint64_t gp,
                          int depth, std::vector<AbarSlot>& dst) {
     if (depth > 14 || dst.size() >= 64) return;
-    int id = (int)rpm<std::uint16_t>(h, node + 0x1b0).value_or(0);
-    if (id > 0 && id < 0xFFFF) {
+    int id = rpm<std::int32_t>(h, node + 0x1a8).value_or(0);
+    {
+        const int slotItem = rpm<std::int32_t>(h, node + 0x1d8).value_or(0);
+        if (slotItem > 0 && slotItem < 200000) id = slotItem;   // an item slot is keyed by its item
+    }
+    if (id > 0 && id < 0x100000) {
         std::string nm = iface_text(h, node);             // *(node+0x90), escaped UTF-8
         if (!nm.empty()) {
             std::string clean; bool intag = false;        // strip <col=..>/</col> tags
@@ -7427,9 +7457,8 @@ std::string ActionBarJson(std::uint32_t pid) {
     auto r32 = [&](std::uint64_t a){ return rpm<std::int32_t>(h, a).value_or(0); };
     std::uint64_t gs, ge; iface_groups_range(h, *rootv, gs, ge);
     if (!gs) return kEmpty;
-    // Engine wall-clock ms at module+0xED2FF8 (949 RVA).
-    long long clock = (long long)(ps.mod_base
-        ? rpm<std::uint64_t>(h, ps.mod_base + 0xED2FF8).value_or(0) : 0);
+    // Engine wall-clock ms: the counter beside the MainData global (the 949 module RVA is a constant on 950-1).
+    long long clock = (long long)rpm<std::uint64_t>(h, ps.mgva + 0x10).value_or(0);
     long long cycles = (long long)rpm<std::uint32_t>(h, *rootv + kOffClientClock).value_or(0);
     const int bars[5] = { 1430, 1670, 1671, 1672, 1673 };
     std::string out = "{\"clock\":" + std::to_string(clock) +
@@ -7465,7 +7494,7 @@ std::string ActionBarJson(std::uint32_t pid) {
 }
 
 // Cooldown hashmap at root+0x19FB8 on 950-1 (0x19F78 before): buckets ptr @mgr+0x38178, cap @+0x38180;
-// node {key i32@0, expiry i64@+8 in engine-clock ms (base+0xED2FF8, 949 RVA, stale on 950-1), flag u8@+0x10, next@+0x18}.
+// node {key i32@0, expiry i64@+8 in engine-clock ms (the counter at MainData global + 0x10), flag u8@+0x10, next@+0x18}.
 std::string AbilityCooldownsJson(std::uint32_t pid) {
     const char* kEmpty = "{\"cooldowns\":[]}";
     auto ps = snap_proc(pid);
@@ -7475,7 +7504,7 @@ std::string AbilityCooldownsJson(std::uint32_t pid) {
     auto rootv = rpm<std::uint64_t>(h, ps.mgva);
     if (!rootv || *rootv <= 0x10000) return kEmpty;
     std::uint64_t mgr     = *rootv + 0x19fb8;   // 0x19f78 through 949-5 (+0x40 on 950-1)
-    std::uint64_t clock   = rpm<std::uint64_t>(h, ps.mod_base + 0xED2FF8).value_or(0);
+    std::uint64_t clock   = rpm<std::uint64_t>(h, ps.mgva + 0x10).value_or(0);
     std::uint64_t buckets = rpm<std::uint64_t>(h, mgr + 0x38178).value_or(0);
     std::uint32_t cap     = rpm<std::uint32_t>(h, mgr + 0x38180).value_or(0);
     if (buckets <= 0x10000 || cap == 0 || cap > 100000) return kEmpty;
@@ -8395,11 +8424,11 @@ bool BuildOverlayFrame(std::uint32_t pid, bool want_players, bool want_npcs,
 
 
 std::string PlayerInfoJson(std::uint32_t pid) {
-    constexpr std::uint64_t kContainer = 0x199D0, kActiveIdx = 0x70, kEntryArr = 0x58,
+    constexpr std::uint64_t kContainer = rtx::scn::kContainer, kActiveIdx = 0x70, kEntryArr = 0x58,
                             kEntryWv = 0x8, kVecBegin = 0x138,
                             kVecEnd = 0x140, kSecPtr = rtx::scn::kSecPtr, kType = rtx::scn::kType, kUid = rtx::scn::kUid,
-                            kPosX = 0x270, kPosY = 0x278, kAnim = 0xA90,
-                            kPlayerData = 0x19FA8, kLocalUid = 0x48;
+                            kPosX = 0x270, kPosY = 0x278, kAnim = 0xA90, kLocalUid = 0x48;
+    const std::uint64_t kPlayerData = kOffAccount;
     auto ps = snap_proc(pid);
     if (!ps)
         return "{\"in\":false}";
@@ -8495,20 +8524,24 @@ std::string PlayerInfoJson(std::uint32_t pid) {
         }
     }
 
-    // Head progress bar: psec+0xF08 -> +0x28 = head-bar list, each a ptr with fill u8 @ +0x34.
+    // Head progress bar: overhead object psec+0xF08 -> head-bar vector (+0x28 .. +0x30) of 0x1B0
+    // elements, cycle stamp +0x78 and fill 0..255 +0x7C. Only elements with a recent stamp are live.
     int progress = -1;
     {
-        auto p1 = rpm<std::uint64_t>(h, psec + 0xF08);
-        auto p2 = (p1 && *p1 > 0x10000) ? rpm<std::uint64_t>(h, *p1 + 0x28) : std::nullopt;
-        if (p2 && *p2 > 0x10000) {
-            int hpc = rpm<std::int32_t>(h, psec + 0x114C).value_or(0);
-            int hpm = rpm<std::int32_t>(h, psec + 0x114C + 0x1C).value_or(0);
-            int hp255 = (hpm > 0) ? (int)((hpc * 255LL + hpm / 2) / hpm) : -999;   // health bar fill to exclude
+        auto ov = rpm<std::uint64_t>(h, psec + rtx::scn::kOverhead);
+        auto sb = (ov && *ov > 0x10000) ? rpm<std::uint64_t>(h, *ov + rtx::scn::kOvSlots) : std::nullopt;
+        auto se = (ov && *ov > 0x10000) ? rpm<std::uint64_t>(h, *ov + rtx::scn::kOvSlots + 8) : std::nullopt;
+        if (sb && se && *sb > 0x10000 && *se >= *sb && (*se - *sb) % rtx::scn::kBarStride == 0) {
+            const int now = rpm<std::int32_t>(h, *root + kOffClientClock).value_or(0);
+            int hpc = read_varp(h, *root, 13537), hpm = read_varp(h, *root, 13538);   // the local player's life points
+            int hp255 = (hpm > 0) ? (int)((hpc * 255LL + hpm / 2) / hpm) : -999;      // health bar fill to exclude
             int firstNonHp = -1;
-            for (int slot = 0; slot <= 0x40; slot += 8) {
-                auto hb = rpm<std::uint64_t>(h, *p2 + slot);
-                if (!hb || *hb <= 0x1000000000ull || *hb > 0x00007FFFFFFFFFFFull) continue;   // skip non-pointer slots
-                int fill = rpm<std::uint8_t>(h, *hb + 0x34).value_or(0);
+            const int n = (int)std::min<std::uint64_t>((*se - *sb) / rtx::scn::kBarStride, 8);
+            for (int k = 0; k < n; ++k) {
+                const std::uint64_t el = *sb + (std::uint64_t)k * rtx::scn::kBarStride;
+                const int stamp = rpm<std::int32_t>(h, el + rtx::scn::kBarStamp).value_or(-1);
+                const int fill = rpm<std::int32_t>(h, el + rtx::scn::kBarFill).value_or(-1);
+                if (stamp <= 0 || stamp > now + 50 || now - stamp > 30000 || fill < 0 || fill > 255) continue;
                 if (hp255 >= 0 && std::abs(fill - hp255) <= 12) continue;             // this is the HP bar
                 if (firstNonHp < 0) firstNonHp = fill;
                 if (fill > 0 && fill < 255) { progress = fill; break; }               // a partially-filled action bar
@@ -8561,7 +8594,7 @@ std::string PlayerInfoJson(std::uint32_t pid) {
         actor_overhead_json(h, psec, pSplats, pBar);
         int world = -1, mx = -1, my = -1, mb = 0, mods = 0, loadPct = -1, loadScreen = 0;
         if (root && *root > 0x10000) {
-            auto w = rpm<std::uint64_t>(h, *root + 0x199B0);
+            auto w = rpm<std::uint64_t>(h, *root + kOffWorld);
             auto w2 = (w && *w > 0x10000) ? rpm<std::uint64_t>(h, *w + 0x20) : std::nullopt;
             if (w2 && *w2 > 0x10000) world = rpm<std::int32_t>(h, *w2 + 8).value_or(-1);
             auto st = rpm<std::uint64_t>(h, *root + kOffVarcStore);      // 0x19920: the settings/input store
@@ -8601,7 +8634,7 @@ std::string SocialJson(std::uint32_t pid) {
     if (!root || *root <= 0x10000) return "{\"in\":false}";
     int world = -1;
     {
-        auto w = rpm<std::uint64_t>(h, *root + 0x199B0);
+        auto w = rpm<std::uint64_t>(h, *root + kOffWorld);
         auto w2 = (w && *w > 0x10000) ? rpm<std::uint64_t>(h, *w + 0x20) : std::nullopt;
         if (w2 && *w2 > 0x10000) world = rpm<std::int32_t>(h, *w2 + 8).value_or(-1);
     }
@@ -8637,11 +8670,11 @@ std::string SocialJson(std::uint32_t pid) {
 }
 
 bool PlayerTile(std::uint32_t pid, int& tx, int& ty, int& plane) {
-    constexpr std::uint64_t kContainer = 0x199D0, kActiveIdx = 0x70, kEntryArr = 0x58,
+    constexpr std::uint64_t kContainer = rtx::scn::kContainer, kActiveIdx = 0x70, kEntryArr = 0x58,
                             kEntryWv = 0x8, kVecBegin = 0x138,
                             kVecEnd = 0x140, kSecPtr = rtx::scn::kSecPtr, kType = rtx::scn::kType, kUid = rtx::scn::kUid,
-                            kPosX = 0x270, kPosY = 0x278,
-                            kPlayerData = 0x19FA8, kLocalUid = 0x48;
+                            kPosX = 0x270, kPosY = 0x278, kLocalUid = 0x48;
+    const std::uint64_t kPlayerData = kOffAccount;
     auto ps = snap_proc(pid);
     if (!ps) return false;
     HANDLE h = ps.h;
@@ -8821,431 +8854,1706 @@ std::string ServerOpsJson() {
     return out;
 }
 
-std::string ReaderHealthJson(std::uint32_t pid) {
-    std::string checks;
-    auto add = [&](const char* k, int ok, const std::string& d) {
-        if (!checks.empty()) checks.push_back(',');
-        checks += "{\"k\":\""; checks += k; checks += "\",\"ok\":" + std::to_string(ok) +
-                  ",\"d\":\"" + json_escape(d) + "\"}";
-    };
-    auto jcount = [](const std::string& j) {          // entry count of a flat {"k":v,..} dump
-        long q = 0; for (char c : j) if (c == '"') ++q; return (int)(q / 2);
-    };
-    std::string version;
-    {
-        std::lock_guard<std::mutex> lk(g_mu);
-        auto it = g_states.find((DWORD)pid);
-        if (it != g_states.end()) version = it->second.client_version;
-    }
+namespace {
 
-    std::string buildNote; int buildOk = 1;
-    if (!version.empty()) {
+using rtx::health::kFail;
+using rtx::health::kPass;
+using rtx::health::kWarn;
+using rtx::health::kUnchecked;
+
+std::atomic<bool> g_healthHeadless{ false };
+
+struct HCtx {
+    std::uint32_t pid = 0;
+    HANDLE h = nullptr;
+    std::uint64_t mgva = 0, base = 0, size = 0, root = 0;
+    std::string version, flavour;
+    std::uint32_t stamp = 0, imageSize = 0;
+    std::wstring exe;
+    int status = -1, world = -1;
+    bool inWorld = false;
+    int localUid = -1;
+    std::uint64_t localSec = 0;
+    std::uint64_t wv = 0, worker = 0;
+    bool cli = false;
+    std::string runtimePins;
+};
+
+std::string hx(std::uint64_t v) { return rtx::health::Hex(v); }
+
+std::uint32_t module_stamp(HANDLE h, std::uint64_t base) {
+    const std::int32_t lfanew = rpm<std::int32_t>(h, base + 0x3C).value_or(0);
+    if (lfanew <= 0 || lfanew > 0x1000) return 0;
+    return rpm<std::uint32_t>(h, base + (std::uint64_t)lfanew + 8).value_or(0);
+}
+
+bool printable_name(const std::string& s) {
+    if (s.empty() || s.size() > 24) return false;
+    for (unsigned char c : s) if (c < 0x20 || c == 0x7F) return false;
+    return true;
+}
+
+std::string norm_name(std::string s) {
+    std::string o;
+    for (std::size_t i = 0; i < s.size(); ++i) {
+        unsigned char c = (unsigned char)s[i];
+        if (c == 0xA0) { o.push_back(' '); continue; }
+        if (c == 0xC2 && i + 1 < s.size() && (unsigned char)s[i + 1] == 0xA0) { o.push_back(' '); ++i; continue; }
+        if (c == '_') { o.push_back(' '); continue; }
+        o.push_back((char)std::tolower(c));
+    }
+    return o;
+}
+
+std::string sec_name(HANDLE h, std::uint64_t sec) {
+    char b[40] = {};
+    rpm_bytes(h, sec + rtx::scn::kName, b, sizeof(b) - 1);
+    std::string s;
+    for (int i = 0; i < (int)sizeof(b) && b[i]; ++i) s.push_back(b[i]);
+    return s;
+}
+
+// Every entity sec in the scene's actor vector.
+void scene_secs(const HCtx& c, std::vector<std::pair<std::uint64_t, std::uint64_t>>& out) {   // (entity, sec)
+    out.clear();
+    if (!c.worker) return;
+    auto vb = rpm<std::uint64_t>(c.h, c.worker + rtx::scn::kVecBegin), ve = rpm<std::uint64_t>(c.h, c.worker + rtx::scn::kVecEnd);
+    if (!vb || !ve || *vb <= 0x10000 || *ve < *vb) return;
+    std::uint64_t n = (*ve - *vb) / 8; if (n > 20000) n = 20000;
+    std::vector<std::uint64_t> eps((std::size_t)n);
+    if (n && !rpm_bytes(c.h, *vb, eps.data(), (std::size_t)n * 8)) return;
+    for (std::uint64_t ep : eps) {
+        if (ep <= 0x10000) continue;
+        auto sec = rpm<std::uint64_t>(c.h, ep + rtx::scn::kSecPtr);
+        if (sec && *sec > 0x10000) out.emplace_back(ep, *sec);
+    }
+}
+
+template <class S> struct ShareMap {
+    HANDLE m = nullptr; const S* sh = nullptr;
+    ~ShareMap() { if (sh) UnmapViewOfFile((void*)sh); if (m) CloseHandle(m); }
+    bool open(const wchar_t* name) {
+        m = OpenFileMappingW(FILE_MAP_READ, FALSE, name);
+        if (!m) return false;
+        sh = reinterpret_cast<const S*>(MapViewOfFile(m, FILE_MAP_READ, 0, 0, 0));
+        MEMORY_BASIC_INFORMATION mbi{};
+        if (sh && (VirtualQuery(sh, &mbi, sizeof(mbi)) == 0 || mbi.RegionSize < sizeof(S))) { UnmapViewOfFile((void*)sh); sh = nullptr; }
+        return sh != nullptr;
+    }
+};
+
+int level_for_xp(long long xp, int cap) {
+    long long pts = 0; int lvl = 1;
+    for (int l = 1; l < cap; ++l) {
+        pts += (long long)std::floor(l + 300.0 * std::pow(2.0, l / 7.0));
+        if (xp >= pts / 4) lvl = l + 1; else break;
+    }
+    return lvl;
+}
+
+// ---- Build ----
+struct RevKey { const char* key; int index; int archive; const char* name; };
+const RevKey kRevKeys[] = {
+    { "2/5", 2, 5, "inventories" }, { "2/11", 2, 11, "params" }, { "2/34", 2, 34, "map scenes" }, { "2/35", 2, 35, "quests" },
+    { "2/36", 2, 36, "map elements" }, { "2/40", 2, 40, "dbtables" }, { "2/41", 2, 41, "dbrows" }, { "2/46", 2, 46, "hitmarks" },
+    { "2/60", 2, 60, "player vars" }, { "2/61", 2, 61, "npc vars" }, { "2/62", 2, 62, "client vars" }, { "2/63", 2, 63, "world vars" },
+    { "2/64", 2, 64, "region vars" }, { "2/65", 2, 65, "object vars" }, { "2/66", 2, 66, "clan vars" }, { "2/67", 2, 67, "clan setting vars" },
+    { "2/68", 2, 68, "campaign vars" }, { "2/69", 2, 69, "varbits" }, { "2/70", 2, 70, "var config 70" }, { "2/71", 2, 71, "var config 71" },
+    { "2/72", 2, 72, "var config 72" }, { "2/73", 2, 73, "var config 73" }, { "2/74", 2, 74, "var config 74" }, { "2/75", 2, 75, "group vars" },
+    { "2/76", 2, 76, "var config 76" }, { "2/77", 2, 77, "var config 77" },
+    { "3", 3, -1, "interfaces" }, { "5", 5, -1, "maps" }, { "8", 8, -1, "sprites" }, { "12", 12, -1, "scripts" }, { "14", 14, -1, "sound effects" },
+    { "16", 16, -1, "locs" }, { "17", 17, -1, "enums" }, { "18", 18, -1, "npcs" }, { "19", 19, -1, "items" }, { "22", 22, -1, "structs" },
+    { "23", 23, -1, "world map" }, { "40", 40, -1, "music" }, { "57", 57, -1, "achievements" },
+};
+
+std::map<std::string, std::string> parse_revs(const std::string& s) {
+    std::map<std::string, std::string> m;
+    std::size_t at = 0;
+    while (at < s.size()) {
+        std::size_t e = s.find(',', at); if (e == std::string::npos) e = s.size();
+        const std::string kv = s.substr(at, e - at);
+        const std::size_t eq = kv.find('=');
+        if (eq != std::string::npos) m[kv.substr(0, eq)] = kv.substr(eq + 1);
+        at = e + 1;
+    }
+    return m;
+}
+
+std::string read_small(const std::wstring& p) {
+    std::ifstream f(p.c_str(), std::ios::binary);
+    if (!f) return {};
+    std::string s((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+    return s;
+}
+
+std::string g_buildRevs;   // this run's cache revisions, for the builds file once the run is scored
+bool g_buildCarried = false;   // first record of the build the app last ran on: reviewed already
+
+void health_build(HCtx& c, rtx::health::Run& run) {
+    const char* G = "Build";
+    const rtx::codescan::ExeFacts ef = rtx::codescan::Facts(c.exe);
+    if (ef.ok) { c.stamp = ef.stamp; c.imageSize = ef.sizeOfImage; c.flavour = ef.flavour; }
+    if (c.stamp == 0 && c.base) c.stamp = module_stamp(c.h, c.base);
+    char st[16]; std::snprintf(st, sizeof(st), "%08x", c.stamp);
+    const std::string bl = rtx::pins::BuildLine(c.stamp);
+    const bool known = !bl.empty();
+    const std::string validated = rtx::pins::Field(bl, "validated");
+    // cache revisions of the archives and indexes the app reads
+    std::string revs, revJson;
+    for (const auto& k : kRevKeys) {
+        int r = k.archive >= 0 ? rtx::cache::ArchiveRevision(k.index, k.archive) : rtx::cache::IndexInfo(k.index).revision;
+        if (k.archive < 0 && !rtx::cache::IndexInfo(k.index).open) r = -1;
+        revs += (revs.empty() ? "" : ",") + std::string(k.key) + "=" + std::to_string(r);
+        revJson += (revJson.empty() ? "\"" : ",\"") + std::string(k.key) + "\":" + std::to_string(r);
+    }
+    g_buildRevs = revs;
+    run.Section("build", "{\"stamp\":\"" + std::string(st) + "\",\"flavour\":\"" + rtx::health::Escape(c.flavour) +
+                "\",\"imageSize\":\"" + hx(c.imageSize) + "\",\"version\":\"" + rtx::health::Escape(c.version) +
+                "\",\"exeVersion\":\"" + rtx::health::Escape(ef.version) + "\",\"known\":" + (known ? "true" : "false") +
+                ",\"validated\":\"" + rtx::health::Escape(validated) + "\"}");
+    run.Section("cache", "{\"root\":\"" + rtx::health::Escape(rtx::cache::CacheRoot()) + "\",\"gen\":" +
+                std::to_string(rtx::cache::CacheGeneration()) + ",\"rev\":{" + revJson + "}}");
+    run.Fact("build.version", c.version);
+    run.Fact("build.stamp", st);
+    run.Fact("build.flavour", c.flavour);
+    run.Fact("build.size", hx(c.imageSize));
+    for (const auto& kv : parse_revs(revs)) run.Fact("rev." + kv.first, kv.second);
+
+    const rtx::health::BuildState bs = rtx::health::BuildsLookup(c.version, st, c.flavour, revs);
+    g_buildCarried = !bs.exeSeen && !bs.prevLabel.empty() && bs.prevLabel == c.version;
+    std::string flav = c.flavour == "vulkan" ? "Vulkan" : c.flavour == "opengl" ? "OpenGL" : c.flavour;
+    std::string d = c.version + " " + flav + " " + st;
+    int ok = kPass;
+    if (!known) {
+        ok = kWarn;
+        d += ": exe not in the manifest (new build). Build-pinned features: scene blank, packet table, var table, zone table, sound origin labels";
+    } else {
+        d += ", validated " + (validated.empty() ? std::string("(no date)") : validated);
+    }
+    if (bs.known) {
+        if (!bs.reviewed) { ok = kWarn; d += "; first seen " + bs.firstSeen + ", not yet reviewed (a clean run or Mark reviewed clears this)"; }
+        else d += "; cache unchanged since " + bs.firstSeen;
+    } else if (bs.exeSeen) {
+        ok = kWarn;
+        const auto was = parse_revs(bs.prevRevs), now = parse_revs(revs);
+        std::string changed;
+        for (const auto& k : kRevKeys) {
+            auto a = was.find(k.key), b = now.find(k.key);
+            if (a != was.end() && b != now.end() && a->second != b->second) changed += std::string(changed.empty() ? "" : ", ") + k.name;
+        }
+        d += "; exe unchanged, cache changed: " + (changed.empty() ? std::string("revisions differ") : changed) + " (since " + bs.firstSeen + ")";
+    } else if (!bs.prevLabel.empty()) {
+        if (bs.prevLabel != c.version) { ok = kWarn; d += "; game updated from " + bs.prevLabel; }
+        else d += "; first fingerprint recorded (stamp and cache revisions now tracked)";
+    } else {
+        ok = kWarn;
+        d += "; first run on this exe";
+    }
+    run.Add(G, "build.game", "Game build", ok, d, "Everything", known ? "validated exe" : "a validated exe", st);
+
+    // CS2 export: what the generated tables and the op table were made from
+    {
         wchar_t up[MAX_PATH] = {};
-        if (GetEnvironmentVariableW(L"USERPROFILE", up, MAX_PATH)) {
-            std::wstring bp = std::wstring(up) + L"\\RuneToolsX\\lastbuild.txt";
-            std::string prev;
-            { std::ifstream f(bp.c_str()); if (f) std::getline(f, prev); }
-            if (prev.empty()) {
-                buildNote = "build " + version;
-            } else if (prev != version) {
-                buildOk = 2;
-                buildNote = "GAME UPDATED (" + prev + " -> " + version + "): watch the rows below";
-            } else {
-                buildNote = "build " + version + " (unchanged)";
-            }
-            if (prev != version) { std::ofstream f(bp.c_str(), std::ios::trunc); if (f) f << version; }
-        }
-    }
-
-    auto ps = snap_proc(pid);
-    add("Game client", ps ? 1 : 0, ps ? "connected" : "not connected");
-    if (!buildNote.empty()) add("Game build", buildOk, buildNote);
-    {
-        // The row is always there: silence would look like the check does not exist, when in fact
-        // it means the client could not be read.
-        const std::string cal = rtx::calib::Report();
-        if (cal.empty()) add("Client offsets", 0, "not calibrated");
-        else if (cal.find("registrar not recognised") != std::string::npos)
-            add("Client offsets", 0, "not recognised in this client build");
-        else add("Client offsets", cal.find("not found") == std::string::npos ? 1 : 0, cal);
-    }
-    if (!ps) return "{\"version\":\"" + json_escape(version) + "\",\"checks\":[" + checks + "]}";
-    HANDLE h = ps.h;
-
-    auto root = rpm<std::uint64_t>(h, ps.mgva);
-    bool rootOk = root && *root > 0x10000;
-    add("Game data", rootOk ? 1 : 0, rootOk ? "" : "not available (lobby / loading is normal)");
-
-    {
-        std::uint32_t tc = 0; double age = 0;
-        bool ok = TickState(pid, tc, age);
-        const bool stale = ok && age > 5000.0;
-        add("Game tick", ok ? (stale ? 0 : 1) : 0,
-            !ok ? "not found" : stale ? "found but not advancing" : ("tick " + std::to_string(tc)));
-    }
-    if (!rootOk) return "{\"version\":\"" + json_escape(version) + "\",\"checks\":[" + checks + "]}";
-
-    {
-        auto pdata = rpm<std::uint64_t>(h, *root + 0x19FA8);
-        int uid = (pdata && *pdata > 0x10000) ? rpm<std::int32_t>(h, *pdata + 0x48).value_or(-1) : -1;
-        add("Player", uid >= 0 ? 1 : 0, uid >= 0 ? "" : "not found (log in and re-run)");
-    }
-    {
-        int n = jcount(VarpsDumpAllJson(pid));
-        add("Player variables", n > 50 ? 1 : 0, std::to_string(n) + " tracked");
-    }
-    {
-        int n = jcount(VarcsDumpAllJson(pid));
-        add("Client variables", n > 0 ? 1 : 0, std::to_string(n) + " tracked");
-    }
-    {
-        std::uint64_t gs = 0, ge = 0; iface_groups_range(h, *root, gs, ge);
-        int groups = 0; bool frame = false;
-        if (gs && ge > gs) {
-            auto r64 = [&](std::uint64_t a){ return rpm<std::uint64_t>(h, a).value_or(0); };
-            for (std::uint64_t g = gs; g + 0x10 <= ge; g += 0x10) {
-                std::uint64_t ap2 = r64(g + 8);
-                if (ap2 > 0x10000) {
-                    int gid = rpm<std::int32_t>(h, ap2).value_or(-1);
-                    if (gid > 0 && gid < 70000) { ++groups; if (gid == 1477) frame = true; }
+        GetEnvironmentVariableW(L"USERPROFILE", up, MAX_PATH);
+        const std::wstring dir = std::wstring(up) + L"\\RuneToolsX\\cs2\\";
+        const std::string meta = read_small(dir + L"meta.json");
+        const std::string label = read_small(dir + L"client_version.txt");
+        rtx::health::JVal mv;
+        std::string det; int k = kPass;
+        if (meta.empty() || !rtx::health::ParseJson(meta, mv)) { k = kWarn; det = "no export (cs2\\meta.json missing)"; }
+        else {
+            std::string failed;
+            if (const rtx::health::JVal* f = mv.get("failed")) for (const auto& x : f->a) failed += (failed.empty() ? "" : ",") + x.s;
+            const std::string date = mv.str("date"), bn = mv.str("buildnr");
+            det = "exported " + date.substr(0, 10) + ", " + mv.str("ok") + "/" + mv.str("total") + " scripts";
+            if (!failed.empty()) { k = kWarn; det += "; scripts " + failed + " failed to decompile (tables built from them are stale)"; }
+            run.Fact("cs2.failed", failed);
+            run.Fact("cs2.buildnr", bn);
+            // cache revisions are pack times: content packed after the export is not in its tables
+            int y = 0, mo = 0, dd = 0, hh = 0, mi = 0, ss = 0;
+            if (std::sscanf(date.c_str(), "%d-%d-%dT%d:%d:%d", &y, &mo, &dd, &hh, &mi, &ss) == 6) {
+                std::tm tm{}; tm.tm_year = y - 1900; tm.tm_mon = mo - 1; tm.tm_mday = dd; tm.tm_hour = hh; tm.tm_min = mi; tm.tm_sec = ss;
+                const long long exported = (long long)_mkgmtime(&tm);
+                long long newest = 0; std::string newestName;
+                const auto now = parse_revs(revs);
+                for (const auto& rk : kRevKeys) {
+                    auto it = now.find(rk.key);
+                    const long long r = it == now.end() ? 0 : std::atoll(it->second.c_str());
+                    if (r > newest) { newest = r; newestName = rk.name; }
+                }
+                run.Fact("cs2.exported", std::to_string(exported));
+                run.Fact("cache.newestRev", std::to_string(newest) + " " + newestName);
+                if (exported > 0 && newest > 1000000000LL && newest > exported) {
+                    if (k == kPass) k = kWarn;
+                    det += "; the cache's " + newestName + " were packed after the export: export again";
                 }
             }
         }
-        add("Interfaces", (groups > 0 && frame) ? 1 : 0,
-            (groups > 0 && frame) ? (std::to_string(groups) + " open") : "game window layout not readable");
-    }
-    {
-        int xp[29] = {};
-        bool ok = SkillsXp(pid, xp);
-        bool sane = ok; long long tot = 0; int nz = 0;
-        for (int i = 0; i < 29 && sane; ++i) {
-            if (xp[i] < 0 || xp[i] > 1000000000) sane = false;
-            if (xp[i] > 0) ++nz;
-            tot += xp[i];
+        std::string lab = label;
+        while (!lab.empty() && (lab.back() == '\n' || lab.back() == '\r' || lab.back() == ' ')) lab.pop_back();
+        run.Fact("cs2.label", lab);
+        const std::string ev = ef.version;
+        if (!lab.empty() && lab.substr(0, lab.find(' ')) != ev) { k = kWarn; det += "; op table labelled " + lab + ", the exe is " + ev; }
+        WIN32_FILE_ATTRIBUTE_DATA a{}, b{};
+        if (GetFileAttributesExW((dir + L"opcode_handlers.json").c_str(), GetFileExInfoStandard, &a) &&
+            GetFileAttributesExW((dir + L"opcodes.json").c_str(), GetFileExInfoStandard, &b) &&
+            CompareFileTime(&a.ftLastWriteTime, &b.ftLastWriteTime) < 0) {
+            if (k == kPass) k = kWarn;
+            det += "; opcode_handlers.json is older than opcodes.json";
         }
-        add("Skills", (sane && nz > 0) ? 1 : 0,
-            (sane && nz > 0) ? (std::to_string(nz) + " skills read") : "values look wrong");
+        run.Add(G, "build.cs2", "Script export", k, det, "Game text, buff timers, op table, generated tables", "", "", "build.game");
     }
+}
+
+// ---- Context ----
+void health_context(HCtx& c, rtx::health::Run& run) {
+    const char* G = "Context";
+    run.Add(G, "context.client", "Game client", kPass, "attached, pid " + std::to_string(c.pid));
+    run.Add(G, "context.world", "In the world", c.inWorld ? kPass : kUnchecked,
+            c.inWorld ? "status 30, world " + std::to_string(c.world) : "status " + std::to_string(c.status) + ": live checks need a logged-in client");
+    const auto lines = rtx::pins::Lines();
+    const std::string perr = rtx::pins::Error();
+    std::wstring pf = rtx::pins::File();
+    std::string pfile;
+    for (wchar_t ch : pf) pfile.push_back(ch < 0x80 ? static_cast<char>(ch) : '?');
+    for (char& ch : pfile) if (ch == '\\') ch = '/';
+    const std::size_t slash = pfile.find_last_of('/');
+    run.Section("context", std::string("{\"inWorld\":") + (c.inWorld ? "true" : "false") +
+                ",\"status\":" + std::to_string(c.status) + ",\"process\":\"" + (c.cli ? "cli" : "launcher") +
+                "\",\"pins\":\"" + rtx::health::Escape(perr.empty() ? (slash == std::string::npos ? pfile : pfile.substr(slash + 1)) + " " + rtx::pins::Made() + " (" + std::to_string(lines->size()) + " pins)" : perr) +
+                "\",\"cacheGen\":" + std::to_string(rtx::cache::CacheGeneration()) + "}");
+}
+
+// ---- Calibration ----
+void health_calibration(HCtx& c, rtx::health::Run& run) {
+    const char* G = "Calibration";
+    const std::string why = rtx::calib::Why();
+    const rtx::calib::TableState ts = rtx::calib::Table();
+    const auto spots = rtx::calib::SpotChecks();
     {
-        std::string inv = InventoryJson(pid);
-        bool ok = inv.find("\"present\":true") != std::string::npos;
-        add("Backpack", ok ? 1 : 0, ok ? "" : "not readable");
+        std::string d = ts.usable ? (std::to_string(ts.handlers) + " handlers, " + std::to_string(ts.names) + " named, label " + ts.label)
+                                  : (why.empty() ? std::string("not run") : why);
+        run.Add(G, "calib.table", "Operation table", ts.usable ? kPass : kFail, d,
+                "Calibrated offsets|Engine ops by name|Asks|In-frame panels", "table for " + ts.exeVersion, ts.label, "code.exe");
+        run.Fact("calib.label", ts.label);
     }
-    {
-        std::string sc = SceneJson(pid, 2);
-        bool pOk = sc.find("\"players\":[{") != std::string::npos;
-        bool nOk = sc.find("\"npcs\":[{") != std::string::npos;
-        add("Nearby players", pOk ? 1 : 0, pOk ? "" : "not readable");
-        add("Nearby NPCs", nOk ? 1 : pOk ? 2 : 0,
-            nOk ? "" : pOk ? "none nearby (or walk broken; re-run near NPCs)" : "not readable");
+    if (!spots.empty()) {
+        int good = 0, checkable = 0; std::string bad;
+        for (const auto& s : spots) {
+            if (s.ok < 0) continue;
+            ++checkable;
+            if (s.ok == 1) ++good;
+            else bad += (bad.empty() ? "" : "; ") + s.op + " is " + std::to_string(s.number) + ", handler naming " + s.text + " is op " + s.owners;
+            run.Fact("calib.spot." + s.op, std::to_string(s.number) + " in [" + s.owners + "]");
+        }
+        run.Add(G, "calib.spots", "Self-naming handlers", bad.empty() ? (checkable ? kPass : kUnchecked) : kFail,
+                bad.empty() ? std::to_string(good) + "/" + std::to_string(checkable) + " carry the table's numbers" : bad,
+                "Operation table", std::to_string(checkable), std::to_string(good), "calib.table");
     }
-    {
-        int gx = 0, gy = 0, gw = 0, gh = 0, lw = 0, lh = 0;
-        const bool tree = read_gameview_rect(h, *root, gx, gy, gw, gh, &lw, &lh);
-        const int vw = read_varc(h, *root, 3001), vh = read_varc(h, *root, 3002);
-        std::string d2;
-        int ok2 = 0;
-        if (vw > 0 && vh > 0 && tree && gw > 0) {
-            const double r = (double)vw / (double)gw;
-            const bool sane = r > 0.2 && r < 5.0;
-            ok2 = sane ? 1 : 0;
-            d2 = std::to_string(vw) + "x" + std::to_string(vh) + " px, layout " +
-                 std::to_string(gw) + "x" + std::to_string(gh) +
-                 (lw > 0 ? ", window " + std::to_string(lw) : "");
-            if (!sane) d2 += " (spaces disagree)";
-        } else if (tree && gw > 0) { ok2 = 2; d2 = "layout only (viewport record missing)"; }
-        else if (vw > 0)           { ok2 = 2; d2 = "record only (layout tree missing)"; }
-        else                        { ok2 = 0; d2 = "not readable (world overlays will misplace)"; }
-        add("Overlay viewport", ok2, d2);
+    for (const auto& f : rtx::calib::Results()) {
+        const std::string id = std::string("calib.") + f.name;
+        const std::string key = std::string("Offset ") + f.name;
+        using O = rtx::calib::Outcome;
+        int ok = kPass; std::string d;
+        switch (f.status) {
+            case O::Found:   d = hx(f.found) + " from " + f.op; break;
+            case O::Moved:   ok = kWarn; d = "MOVED: compiled " + hx(f.compiled) + ", client " + hx(f.found) + " (from " + f.op + "), the client's in use"; break;
+            case O::NotFound: ok = kFail; d = "no read of the expected shape in " + std::string(f.op) + "; compiled " + hx(f.compiled) + " in use"; break;
+            case O::Ambiguous: ok = kFail; d = std::string(f.op) + " reads more than one candidate; compiled " + hx(f.compiled) + " in use"; break;
+            case O::NoOp:    ok = kFail; d = std::string(f.op) + " is not in the operation table"; break;
+            case O::NoHandler: ok = kFail; d = std::string(f.op) + " has no handler in this exe"; break;
+        }
+        run.Fact(std::string("calib.") + f.name, hx(f.found ? f.found : f.compiled));
+        run.Add(G, id, key, ok, d, "Game data reads", hx(f.compiled), f.found ? hx(f.found) : std::string("none"), "calib.table");
     }
-    // Life points varps 13537 current / 13538 max. cur > mx is a normal boost; 3x max = remap.
+    // compiled copies the companion and the scene code still carry
     {
-        const int cur = read_varp(h, *root, 13537), mx = read_varp(h, *root, 13538);
-        const bool logged = cur > 0 || mx > 0;
-        const bool sane = logged && mx > 0 && mx < 100000 && cur >= 0 && cur <= mx * 3;
-        add("Life points", !logged ? 2 : sane ? 1 : 0,
-            !logged ? "not logged in" :
-            sane ? (std::to_string(cur) + " / " + std::to_string(mx) + (cur > mx ? " (boosted)" : ""))
-                 : "values look wrong");
+        std::string bad;
+        if (rtx::md::kStatus != kOffStatus) bad += "status byte " + hx(rtx::md::kStatus) + " vs " + hx(kOffStatus) + "; ";
+        if (rtx::scn::kPlayerData != kOffAccount) bad += "player data " + hx(rtx::scn::kPlayerData) + " vs " + hx(kOffAccount) + "; ";
+        if (rtx::md::kWorld != kOffWorld) bad += "world " + hx(rtx::md::kWorld) + " vs " + hx(kOffWorld) + "; ";
+        run.Add(G, "calib.copies", "Compiled copies", bad.empty() ? kPass : kWarn,
+                bad.empty() ? "companion and scene constants agree with the calibrated offsets" : "not following calibration: " + bad.substr(0, bad.size() - 2),
+                "Companion engine ops|Scene reads", "", "", "calib.table");
     }
+}
+
+// ---- Game data ----
+void health_data(HCtx& c, rtx::health::Run& run) {
+    const char* G = "Game data";
+    HANDLE h = c.h;
+    const std::uint64_t root = c.root;
+    // A/B window for every rate check
+    const ULONGLONG tA = GetTickCount64();
+    const std::uint32_t ccA = rpm<std::uint32_t>(h, root + kOffClientClock).value_or(0);
+    const std::uint64_t ecA = rpm<std::uint64_t>(h, c.mgva + 0x10).value_or(0);
+    const int worldA = c.world;
+    std::uint32_t tickA = 0; double ageA = 0; const bool haveTick = TickState(c.pid, tickA, ageA);
+    Sleep(300);
+    const ULONGLONG tB = GetTickCount64();
+    const std::uint32_t ccB = rpm<std::uint32_t>(h, root + kOffClientClock).value_or(0);
+    const std::uint64_t ecB = rpm<std::uint64_t>(h, c.mgva + 0x10).value_or(0);
+    int worldB = -1;
+    if (auto p1 = rpm<std::uint64_t>(h, root + kOffWorld); p1 && *p1 > 0x10000)
+        if (auto p2 = rpm<std::uint64_t>(h, *p1 + 0x20); p2 && *p2 > 0x10000) worldB = rpm<std::int32_t>(h, *p2 + 8).value_or(-1);
+    const double secs = (double)(tB - tA) / 1000.0;
+    // root and status
     {
-        auto cont = rpm<std::uint64_t>(h, *root + 0x199D0);
-        bool ok = false;
-        if (cont && *cont > 0x10000) {
-            auto idx = rpm<std::int32_t>(h, *cont + 0x70);
-            auto arr = rpm<std::uint64_t>(h, *cont + 0x58);
-            if (idx && *idx >= 0 && *idx < 64 && arr && *arr > 0x10000) {
-                auto wv = rpm<std::uint64_t>(h, *arr + (std::uint64_t)*idx * 0x10 + 0x8);
-                if (wv && *wv > 0x10000) {
-                    CamProbes probes;
-                    auto worker = scene_worker(h, pid, *wv, &probes);
-                    float m[16] = {};
-                    ok = worker && read_view_matrix(h, pid, *root, *wv, probes, m);
+        static const int kStates[] = { 10, 20, 30, 37, 40 };
+        const bool known = std::find(std::begin(kStates), std::end(kStates), c.status) != std::end(kStates);
+        int ok = known ? kPass : kFail;
+        std::string d = "status " + std::to_string(c.status) + (known ? "" : " (not a known login state: status offset moved?)");
+        if (c.status == 30) {
+            if (worldA < 1 || worldA > 300 || worldA != worldB) { ok = kFail; d += ", world " + std::to_string(worldA) + "/" + std::to_string(worldB) + " (world chain moved?)"; }
+            else d += ", world " + std::to_string(worldA);
+        }
+        if (kOffAccount != kOffStatus + 8) { ok = kWarn; d += "; account no longer sits at status + 8"; }
+        if (c.status != 30 && c.localSec) { ok = kFail; d += "; the local player is in the scene while the status says otherwise (status offset moved?)"; }
+        run.Add(G, "data.root", "Root and status", ok, d, "Everything", "status in 10/20/30/37/40", std::to_string(c.status), "code.sig.main-anchor");
+        run.Fact("data.status", std::to_string(c.status));
+    }
+    // clocks
+    {
+        const double ccRate = (double)(std::int64_t)(ccB - ccA) / secs;
+        const bool ok = ccRate >= 40 && ccRate <= 60;
+        run.Add(G, "data.clock.client", "Client clock", c.inWorld ? (ok ? kPass : kFail) : kUnchecked,
+                "MainData+" + hx(kOffClientClock) + " advances " + std::to_string((int)std::lround(ccRate)) + "/s" + (ok ? "" : " (expected 50/s)"),
+                "Buff timers|Ticks|Combat log", "50/s", std::to_string((int)std::lround(ccRate)), "data.root");
+        const double ecRate = (double)(std::int64_t)(ecB - ecA) / secs;
+        const long long drift = (long long)ecB - (long long)tB;
+        const bool eok = ecRate >= 800 && ecRate <= 1200 && std::llabs(drift) < 2000;
+        run.Add(G, "data.clock.engine", "Engine clock", eok ? kPass : kFail,
+                "root global + 0x10 advances " + std::to_string((int)std::lround(ecRate)) + "/s, " + std::to_string(drift) + " ms from the system clock",
+                "Ability cooldowns|Action bar clock|Input idle", "1000/s", std::to_string((int)std::lround(ecRate)), "code.sig.main-anchor");
+        std::uint32_t tickB = 0; double ageB = 0; TickState(c.pid, tickB, ageB);
+        const bool tok = haveTick && ageB >= 0 && ageB < 5000;
+        run.Add(G, "data.tick", "Server tick", !haveTick ? kFail : c.inWorld ? (tok ? kPass : kFail) : kUnchecked,
+                !haveTick ? "tick counter not found" : "tick " + std::to_string(tickB) + ", last change " + std::to_string((int)ageB) + " ms ago",
+                "Ticks|Tick timers|Metronome", "< 5000 ms", std::to_string((int)ageB), "code.sig.tick-anchor");
+        const float fps = rpm<float>(h, root + rtx::md::kFps).value_or(-1.f);
+        run.Add(G, "data.fps", "FPS", fps >= 1.f && fps <= 1000.f ? kPass : kFail, std::to_string((int)fps) + " at MainData+" + hx(rtx::md::kFps),
+                "Player State FPS", "1..1000", std::to_string((int)fps), "data.root");
+    }
+    // varp store
+    {
+        const std::uint64_t hr = root + kOffVarpHash;
+        const std::uint64_t ba = rpm<std::uint64_t>(h, hr + 0x8).value_or(0);
+        const int div = rpm<std::int32_t>(h, hr + 0x10).value_or(0);
+        const int count = rpm<std::int32_t>(h, hr + 0x18).value_or(-1);
+        int walked = 0, maxId = 0;
+        std::vector<std::pair<int, int>> sample;
+        if (ba > 0x10000 && div > 0 && div <= 131072) {
+            std::vector<std::uint64_t> buckets((std::size_t)div);
+            if (rpm_bytes(h, ba, buckets.data(), (std::size_t)div * 8)) {
+                for (int b = 0; b < div; ++b) {
+                    std::uint64_t node = buckets[(std::size_t)b];
+                    for (int steps = 0; steps < 512 && node > 0x10000; ++steps) {
+                        std::uint8_t nb[0x30];
+                        if (!rpm_bytes(h, node, nb, sizeof(nb))) break;
+                        const int id = *reinterpret_cast<const std::int32_t*>(nb);
+                        const int val = *reinterpret_cast<const std::int32_t*>(nb + 8);
+                        ++walked;
+                        if (id > maxId) maxId = id;
+                        if ((walked % 97) == 1 && sample.size() < 40) sample.emplace_back(id, val);
+                        node = *reinterpret_cast<const std::uint64_t*>(nb + kVarNodeNext);
+                    }
                 }
             }
         }
-        add("Overlay camera", ok ? 1 : 0, ok ? "" : "not readable (in-world markers won't draw)");
+        int agree = 0;
+        for (const auto& s : sample) if (read_varp(h, root, s.first) == s.second) ++agree;
+        int ok = kPass; std::string d = std::to_string(walked) + " nodes, store count " + std::to_string(count) +
+            ", lookups " + std::to_string(agree) + "/" + std::to_string(sample.size()) + ", largest id " + std::to_string(maxId);
+        if (!c.inWorld && walked == 0) ok = kUnchecked;
+        else if (walked == 0) { ok = kFail; d = "no varps while logged in (store offset moved?)"; }
+        else if (count >= 0 && count != walked) { ok = kWarn; d += " (walk and count differ)"; }
+        if (!sample.empty() && agree != (int)sample.size()) { ok = kFail; d += " (lookup chain differs from the walk)"; }
+        if (maxId > 90000) { if (ok == kPass) ok = kWarn; d += "; ids near the 100000 filter"; }
+        run.Add(G, "data.varps", "Player variables", ok, d, "Every varp and varbit read", std::to_string(count), std::to_string(walked), "data.root");
+        run.Fact("varp.maxId", std::to_string(maxId));
     }
+    // varc store
     {
-        std::vector<RuntimeObj> objs;
-        bool ok = ReadRuntimeObjects(pid, objs);
-        add("Companion: world objects", ok ? 1 : 2, ok ? "" : "inactive (loads with the game client)");
-    }
-    {
-        wchar_t name[rtx::ipc::kNameChars]; rtx::varc::MakeSectionName(pid, name);
-        HANDLE m = OpenFileMappingW(FILE_MAP_READ, FALSE, name);
-        bool ok = false;
-        if (m) {
-            auto* sh = reinterpret_cast<const rtx::varc::Share*>(MapViewOfFile(m, FILE_MAP_READ, 0, 0, sizeof(rtx::varc::Share)));
-            if (sh) { ok = (sh->magic == rtx::varc::kMagic && sh->version == rtx::varc::kVersion); UnmapViewOfFile((void*)sh); }
-            CloseHandle(m);
+        const std::uint64_t store = rpm<std::uint64_t>(h, root + kOffVarcStore).value_or(0);
+        const std::uint64_t hr = store + kVarcHashOff;
+        const std::uint64_t ba = store > 0x10000 ? rpm<std::uint64_t>(h, hr + 0x8).value_or(0) : 0;
+        const int div = store > 0x10000 ? rpm<std::int32_t>(h, hr + 0x10).value_or(0) : 0;
+        int walked = 0, maxId = 0;
+        if (ba > 0x10000 && div > 0 && div <= 131072) {
+            std::vector<std::uint64_t> buckets((std::size_t)div);
+            if (rpm_bytes(h, ba, buckets.data(), (std::size_t)div * 8)) {
+                for (int b = 0; b < div; ++b) {
+                    std::uint64_t node = buckets[(std::size_t)b];
+                    for (int steps = 0; steps < 512 && node > 0x10000; ++steps) {
+                        const int id = rpm<std::int32_t>(h, node).value_or(-1);
+                        ++walked; if (id > maxId) maxId = id;
+                        node = rpm<std::uint64_t>(h, node + kVarNodeNext).value_or(0);
+                    }
+                }
+            }
         }
-        add("Companion: live variables", ok ? 1 : 2, ok ? "" : "inactive (loads with the game client)");
+        int vw = 0, vh = 0, yaw = 0, pitch = 0, zoom = 0;
+        const bool fw = read_varc_found(h, root, 3001, vw), fh = read_varc_found(h, root, 3002, vh);
+        const bool fy = read_varc_found(h, root, 5115, yaw), fp = read_varc_found(h, root, 5114, pitch), fz = read_varc_found(h, root, 1971, zoom);
+        int gx = 0, gy = 0, gw = 0, gh = 0;
+        const bool tree = read_gameview_rect(h, root, gx, gy, gw, gh);
+        int ok = kPass; std::string d = std::to_string(walked) + " varcs, largest id " + std::to_string(maxId);
+        if (walked == 0) { ok = c.inWorld ? kFail : kUnchecked; d = "no varcs (store offset moved?)"; }
+        else {
+            if (c.inWorld && (!fw || !fh)) { ok = kFail; d += "; gameview size varcs 3001/3002 missing"; }
+            else if (tree && gw > 0 && (std::abs(vw - gw) > 2 || std::abs(vh - gh) > 2)) { ok = kWarn; d += "; varcs " + std::to_string(vw) + "x" + std::to_string(vh) + " vs layout " + std::to_string(gw) + "x" + std::to_string(gh); }
+            else if (fw) d += "; gameview " + std::to_string(vw) + "x" + std::to_string(vh);
+            if (c.inWorld && (!fy || !fp || !fz)) { if (ok == kPass) ok = kWarn; d += "; camera varcs 5115/5114/1971 not all present"; }
+            else if (fy && (yaw < 0 || yaw > 16383)) { ok = kFail; d += "; yaw 5115 = " + std::to_string(yaw) + " out of range"; }
+        }
+        if (maxId > 90000) { if (ok == kPass) ok = kWarn; d += "; ids near the 100000 filter"; }
+        run.Add(G, "data.varcs", "Client variables", ok, d, "Overlays|Camera|Panel positions", "", std::to_string(walked), "calib.kOffVarcStore");
+        run.Fact("varc.maxId", std::to_string(maxId));
     }
-    {   // Server opcodes: each ServerOps.h opcode must carry its recorded wire length in the packet table.
-        std::uint64_t modSize = 0;
-        { std::lock_guard<std::mutex> lk(g_mu); auto it = g_states.find((DWORD)pid); if (it != g_states.end()) modSize = it->second.mod_size; }
-        std::uint64_t tbl = (ps.mod_base && modSize) ? cached_optable(pid, h, ps.mod_base, modSize) : 0;
+    // var domain stores
+    {
+        rtx::health::JVal j; rtx::health::ParseJson(VarDomainStoresJson(c.pid), j);
+        const rtx::health::JVal* st = j.get("stores");
+        auto field = [&](const char* dom, const char* f) -> std::string {
+            const rtx::health::JVal* d = st ? st->get(dom) : nullptr; return d ? d->str(f) : std::string();
+        };
+        const bool p0 = field("0", "live") == "true", p2 = field("2", "live") == "true", vt2 = field("2", "vt") == "true";
+        int ok = (p0 && p2 && vt2) ? kPass : kFail;
+        std::string d = "player " + (p0 ? field("0", "count") + " vars" : std::string("FAILED")) +
+                        ", client " + (p2 ? field("2", "count") + " vars" : std::string("FAILED")) +
+                        (p2 && !vt2 ? " (class vtable " + field("2", "vt_rva") + " not recognised)" : std::string()) +
+                        ", clan " + (field("6", "live") == "true" ? field("6", "count") + " vars" : std::string("absent")) +
+                        ", group " + (field("9", "live") == "true" ? field("9", "count") + " vars" : std::string("absent"));
+        run.Fact("domains.clientVt", field("2", "vt_rva"));
+        if (!c.inWorld && !p0) ok = kUnchecked;
+        run.Add(G, "data.domains", "Var domain stores", ok, d, "Clan vars|Group vars|Varbit reads by domain", "", "", "data.varps");
+    }
+    // containers
+    {
+        const std::uint64_t mgr = rpm<std::uint64_t>(h, root + kOffInvData).value_or(0);
+        const std::uint64_t cs = mgr > 0x10000 ? rpm<std::uint64_t>(h, mgr + 0x8).value_or(0) : 0;
+        const std::uint64_t ce = mgr > 0x10000 ? rpm<std::uint64_t>(h, mgr + 0x10).value_or(0) : 0;
+        int ok = kPass; std::string d;
+        if (cs <= 0x10000 || ce < cs) { ok = c.inWorld ? kFail : kUnchecked; d = "container list not readable"; }
+        else if ((ce - cs) % kContainerStride) { ok = kFail; d = "list span not a multiple of the 0x48 stride"; }
+        else {
+            const std::uint64_t n = (ce - cs) / kContainerStride;
+            std::set<int> ids; bool dup = false; int named = 0, items = 0, size93 = -1, size94 = -1;
+            for (std::uint64_t i = 0; i < n && i < 256; ++i) {
+                const std::uint64_t e = cs + i * kContainerStride;
+                const int cid = rpm<std::int32_t>(h, e + 0x10).value_or(-1);
+                if (!ids.insert(cid).second) dup = true;
+                const std::uint64_t is = rpm<std::uint64_t>(h, e + 0x18).value_or(0), ie = rpm<std::uint64_t>(h, e + 0x20).value_or(0);
+                const int slots = (is > 0x10000 && ie >= is) ? (int)((ie - is) / 8) : -1;
+                if (cid == 93) size93 = slots;
+                if (cid == 94) size94 = slots;
+                if ((cid == 93 || cid == 94) && slots > 0 && slots < 64) {
+                    std::vector<BankSlot> v((std::size_t)slots);
+                    if (rpm_bytes(h, is, v.data(), v.size() * sizeof(BankSlot)))
+                        for (const auto& s : v) if (s.item_id > 0) { ++items; if (!rtx::cache::ItemName(s.item_id).empty()) ++named; }
+                }
+            }
+            auto invSize = [](int id) { return std::atoi(rtx::pins::Field(rtx::cache::PinFingerprint("inv", std::to_string(id), ""), "size").c_str()); };
+            const int def93 = invSize(93), def94 = invSize(94);
+            d = std::to_string(n) + " containers";
+            if (n > (std::uint64_t)kMaxContainers) { ok = kFail; d += " (more than the 64 the reader takes)"; }
+            if (dup) { ok = kFail; d += "; repeated ids (stride or id offset moved)"; }
+            if (size93 >= 0) {
+                d += "; backpack " + std::to_string(size93) + " slots (def " + std::to_string(def93) + ")";
+                if (def93 > 0 && size93 != def93) { ok = kFail; d += " mismatch"; }
+            } else if (c.inWorld) { ok = kFail; d += "; no backpack (93)"; }
+            if (size94 >= 0 && def94 > 0 && size94 != def94) { ok = kFail; d += "; equipment " + std::to_string(size94) + " slots, def " + std::to_string(def94); }
+            if (items) { d += "; " + std::to_string(named) + "/" + std::to_string(items) + " items name in the cache"; if (named * 10 < items * 9) ok = kFail; }
+        }
+        run.Add(G, "data.containers", "Containers", ok, d, "Backpack|Equipment|Bank|Storages", "", "", "data.root");
+    }
+    // Grand Exchange slots
+    {
+        const std::uint64_t box = rpm<std::uint64_t>(h, root + kOffGE).value_or(0);
+        int ok = kPass, bad = 0, active = 0; std::string d;
+        if (box <= 0x10000) { ok = c.inWorld ? kFail : kUnchecked; d = "slot block not readable"; }
+        else {
+            alignas(8) std::uint8_t gb[kGESlotCount * kGESlotSize];
+            if (!rpm_bytes(h, box + kGEArrayPad, gb, sizeof(gb))) { ok = kFail; d = "slot block not readable"; }
+            else {
+                for (int i = 0; i < kGESlotCount; ++i) {
+                    const std::uint8_t* b = gb + (std::size_t)i * kGESlotSize;
+                    const int status = *(const std::int32_t*)(b), item = *(const std::int32_t*)(b + 8);
+                    const long long price = *(const std::int64_t*)(b + 0x10);
+                    const int qty = *(const std::int32_t*)(b + 0x18), filled = *(const std::int32_t*)(b + 0x1C);
+                    if (status == 0) { if (item != 0) ++bad; continue; }
+                    ++active;
+                    if (status < 0 || status > 7 || item <= 0 || rtx::cache::ItemName(item).empty() || price <= 0 || qty < filled || filled < 0) ++bad;
+                }
+                d = std::to_string(active) + " active offers" + (bad ? ", " + std::to_string(bad) + " implausible" : "");
+                if (bad) ok = kFail;
+            }
+        }
+        run.Add(G, "data.ge", "Grand Exchange slots", ok, d, "Grand Exchange panel|GE alerts", "", "", "calib.kOffGE");
+    }
+    // input reporter, cutscene, options, mouse, map, friends, chat store, hover, cooldowns, destination
+    {
+        const std::uint64_t rep = rpm<std::uint64_t>(h, root + rtx::md::kInputReport).value_or(0);
+        int ok = kPass; std::string d;
+        if (rep <= 0x10000) { ok = c.inWorld ? kFail : kUnchecked; d = "reporter not readable"; }
+        else {
+            const std::uint64_t a = rpm<std::uint64_t>(h, rep + kOffRepPointerA).value_or(0), b = rpm<std::uint64_t>(h, rep + kOffRepPointerB).value_or(0);
+            const std::uint64_t now = ecB;
+            const std::uint64_t last = std::max(a, b);
+            if (last > now + 2000 || (last && now - last > 24ull * 3600 * 1000)) { ok = kFail; d = "pointer stamps not on the engine clock (" + std::to_string(a) + ", " + std::to_string(b) + ")"; }
+            else d = "last pointer activity " + std::to_string((long long)(now - last) / 1000) + " s ago";
+        }
+        run.Add(G, "data.input", "Input reporter", ok, d, "Idle timer|AFK alerts", "", "", "data.clock.engine");
+    }
+    {
+        int cut = -2;
+        if (auto cs = rpm<std::uint64_t>(h, root + rtx::md::kCutscene); cs && *cs > 0x10000) cut = rpm<std::int32_t>(h, *cs + 0x150).value_or(-2);
+        const bool ok = cut == -1 || (cut >= 0 && cut <= 65535);
+        run.Add(G, "data.cutscene", "Cutscene state", ok ? kPass : (c.inWorld ? kFail : kUnchecked), std::to_string(cut), "Cutscene hide", "-1 or an id", std::to_string(cut), "data.root");
+        int heap = 0;
+        if (auto opt = rpm<std::uint64_t>(h, root + rtx::md::kOptions); opt && *opt > 0x10000)
+            for (int i = 0; i < 44; ++i) if (rpm<std::uint64_t>(h, *opt + 0x2DA8 + (std::uint64_t)i * 8).value_or(0) > 0x10000) ++heap;
+        run.Add(G, "data.options", "Client options", heap == 44 ? kPass : kFail, std::to_string(heap) + "/44 option objects", "Settings readouts|Layout detection", "44", std::to_string(heap), "data.root");
+    }
+    {
+        const std::uint64_t st = rpm<std::uint64_t>(h, root + kOffVarcStore).value_or(0);
+        int ok = kPass; std::string d;
+        if (st <= 0x10000) { ok = kFail; d = "store not readable"; }
+        else {
+            const float mx = rpm<float>(h, st + 0x46D8).value_or(-9), my = rpm<float>(h, st + 0x46DC).value_or(-9);
+            const int mods = rpm<std::uint8_t>(h, st + 0x4F0).value_or(0xFF);
+            int lw = 0, lh = 0, gx = 0, gy = 0, gw = 0, gh = 0;
+            read_gameview_rect(h, root, gx, gy, gw, gh, &lw, &lh);
+            d = "mouse " + std::to_string((int)mx) + "," + std::to_string((int)my) + ", modifiers " + std::to_string(mods);
+            if (!(mx >= -1.f && my >= -1.f && mx < 32768.f && my < 32768.f) || (lw > 0 && (mx > lw + 4 || my > lh + 4))) { ok = kFail; d += " (outside the window)"; }
+            if (mods >= 8) { ok = kFail; d += " (modifier byte)"; }
+        }
+        const std::uint64_t mm = rpm<std::uint64_t>(h, root + rtx::md::kMapMgr).value_or(0);
+        if (mm > 0x10000) {
+            const int a = rpm<std::int32_t>(h, mm + 0x710).value_or(-1), b = rpm<std::int32_t>(h, mm + 0x714).value_or(-1);
+            const int ls = rpm<std::uint8_t>(h, mm + 0x71C).value_or(0);
+            d += ", map load " + std::to_string(std::min(a, b)) + "%";
+            if (a < 0 || a > 100 || b < 0 || b > 100) { ok = kFail; d += " (out of range)"; }
+            else if (!ls && c.inWorld && std::min(a, b) != 100) { if (ok == kPass) ok = kWarn; d += " while not loading"; }
+        }
+        run.Add(G, "data.input2", "Mouse, keys, map load", ok, d, "Player State mouse and keys|Loading detection", "", "", "data.root");
+    }
+    {
+        const std::uint64_t mm = rpm<std::uint64_t>(h, root + rtx::md::kMapMgr).value_or(0);
+        int ok = kPass; std::string d;
+        if (mm <= 0x10000) { ok = c.inWorld ? kFail : kUnchecked; d = "map manager not readable"; }
+        else {
+            const int bx = rpm<std::int32_t>(h, mm + 0x698).value_or(-1), by = rpm<std::int32_t>(h, mm + 0x69C).value_or(-1);
+            d = "base " + std::to_string(bx) + "," + std::to_string(by);
+            if (bx < 0 || by < 0 || (bx % 8) || (by % 8)) { ok = kFail; d += " (not on a zone boundary)"; }
+            if (c.localSec) {
+                const int tx = (int)(rpm<float>(h, c.localSec + rtx::scn::kPosX).value_or(0) / 512.f), ty = (int)(rpm<float>(h, c.localSec + rtx::scn::kPosY).value_or(0) / 512.f);
+                if (tx - bx < 0 || tx - bx >= 256 || ty - by < 0 || ty - by >= 256) { ok = kFail; d += "; player tile " + std::to_string(tx) + "," + std::to_string(ty) + " outside the loaded map"; }
+                else d += ", player at +" + std::to_string(tx - bx) + ",+" + std::to_string(ty - by);
+            }
+        }
+        run.Add(G, "data.mapbase", "Map base", c.inWorld ? ok : kUnchecked, d, "Zone events|Ground items|Loc changes", "", "", "data.root");
+    }
+    {
+        const std::uint64_t fr = rpm<std::uint64_t>(h, root + rtx::md::kFriends).value_or(0);
+        int ok = kPass; std::string d;
+        if (fr <= 0x10000) { ok = c.inWorld ? kFail : kUnchecked; d = "friends list not readable"; }
+        else {
+            const int state = rpm<std::int32_t>(h, fr + 0x10).value_or(-1);
+            const std::uint64_t b0 = rpm<std::uint64_t>(h, fr + 0x18).value_or(0), e0 = rpm<std::uint64_t>(h, fr + 0x20).value_or(0);
+            if (state != 2) { ok = kUnchecked; d = "list state " + std::to_string(state) + " (not loaded)"; }
+            else if (b0 <= 0x10000 && e0 == b0) d = "empty list";
+            else if (b0 <= 0x10000 || e0 < b0 || (e0 - b0) % 0x78) { ok = kFail; d = "span not a multiple of the 0x78 stride"; }
+            else {
+                const int n = (int)((e0 - b0) / 0x78); int good = 0;
+                for (int i = 0; i < n && i < 400; ++i) {
+                    char nm[16] = {}; rpm_bytes(h, b0 + (std::uint64_t)i * 0x78, nm, 15);
+                    const int w = rpm<std::int32_t>(h, b0 + (std::uint64_t)i * 0x78 + 0x30).value_or(-1);
+                    if (printable_name(nm) && w >= 0 && w <= 300) ++good;
+                }
+                d = std::to_string(good) + "/" + std::to_string(n) + " friends read cleanly";
+                if (good * 10 < n * 9) ok = kFail;
+            }
+        }
+        run.Add(G, "data.friends", "Friends", ok, d, "Friends panel|Hiscores lookups", "", "", "data.root");
+    }
+    {
+        const std::uint64_t store = rpm<std::uint64_t>(h, root + rtx::md::kChatStore).value_or(0);
+        int ok = kPass; std::string d;
+        if (store <= 0x10000) { ok = c.inWorld ? kFail : kUnchecked; d = "chat store not readable"; }
+        else {
+            const std::string arr = chat_store_json(h, root, 8);
+            rtx::health::JVal v;
+            if (!rtx::health::ParseJson(arr, v) || v.a.empty()) { ok = c.inWorld ? kWarn : kUnchecked; d = "no record for the newest id (empty chat or store layout moved)"; }
+            else {
+                int sane = 0;
+                for (const auto& r : v.a) { const long long t = r.num("type", -1); if (t >= 0 && t < 200) ++sane; }
+                d = std::to_string(sane) + "/" + std::to_string(v.a.size()) + " newest records with a known type";
+                if (sane * 10 < (int)v.a.size() * 8) ok = kFail;
+            }
+        }
+        run.Add(G, "data.chat", "Chat store", ok, d, "Chat log|Chat alerts", "", "", "data.root");
+    }
+    {
+        const std::uint64_t ip = rpm<std::uint64_t>(h, root + rtx::md::kInputProc).value_or(0);
+        int ok = kPass; std::string d;
+        if (ip <= 0x10000) { ok = c.inWorld ? kFail : kUnchecked; d = "input processor not readable"; }
+        else {
+            const std::uint64_t slot = rpm<std::uint64_t>(h, ip + 0x13F8).value_or(1);
+            if (slot != 0 && (slot <= 0x10000 || slot > 0x00007FFFFFFFFFFFull)) { ok = kFail; d = "hover slot " + hx(slot) + " is not a pointer"; }
+            else d = slot ? "hovering " + hx(slot) : "nothing hovered";
+        }
+        run.Add(G, "data.hover", "Hover slot", ok, d, "Hover tooltips|Entity hover", "", "", "data.root");
+    }
+    {
+        const std::uint64_t mgr = root + rtx::md::kVarpMgr;
+        const std::uint64_t bk = rpm<std::uint64_t>(h, mgr + 0x38178).value_or(0);
+        const std::uint32_t cap = rpm<std::uint32_t>(h, mgr + 0x38180).value_or(0);
+        const bool ok = bk > 0x10000 && cap >= 1 && cap <= 100000;
+        run.Add(G, "data.cooldowns", "Cooldown map", ok ? kPass : (c.inWorld ? kFail : kUnchecked),
+                ok ? std::to_string(cap) + " buckets" : "buckets " + hx(bk) + ", cap " + std::to_string(cap),
+                "Ability cooldowns", "", "", "data.root");
+    }
+    {
+        const std::uint64_t mm = rpm<std::uint64_t>(h, root + rtx::scn::kMiniMap).value_or(0);
+        int ok = kPass; std::string d;
+        if (mm <= 0x10000) { ok = c.inWorld ? kFail : kUnchecked; d = "minimap not readable"; }
+        else {
+            const int dx = rpm<std::int32_t>(h, mm + rtx::scn::kDestX).value_or(-1), dy = rpm<std::int32_t>(h, mm + rtx::scn::kDestY).value_or(-1);
+            if (dx <= 0 || dy <= 0) d = "no destination";
+            else {
+                d = "destination " + std::to_string(dx / 512) + "," + std::to_string(dy / 512);
+                const bool centred = (dx % 512) == 256 && (dy % 512) == 256;
+                bool inReach = true;
+                if (c.localSec) {
+                    const float px = rpm<float>(h, c.localSec + rtx::scn::kPosX).value_or(0), py = rpm<float>(h, c.localSec + rtx::scn::kPosY).value_or(0);
+                    inReach = std::fabs(px - dx) < 104 * 512 && std::fabs(py - dy) < 104 * 512;
+                }
+                if (!centred || !inReach) { ok = kFail; d += centred ? " (not near the player)" : " (not a tile centre)"; }
+            }
+        }
+        run.Add(G, "data.dest", "Walk destination", ok, d, "Destination marker", "", "", "data.root");
+    }
+}
+
+// ---- Player ----
+void health_player(HCtx& c, rtx::health::Run& run) {
+    const char* G = "Player";
+    HANDLE h = c.h;
+    if (!c.inWorld) {
+        run.Add(G, "player.account", "Account", kUnchecked, "not in the world", "Account|Member state", "", "", "data.root");
+        return;
+    }
+    const std::uint64_t acct = rpm<std::uint64_t>(h, c.root + kOffAccount).value_or(0);
+    {
+        int ok = kPass; std::string d;
+        if (acct <= 0x10000) { ok = kFail; d = "account object not readable"; }
+        else {
+            std::string name = read_jagstring(h, acct + 0x68);
+            if (name.empty()) if (auto pl = rpm<std::uint64_t>(h, acct + 0x58); pl && *pl > 0x10000) name = read_jagstring(h, *pl + 0xF8);
+            const int member = rpm<std::uint8_t>(h, acct + kOffAcctIsMember).value_or(0xFF);
+            const std::uint64_t expiry = rpm<std::uint64_t>(h, acct + kOffAcctExpiry).value_or(0);
+            const int uid = c.localUid;
+            d = "uid " + std::to_string(uid) + ", member " + std::to_string(member);
+            if (name.empty()) { ok = kFail; d += ", no name"; }
+            if (member != 0 && member != 1) { ok = kFail; d += " (member byte not 0/1)"; }
+            if (uid < 1 || uid > 2047) { ok = kFail; d += " (uid out of range)"; }
+            if (c.localSec) {
+                const int secUid = rpm<std::int32_t>(h, c.localSec + rtx::scn::kUid).value_or(-1);
+                const std::string sn = sec_name(h, c.localSec);
+                if (secUid != uid) { ok = kFail; d += "; actor uid " + std::to_string(secUid); }
+                if (!name.empty() && norm_name(sn) != norm_name(name)) { ok = kFail; d += "; actor name differs from the account name"; }
+            }
+            run.Fact("account.expiryRaw", std::to_string(expiry));
+        }
+        run.Add(G, "player.account", "Account", ok, d, "Account key (bank cache)|Member state|Premier", "", "", "calib.kOffAccount");
+    }
+    {
+        int ok = kPass; std::string d;
+        std::uint64_t viaReg = c.localUid >= 0 ? local_player_sec_fast(h, c.root, c.localUid) : 0;
+        std::uint64_t viaScan = 0;
+        std::vector<std::pair<std::uint64_t, std::uint64_t>> secs; scene_secs(c, secs);
+        for (const auto& es : secs)
+            if (rpm<std::uint8_t>(h, es.second + rtx::scn::kType).value_or(0xFF) == 2 && rpm<std::int32_t>(h, es.second + rtx::scn::kUid).value_or(-1) == c.localUid) { viaScan = es.second; break; }
+        if (!viaReg) { ok = kFail; d = "registry at MainData+" + hx(rtx::md::kPlayers) + " does not give the local player"; }
+        else if (viaScan && viaReg != viaScan) { ok = kFail; d = "registry and scene disagree"; }
+        else d = "registry and scene agree";
+        if (!viaScan) { if (ok == kPass) ok = kWarn; d += "; local player not in the actor vector"; }
+        run.Add(G, "player.registry", "Player registry", ok, d, "Terrain heights|In-frame labels|Player State", "", "", "data.root");
+    }
+    {
+        const std::uint64_t stats = rpm<std::uint64_t>(h, c.root + kOffStats).value_or(0);
+        const std::uint64_t block = stats > 0x10000 ? rpm<std::uint64_t>(h, stats + kStatsInner).value_or(0) : 0;
+        int ok = kPass; std::string d;
+        if (block <= 0x10000) { ok = kFail; d = "skill block not readable"; }
+        else {
+            const int count = rpm<std::uint8_t>(h, block + 8).value_or(0);
+            const std::uint64_t arr = rpm<std::uint64_t>(h, block + 0x10).value_or(0);
+            const int energy = rpm<std::int32_t>(h, block + 0x18).value_or(-1), weight = rpm<std::int32_t>(h, block + 0x1C).value_or(-9999);
+            int agree = 0, n = 0; std::string bad;
+            if (count == 29 && arr > 0x10000) {
+                std::vector<std::uint8_t> sb(29 * 0x18);
+                if (rpm_bytes(h, arr, sb.data(), sb.size())) {
+                    for (int i = 0; i < 29; ++i) {
+                        const std::uint8_t* e = sb.data() + (std::size_t)i * 0x18;
+                        const int xp = *(const std::int32_t*)(e + 0xC), lvl = *(const std::int32_t*)(e + 0x10), boosted = *(const std::int32_t*)(e + 0x14);
+                        if (i == 26) continue;                         // Invention: its own curve
+                        ++n;
+                        const bool levelOk = lvl == level_for_xp(xp, 99) || lvl == level_for_xp(xp, 110) || lvl == level_for_xp(xp, 120);
+                        const bool ok1 = levelOk && boosted >= 0 && boosted <= lvl + 30;
+                        if (ok1) ++agree; else if (bad.size() < 60) bad += " " + std::to_string(i) + ":" + std::to_string(lvl) + "/" + std::to_string(xp);
+                    }
+                }
+            }
+            d = std::to_string(count) + " skills, " + std::to_string(agree) + "/" + std::to_string(n) + " levels match their xp, energy " + std::to_string(energy) + ", weight " + std::to_string(weight);
+            if (count > 29) { ok = kFail; d += " (a new skill)"; }
+            else if (count != 29) { ok = kFail; d += " (count byte moved?)"; }
+            if (n && agree < n) { ok = kFail; d += "; off:" + bad; }
+            if (energy < 0 || energy > 100) { ok = kFail; d += "; energy out of range"; }
+            if (weight < -100 || weight > 300) { ok = kFail; d += "; weight out of range"; }
+        }
+        run.Add(G, "player.skills", "Skills", ok, d, "Skills panel|XP tracker|Run energy|Weight", "29",
+                block > 0x10000 ? std::to_string(rpm<std::uint8_t>(h, block + 8).value_or(0)) : std::string(), "calib.kStatsInner");
+    }
+    {
+        const std::string pj = PlayerInfoJson(c.pid);
+        const bool in = pj.find("\"in\":true") != std::string::npos;
+        run.Add(G, "player.state", "Player state", in ? kPass : kFail, in ? "local player found" : "local player not found in the scene",
+                "Player State|Tasks|Overlays", "", "", "player.registry");
+    }
+}
+
+// ---- Scene ----
+void health_scene(HCtx& c, rtx::health::Run& run) {
+    const char* G = "Scene";
+    HANDLE h = c.h;
+    {
+        const std::uint32_t wo = g_workerOff.load(), mo = g_matrixOff.load();
+        const std::int32_t cr = g_camPosRel.load();
+        std::string d = "worker " + hx(wo) + ", matrix " + hx(mo) + ", camera " + std::to_string(cr);
+        int ok = kPass;
+        if (wo != rtx::scn::kWorkerOffDefault) { ok = kWarn; d += "; worker moved from " + hx(rtx::scn::kWorkerOffDefault); }
+        if (mo != rtx::scn::kMatrixOffDefault) { ok = kWarn; d += "; matrix moved from " + hx(rtx::scn::kMatrixOffDefault); }
+        if (cr != rtx::scn::kCamPosRelDefault) { ok = kWarn; d += "; camera position moved from " + std::to_string(rtx::scn::kCamPosRelDefault); }
+        if (!c.worker) { ok = c.inWorld ? kFail : kUnchecked; d = "scene worker not found"; }
+        run.Fact("scene.workerOff", hx(wo)); run.Fact("scene.matrixOff", hx(mo)); run.Fact("scene.camRel", std::to_string(cr));
+        run.Add(G, "scene.offsets", "Scene offsets", ok, d, "Scene|Overlays|Camera", hx(rtx::scn::kWorkerOffDefault), hx(wo), "data.root");
+    }
+    if (!c.inWorld || !c.worker) return;
+    std::vector<std::pair<std::uint64_t, std::uint64_t>> secs; scene_secs(c, secs);
+    std::map<int, int> types;
+    int npcs = 0, npcNamed = 0, players = 0, playersOk = 0, motionOk = 0, motionN = 0, combatN = 0, combatOk = 0, ovN = 0, ovOk = 0;
+    int fxN = 0, fxOk = 0; std::string npcBad, fxBad;
+    const float px = c.localSec ? rpm<float>(h, c.localSec + rtx::scn::kPosX).value_or(0) : 0.f;
+    const float py = c.localSec ? rpm<float>(h, c.localSec + rtx::scn::kPosY).value_or(0) : 0.f;
+    const int seqMax = rtx::cache::IndexInfo(20).maxArchive;
+    for (const auto& es : secs) {
+        const std::uint64_t sec = es.second;
+        const int t = rpm<std::uint8_t>(h, sec + rtx::scn::kType).value_or(0xFF);
+        ++types[t];
+        if (t == 1 || t == 2) {
+            const int anim = rpm<std::int32_t>(h, sec + 0xA90).value_or(-2);
+            const float qw = rpm<float>(h, sec + 0x1E0).value_or(0), qx = rpm<float>(h, sec + 0x1E4).value_or(0), qy = rpm<float>(h, sec + 0x1E8).value_or(0);
+            const float norm = qw * qw + qx * qx + qy * qy;
+            ++motionN;
+            if ((anim == -1 || (anim >= 0 && (seqMax < 0 || anim <= (seqMax + 1) * 128))) && norm > 0.96f && norm < 1.04f) ++motionOk;
+            const std::uint64_t ov = rpm<std::uint64_t>(h, sec + rtx::scn::kOverhead).value_or(0);
+            if (ov > 0x10000) {
+                ++ovN;
+                const std::uint64_t sb = rpm<std::uint64_t>(h, ov + rtx::scn::kOvSlots).value_or(0), se = rpm<std::uint64_t>(h, ov + 0x30).value_or(0);
+                const int splats = rpm<std::int32_t>(h, ov + rtx::scn::kOvSplatCount).value_or(-1);
+                if (se >= sb && (se - sb) % rtx::scn::kBarStride == 0 && splats >= 0 && splats <= 6) ++ovOk;
+            }
+        }
+        if (t == 1) {
+            ++npcs;
+            const int cfg = rpm<std::int32_t>(h, sec + rtx::scn::kConfig).value_or(-1);
+            const std::string live = norm_name(sec_name(h, sec));
+            const rtx::cache::NpcMeta m = rtx::cache::GetNpc(cfg);
+            bool match = !m.name.empty() && norm_name(m.name) == live;
+            if (!match && cfg >= 0) {   // a morph: the live name is one of its variants
+                int vb = -1, vp = -1, def = -1; std::vector<int> vars;
+                if (rtx::cache::GetNpcMorph(cfg, vb, vp, def, vars))
+                    for (int v : vars) if (v >= 0 && norm_name(rtx::cache::GetNpc(v).name) == live) { match = true; break; }
+            }
+            if (match || live.empty()) ++npcNamed;
+            else if (npcBad.size() < 80) npcBad += " " + std::to_string(cfg) + "='" + sec_name(h, sec) + "'";
+            const int lp = rpm<std::int32_t>(h, sec + rtx::scn::kLpCur).value_or(-1), lpMax = rpm<std::int32_t>(h, sec + rtx::scn::kLpMax).value_or(-1);
+            const int target = rpm<std::int32_t>(h, sec + rtx::scn::kNpcTarget).value_or(-2);
+            std::string sp; int bar = -1; actor_overhead_json(h, sec, sp, bar);
+            const bool fights = lpMax > 1 && rtx::cache::GetNpc(cfg).combat_level > 0;
+            if (bar >= 0 && fights) {
+                ++combatN;
+                const int want = (int)((long long)lp * 255 / lpMax);
+                if (lp >= 0 && lp <= lpMax && std::abs(bar - want) <= 12 && (target == -1 || (target >= 0 && target < 4096))) ++combatOk;
+            }
+        } else if (t == 2) {
+            ++players;
+            const std::string nm = sec_name(h, sec);
+            const int cb = rpm<std::int32_t>(h, sec + rtx::scn::kCombat).value_or(-1), cb2 = rpm<std::int32_t>(h, sec + rtx::scn::kCombat + 4).value_or(-2);
+            const int pl = rpm<std::int32_t>(h, sec + rtx::scn::kPlane).value_or(-1);
+            if (printable_name(nm) && cb >= 3 && cb <= 152 && cb == cb2 && pl >= 0 && pl <= 3) ++playersOk;
+        } else if (t == 4 || t == 5) {
+            ++fxN;
+            bool ok = true;
+            if (t == 4) {
+                const int gfx = rpm<std::int32_t>(h, sec + rtx::scn::kT4Gfx).value_or(-1);
+                const int ex = rpm<std::int32_t>(h, sec + rtx::scn::kT4PosE).value_or(0), en = rpm<std::int32_t>(h, sec + rtx::scn::kT4PosN).value_or(0);
+                if (gfx < 0 || rtx::cache::PinFingerprint("spotanim", std::to_string(gfx), "").empty()) ok = false;
+                if (std::fabs(ex - px) > 104 * 512 || std::fabs(en - py) > 104 * 512) ok = false;
+                if (!ok && fxBad.size() < 60) fxBad += " gfx " + std::to_string(gfx);
+            } else {   // the source tile, stored as fine ints like the type-4 position
+                const int sx = rpm<std::int32_t>(h, sec + rtx::scn::kProjSrcX).value_or(0), sy = rpm<std::int32_t>(h, sec + rtx::scn::kProjSrcY).value_or(0);
+                const float fx = rpm<float>(h, sec + rtx::scn::kProjSrcX).value_or(0), fy = rpm<float>(h, sec + rtx::scn::kProjSrcY).value_or(0);
+                const bool asInt = std::fabs(sx - px) <= 104 * 512 && std::fabs(sy - py) <= 104 * 512;
+                const bool asFloat = std::fabs(fx - px) <= 104 * 512 && std::fabs(fy - py) <= 104 * 512;
+                if (!asInt && !asFloat) { ok = false; if (fxBad.size() < 60) fxBad += " projectile " + std::to_string(sx) + "," + std::to_string(sy); }
+            }
+            if (ok) ++fxOk;
+        }
+    }
+    {
+        std::string hist; bool unknown = false;
+        for (const auto& kv : types) {
+            hist += (hist.empty() ? "" : " ") + std::to_string(kv.first) + "x" + std::to_string(kv.second);
+            if (!(kv.first <= 5 || (kv.first >= 10 && kv.first <= 13))) unknown = true;
+        }
+        const bool self = c.localSec != 0;
+        run.Add(G, "scene.types", "Actor types", (!unknown && self) ? kPass : kFail, "types " + hist + (self ? "" : "; no player with the local uid") + (unknown ? "; unknown type codes (type byte moved?)" : ""),
+                "Scene panel|Overlays|Plugins scene API", "", "", "scene.offsets");
+    }
+    run.Add(G, "scene.npcs", "NPC names", npcs == 0 ? kUnchecked : (npcNamed * 10 >= npcs * 9 ? kPass : kFail),
+            npcs == 0 ? "no NPCs nearby" : std::to_string(npcNamed) + "/" + std::to_string(npcs) + " config ids name the live NPC" + (npcBad.empty() ? "" : "; e.g." + npcBad),
+            "NPC labels|Boss info|Slayer|Plugins", "90 %", "", "scene.types");
+    run.Add(G, "scene.players", "Players", players == 0 ? kUnchecked : (playersOk == players ? kPass : kFail),
+            std::to_string(playersOk) + "/" + std::to_string(players) + " with a clean name, combat level and plane", "Player labels|Nameplates", "", "", "scene.types");
+    run.Add(G, "scene.motion", "Animation and facing", motionN == 0 ? kUnchecked : (motionOk * 10 >= motionN * 9 ? kPass : kFail),
+            std::to_string(motionOk) + "/" + std::to_string(motionN) + " actors with a valid animation and a unit facing", "Tick timers by animation|Facing arrows", "", "", "scene.types");
+    run.Add(G, "scene.npccombat", "NPC life points", combatN == 0 ? kUnchecked : (combatOk * 10 >= combatN * 9 ? kPass : kFail),
+            combatN == 0 ? "no NPC with a health bar" : std::to_string(combatOk) + "/" + std::to_string(combatN) + " health bars agree with life points",
+            "Boss HP|Combat log|NPC HP labels", "", "", "scene.types");
+    run.Add(G, "scene.overhead", "Overhead objects", ovN == 0 ? kUnchecked : (ovOk == ovN ? kPass : kFail),
+            std::to_string(ovOk) + "/" + std::to_string(ovN) + " with a 0x1B0-stride bar vector and at most 6 splats", "Combat log|Head bars", "", "", "scene.types");
+    run.Add(G, "scene.effects", "Effects and projectiles", fxN == 0 ? kUnchecked : (fxOk == fxN ? kPass : kFail),
+            fxN == 0 ? "none nearby" : std::to_string(fxOk) + "/" + std::to_string(fxN) + " near the player with a cache graphic" + (fxBad.empty() ? "" : ";" + fxBad),
+            "Specials: graphic highlights|Clue scan ring|Projectiles", "", "", "scene.types");
+    // movement route: every player and NPC carries a 21-entry route at sec+0x268, and a moving
+    // actor's newest entry (its true tile) sits within 2 tiles of where it is drawn
+    {
+        int total = 0, routes = 0, moving = 0, close = 0;
+        for (const auto& es : secs) {
+            if (total >= 300) break;
+            const std::uint64_t sec = es.second;
+            const int t = rpm<std::uint8_t>(h, sec + rtx::scn::kType).value_or(0xFF);
+            if (t != 1 && t != 2) continue;
+            const float fx = rpm<float>(h, sec + rtx::scn::kPosX).value_or(0), fy = rpm<float>(h, sec + rtx::scn::kPosY).value_or(0);
+            if (fx <= 0.f || fy <= 0.f) continue;
+            ++total;
+            const std::uint64_t mm = rpm<std::uint64_t>(h, sec + rtx::scn::kMoveMgr).value_or(0);
+            if (mm <= 0x10000) continue;
+            const std::uint64_t beg = rpm<std::uint64_t>(h, mm + rtx::scn::kRouteBegin).value_or(0), end = rpm<std::uint64_t>(h, mm + rtx::scn::kRouteEnd).value_or(0);
+            const std::uint64_t wr = rpm<std::uint64_t>(h, mm + rtx::scn::kRouteWrite).value_or(0);
+            if (beg <= 0x10000 || end < beg || end - beg != 21 * rtx::scn::kRouteStride || wr < beg || wr > end) continue;
+            ++routes;
+            const int tx = (int)(fx / 512.f), ty = (int)(fy / 512.f);
+            int ttx = tx, tty = ty;
+            if (!actor_true_tile(h, sec, ttx, tty)) continue;
+            ++moving;
+            if (std::abs(ttx - tx) <= 2 && std::abs(tty - ty) <= 2) ++close;
+        }
+        const bool ok = routes * 10 >= total * 9 && (moving == 0 || close * 10 >= moving * 9);
+        run.Add(G, "scene.route", "Actor true tile", total == 0 ? kUnchecked : (ok ? kPass : kFail),
+                total == 0 ? std::string("no players or NPCs in the scene") :
+                std::to_string(routes) + "/" + std::to_string(total) + " actors carry a movement route at sec+" + hx(rtx::scn::kMoveMgr) + ", " +
+                std::to_string(close) + "/" + std::to_string(moving) + " moving within 2 tiles of where they are drawn" + (ok ? "" : " (route object or entry layout moved?)"),
+                "True tile overlay|Plugins scene API", "90 %", std::to_string(routes) + "/" + std::to_string(total), "scene.types");
+    }
+    // projection: the local player lands near the middle of the view
+    {
+        CamProbes probes; float m[16] = {};
+        int ok = kUnchecked; std::string d = "camera not readable";
+        if (c.wv && read_view_matrix(h, c.pid, c.root, c.wv, probes, m) && c.localSec) {
+            const float x = rpm<float>(h, c.localSec + rtx::scn::kPosX).value_or(0), y = rpm<float>(h, c.localSec + rtx::scn::kPosY).value_or(0), z = rpm<float>(h, c.localSec + rtx::scn::kPosZ).value_or(0);
+            const float w = m[3] * x + m[11] * y + m[7] * z + m[15];
+            if (w > 1.f) {
+                const float nx = (m[0] * x + m[8] * y + m[4] * z + m[12]) / w, ny = (m[1] * x + m[9] * y + m[5] * z + m[13]) / w;
+                char b[96]; std::snprintf(b, sizeof(b), "local player at %.2f, %.2f of the view", nx, ny);
+                d = b;
+                ok = (std::fabs(nx) < 0.5f && std::fabs(ny) < 0.5f) ? kPass : kWarn;
+                if (ok == kWarn) d += " (expected near the centre; camera may be panned)";
+            } else { ok = kFail; d = "local player behind the camera"; }
+        }
+        run.Add(G, "scene.projection", "Projection", ok, d, "Overlays|Markers|In-frame labels", "", "", "scene.offsets");
+    }
+    // terrain: the actor stands on the live height grid (+5)
+    {
+        int ok = kUnchecked; std::string d = "no local player";
+        if (c.localSec) {
+            const float x = rpm<float>(h, c.localSec + rtx::scn::kPosX).value_or(0), y = rpm<float>(h, c.localSec + rtx::scn::kPosY).value_or(0), z = rpm<float>(h, c.localSec + rtx::scn::kPosZ).value_or(0);
+            const int plane = rpm<std::int32_t>(h, c.localSec + rtx::scn::kPlane).value_or(0);
+            const int tx = (int)(x / 512.f), ty = (int)(y / 512.f);
+            if (LiveTerrainSnapshot(c.pid, tx, ty, plane)) {
+                const std::int32_t h00 = LiveCornerHeight(c.pid, tx, ty, plane), h10 = LiveCornerHeight(c.pid, tx + 1, ty, plane);
+                const std::int32_t h01 = LiveCornerHeight(c.pid, tx, ty + 1, plane), h11 = LiveCornerHeight(c.pid, tx + 1, ty + 1, plane);
+                if (h00 == INT32_MIN || h10 == INT32_MIN || h01 == INT32_MIN || h11 == INT32_MIN) { ok = kFail; d = "height grid not readable at the player"; }
+                else {
+                    const float fx = x / 512.f - tx, fy = y / 512.f - ty;
+                    const float hb = (h00 * (1 - fx) + h10 * fx) * (1 - fy) + (h01 * (1 - fx) + h11 * fx) * fy;
+                    const std::int32_t lift = LiveTileLift(c.pid, tx, ty, plane);
+                    const float want = hb + (lift == INT32_MIN ? 0 : lift) + 5.f;
+                    char b[120]; std::snprintf(b, sizeof(b), "actor height %.1f, grid %.1f (off by %.1f)", z, want, z - want);
+                    d = b;
+                    ok = std::fabs(z - want) <= 1.5f ? kPass : (std::fabs(z - want) <= 64.f ? kWarn : kFail);
+                }
+            } else { ok = kFail; d = "terrain snapshot failed"; }
+        }
+        run.Add(G, "scene.terrain", "Terrain heights", ok, d, "Tile markers|Ground overlays|In-frame markers", "within 1 unit", "", "player.registry");
+    }
+    // live scenery against the cache's map placements (reader side, works from the command line)
+    {
+        std::vector<LiveLoc> locs;
+        int ok = kUnchecked; std::string d = "no live scenery read";
+        if (ReadLiveLocs(c.pid, locs) && !locs.empty()) {
+            std::unordered_map<int, std::unordered_set<long long>> sets;
+            int matched = 0, total = 0;
+            for (const auto& L : locs) {
+                if (total >= 400) break;
+                ++total;
+                const int rx = L.tx >> 6, ry = L.ty >> 6, key = (rx << 8) | ry;
+                auto it = sets.find(key);
+                if (it == sets.end()) {
+                    auto& s = sets[key];
+                    for (const auto& pl : rtx::cache::RegionLocations(rx, ry))
+                        for (int dx = -2; dx <= 2; ++dx) for (int dy = -2; dy <= 2; ++dy)
+                            s.insert(((long long)pl.id << 28) | ((long long)(rx * 64 + pl.x + dx) << 14) | (long long)(ry * 64 + pl.y + dy));
+                    it = sets.find(key);
+                }
+                if (it->second.count(((long long)L.id << 28) | ((long long)L.tx << 14) | (long long)L.ty)) ++matched;
+            }
+            d = std::to_string(matched) + "/" + std::to_string(total) + " live scenery ids sit on a cache placement of that id";
+            ok = matched * 10 >= total ? kPass : kFail;
+        }
+        run.Add(G, "scene.locs", "Live scenery", ok, d, "Loc labels|Obelisk tracker|Tree timers", "10 %", "", "scene.offsets");
+    }
+}
+
+// ---- Interfaces ----
+void health_interfaces(HCtx& c, rtx::health::Run& run) {
+    const char* G = "Interfaces";
+    HANDLE h = c.h;
+    std::uint64_t gs = 0, ge = 0; iface_groups_range(h, c.root, gs, ge);
+    std::vector<int> open;
+    if (gs && ge > gs)
+        for (std::uint64_t g = gs; g + 0x10 <= ge; g += 0x10) {
+            const std::uint64_t ap = rpm<std::uint64_t>(h, g + 8).value_or(0);
+            if (ap > 0x10000) { const int gid = rpm<std::int32_t>(h, ap).value_or(-1); if (gid > 0 && gid < 70000) open.push_back(gid); }
+        }
+    const bool frame = std::find(open.begin(), open.end(), 1477) != open.end();
+    int maxGroup = 0; for (int g : open) maxGroup = std::max(maxGroup, g);
+    run.Add(G, "iface.groups", "Open interfaces", open.empty() ? (c.inWorld ? kFail : kUnchecked) : (frame ? (maxGroup > 3500 ? kWarn : kPass) : kFail),
+            open.empty() ? "interface list not readable" : std::to_string(open.size()) + " open" + (frame ? "" : ", game frame 1477 missing") +
+            ", largest group " + std::to_string(maxGroup) + (maxGroup > 3500 ? " (near the 4096 hover cap)" : ""),
+            "Every interface read", "", "", "data.root");
+    if (!frame) return;
+    // game frame walk against its cache definitions
+    {
+        rtx::health::JVal defs;
+        rtx::health::ParseJson(rtx::cache::IfaceGroupDefsJson(1477), defs);
+        struct Def { int t = -1, par = -1, w = 0, h = 0, sprite = -1; std::string text; };
+        std::unordered_map<int, Def> dm;
+        if (const rtx::health::JVal* cs = defs.get("comps"))
+            for (const auto& cv : cs->a) { Def d; d.t = (int)cv.num("t", -1); d.par = (int)cv.num("par", -1); d.w = (int)cv.num("w"); d.h = (int)cv.num("h"); d.sprite = (int)cv.num("sprite", -1); d.text = cv.str("text"); dm[(int)cv.num("id", -1)] = d; }
+        const std::uint64_t go = iface_group_obj(h, c.root, 1477);
+        std::vector<IfaceChildRef> stack; iface_root_refs(h, go, stack);
+        int visited = 0, statics = 0, known = 0, parentOk = 0, parentN = 0, spriteOk = 0, spriteN = 0, sizeOk = 0, sizeN = 0, textOk = 0, textN = 0;
+        std::unordered_map<std::uint64_t, std::set<int>> classTypes;
+        std::set<int> seen;
+        while (!stack.empty() && visited < 8000) {
+            const IfaceChildRef r = stack.back(); stack.pop_back();
+            IfaceNode n;
+            if (!iface_read_node(h, r.addr, n)) continue;
+            ++visited;
+            if (n.group == 1477 && n.sub == -1 && n.comp >= 0 && seen.insert(n.comp).second) {
+                ++statics;
+                auto it = dm.find(n.comp);
+                if (it != dm.end()) {
+                    ++known;
+                    const Def& d = it->second;
+                    classTypes[n.kind].insert(d.t);
+                    ++parentN; if (n.parent == d.par) ++parentOk;
+                    if (d.t == 5 && d.sprite > 0) { ++spriteN; if (n.sprite == d.sprite) ++spriteOk; }
+                    if (d.w > 0 && d.h > 0) { ++sizeN; if (n.w > 0 && n.h > 0) ++sizeOk; }
+                    if (d.t == 4 && !d.text.empty()) { ++textN; if (iface_sso_text(h, n.addr) == d.text) ++textOk; }
+                }
+            }
+            std::vector<IfaceChildRef> kids; iface_child_refs(h, n, kids);
+            for (const auto& k : kids) stack.push_back(k);
+        }
+        int mixed = 0; for (const auto& kv : classTypes) if (kv.second.size() > 1) ++mixed;
+        int ok = kPass;
+        std::string d = std::to_string(statics) + " static comps (" + std::to_string(known) + " in the cache), parents " + std::to_string(parentOk) + "/" + std::to_string(parentN) +
+                        ", sprites " + std::to_string(spriteOk) + "/" + std::to_string(spriteN) + ", sized " + std::to_string(sizeOk) + "/" + std::to_string(sizeN) +
+                        ", texts " + std::to_string(textOk) + "/" + std::to_string(textN);
+        if (statics == 0 || known * 10 < statics * 9) { ok = kFail; d += "; comp ids do not match the definitions (node id field moved?)"; }
+        else if (parentN && parentOk * 10 < parentN * 9) { ok = kFail; d += "; parent field disagrees"; }
+        else if (mixed) { ok = kFail; d += "; " + std::to_string(mixed) + " component classes map to several types"; }
+        else if ((spriteN && spriteOk * 2 < spriteN) || (sizeN && sizeOk * 10 < sizeN * 8)) { ok = kWarn; d += "; sprite or size fields disagree with the definitions"; }
+        run.Add(G, "iface.frame", "Game frame layout", ok, d, "Panel positions|Gameview rect|Overlays|Hover", "", "", "iface.groups");
+    }
+    // sub-interface table: every open group mounted on a live parent component
+    {
+        int mounted = 0, parentOk = 0, n = 0; std::string bad;
+        for (int g : open) {
+            if (g == 1477) continue;
+            ++n;
+            IfaceSubParent p;
+            if (!iface_sub_parent(h, c.root, g, p)) continue;
+            ++mounted;
+            rtx::cache::IfaceCompDefLite d;
+            const bool parentOpen = std::find(open.begin(), open.end(), p.group) != open.end();
+            if (parentOpen && rtx::cache::IfaceCompDefLookup(p.group, p.comp, d)) ++parentOk;
+            else if (bad.size() < 60) bad += " " + std::to_string(g) + "@" + std::to_string(p.group) + ":" + std::to_string(p.comp);
+        }
+        int ok = mounted == 0 ? kFail : (parentOk * 10 >= mounted * 9 ? kPass : kWarn);
+        run.Add(G, "iface.mounts", "Sub-interface table", ok,
+                std::to_string(mounted) + "/" + std::to_string(n) + " open groups mounted, " + std::to_string(parentOk) + " on a live parent comp" + (bad.empty() ? "" : "; odd:" + bad),
+                "Panel positions (automatic origins)", "", "", "iface.groups");
+    }
+    // the manual origin table against the engine's own answer, for groups that are open and attached
+    {
+        int compared = 0, agree = 0; std::string stale;
+        for (const auto& s : kPanelOrigins) {
+            if (s.group == 1477 || std::find(open.begin(), open.end(), s.group) == open.end()) continue;
+            int ax = 0, ay = 0;
+            if (!iface_auto_origin(h, c.root, s.group, ax, ay)) continue;
+            int vx = 0, vy = 0; bool okx = false, oky = false;
+            if (s.var_x > 0) okx = read_panel_pos_var(h, c.root, c.pid, s.var_x, s.is_varc, vx);
+            if (s.var_y > 0) oky = read_panel_pos_var(h, c.root, c.pid, s.var_y, s.is_varc, vy);
+            int fx = 0, fy = 0;
+            if (okx && oky) { fx = vx - s.off_left; fy = vy - s.off_top; }
+            else if (s.mount_comp && read_iface_mount_origin(h, c.root, s.mount_comp, fx, fy)) { fx -= s.off_left; fy -= s.off_top; }
+            else continue;
+            ++compared;
+            const int tol = 4 + std::abs(s.off_left) + std::abs(s.off_top);
+            if (std::abs(fx - ax) <= tol && std::abs(fy - ay) <= tol) ++agree;
+            else if (stale.size() < 80) stale += " " + std::to_string(s.group) + "(" + std::to_string(fx - ax) + "," + std::to_string(fy - ay) + ")";
+        }
+        run.Add(G, "iface.origins", "Manual panel origins", compared == 0 ? kUnchecked : (agree == compared ? kPass : kWarn),
+                compared == 0 ? "no listed panel open and attached" : std::to_string(agree) + "/" + std::to_string(compared) + " fallback origins match the engine" + (stale.empty() ? "" : "; stale:" + stale),
+                "Panel positions (fallback)", "", "", "iface.mounts");
+    }
+    // backpack drawn against container 93
+    {
+        int ok = kUnchecked; std::string d = "backpack not open";
+        if (std::find(open.begin(), open.end(), 1473) != open.end()) {
+            // the backpack grid: comp 5, one dynamic child per slot carrying the slot's item
+            std::map<int, int> drawn;
+            const std::uint64_t go = iface_group_obj(h, c.root, 1473);
+            std::vector<IfaceChildRef> stack; iface_root_refs(h, go, stack);
+            int visited = 0;
+            while (!stack.empty() && visited < 4000) {
+                const IfaceChildRef r = stack.back(); stack.pop_back();
+                IfaceNode n; if (!iface_read_node(h, r.addr, n)) continue;
+                ++visited;
+                if (n.group == 1473 && n.comp == 5 && n.sub >= 0 && n.sub < 64 && n.item > 0 && n.item < 200000) drawn[n.sub] = n.item;
+                std::vector<IfaceChildRef> kids; iface_child_refs(h, n, kids);
+                for (const auto& k : kids) stack.push_back(k);
+            }
+            std::map<int, int> held;
+            rtx::health::JVal inv; rtx::health::ParseJson(InventoryJson(c.pid), inv);
+            if (const rtx::health::JVal* items = inv.get("items"))
+                for (const auto& it : items->a) if (it.a.size() >= 2) held[std::atoi(it.a[0].s.c_str())] = std::atoi(it.a[1].s.c_str());
+            int match = 0;
+            for (const auto& kv : held) { auto f = drawn.find(kv.first); if (f != drawn.end() && f->second == kv.second) ++match; }
+            d = std::to_string(match) + "/" + std::to_string(held.size()) + " held slots drawn with their item (" + std::to_string(drawn.size()) + " cells with an item)";
+            ok = held.empty() ? (drawn.empty() ? kPass : kFail) : (match * 10 >= (int)held.size() * 9 ? kPass : kFail);
+            if (ok == kFail) d += "; the grid at 1473:5 and container 93 disagree (cell or item field moved)";
+        }
+        run.Add(G, "iface.backpack", "Backpack cells", ok, d, "Inventory highlights|Item overlays", "", "", "data.containers");
+    }
+    // buff bar: icons the bar draws against the effects the reader emits
+    {
+        const bool b284 = std::find(open.begin(), open.end(), 284) != open.end();
+        int ok = kUnchecked; std::string d = "buff bar not open";
+        if (b284) {
+            rtx::health::JVal bj; rtx::health::ParseJson(BuffsJson(c.pid), bj);
+            const rtx::health::JVal* bl = bj.get("buffs");
+            const int emitted = bl ? (int)bl->a.size() : 0;
+            int named = 0; if (bl) for (const auto& b : bl->a) if (!b.str("name").empty()) ++named;
+            // drawn: the slots of 284:18 whose icon is live (the walk the buff reader does, before it
+            // asks each slot for its buff struct)
+            int drawn = 0;
+            const std::uint64_t go = iface_group_obj(h, c.root, 284);
+            std::vector<IfaceChildRef> stack; iface_root_refs(h, go, stack);
+            int visited = 0;
+            while (!stack.empty() && visited < 3000) {
+                const IfaceChildRef r = stack.back(); stack.pop_back();
+                IfaceNode n; if (!iface_read_node(h, r.addr, n)) continue;
+                ++visited;
+                if (n.group == 284 && n.comp == 18 && n.sub >= 0 && !r.hidden) {
+                    const std::uint64_t slotArr = rpm<std::uint64_t>(h, n.addr + 0x200).value_or(0);
+                    const std::uint64_t icon = slotArr > 0x10000 ? rpm<std::uint64_t>(h, slotArr + 0x8).value_or(0) : 0;
+                    if (icon > 0x10000 && rpm<std::uint64_t>(h, icon + 0x40).value_or(0) == n.addr && rpm<std::int32_t>(h, icon + 0x8).value_or(0) != 0) {
+                        const int spr = rpm<std::uint16_t>(h, icon + 0x1b0).value_or(0), item = rpm<std::int32_t>(h, icon + 0x1d8).value_or(0);
+                        if ((item > 0 && item < 200000) || (spr > 0 && spr < 0xFFFF)) ++drawn;
+                    }
+                }
+                std::vector<IfaceChildRef> kids; iface_child_refs(h, n, kids);
+                for (const auto& k : kids) stack.push_back(k);
+            }
+            d = std::to_string(drawn) + " icons drawn, " + std::to_string(emitted) + " effects read (" + std::to_string(named) + " named)";
+            if (drawn > 0 && emitted == 0) { ok = kFail; d += ": the bar draws buffs the reader does not see (slot struct param 8106 or icon fields moved)"; }
+            else if (emitted > 0) ok = named == emitted ? kPass : kWarn;
+            else { ok = kUnchecked; d += ": no buffs active to check against"; }
+        }
+        run.Add(G, "iface.buffs", "Buff bar", ok, d, "Buffs panel|Buff alerts|Buff timers", "", "", "iface.groups");
+    }
+    // chat: interface lines, store records, packet lines
+    {
+        rtx::health::JVal cj; rtx::health::ParseJson(ChatJson(c.pid), cj);
+        const int lines = cj.get("lines") ? (int)cj.get("lines")->a.size() : 0;
+        const int store = cj.get("store") ? (int)cj.get("store")->a.size() : 0;
+        const rtx::health::JVal* ph = cj.get("phook");
+        const bool open137 = std::find(open.begin(), open.end(), 137) != open.end();
+        run.Add(G, "iface.chatlines", "Chat lines (interface)", !open137 ? kUnchecked : (lines > 0 ? kPass : kFail),
+                !open137 ? "chatbox not open" : std::to_string(lines) + " lines on the chatbox", "Chat log", "", "", "iface.groups");
+        run.Add(G, "iface.chatstore", "Chat records (store)", store > 0 ? kPass : (c.inWorld ? kWarn : kUnchecked),
+                std::to_string(store) + " recent records", "Chat log|Chat alerts", "", "", "data.chat");
+        if (c.cli) run.Add(G, "iface.chatpackets", "Chat lines (packets)", kUnchecked, "launcher only", "Chat log (packet lines)", "", "", "comp.boot");
+        else run.Add(G, "iface.chatpackets", "Chat lines (packets)", ph && ph->s == "true" ? (cj.num("pseen") > 0 ? kPass : kWarn) : kFail,
+                     ph && ph->s == "true" ? std::to_string(cj.num("pseen")) + " message_game packets seen" : "framer not feeding chat (hook or opcode moved)",
+                     "Chat log (packet lines)", "", "", "comp.boot");
+    }
+    // action bar: at least one slot with a cache-known ability and a name
+    {
+        int ok = kUnchecked; std::string d = "action bar not open";
+        if (std::find(open.begin(), open.end(), 1430) != open.end()) {
+            rtx::health::JVal ab; rtx::health::ParseJson(ActionBarJson(c.pid), ab);
+            int slots = 0, named = 0;
+            if (const rtx::health::JVal* bars = ab.get("bars"))
+                for (const auto& b : bars->a) if (const rtx::health::JVal* s = b.get("slots")) for (const auto& x : s->a) { ++slots; if (x.num("id", -1) > 0 && !x.str("name").empty()) ++named; }
+            // what the bar itself holds: item icons in its slots, drawn or not
+            int filled = 0;
+            {
+                const std::uint64_t go = iface_group_obj(h, c.root, 1430);
+                std::vector<IfaceChildRef> stack; iface_root_refs(h, go, stack);
+                int visited = 0;
+                while (!stack.empty() && visited < 3000) {
+                    const IfaceChildRef r = stack.back(); stack.pop_back();
+                    IfaceNode n; if (!iface_read_node(h, r.addr, n)) continue;
+                    ++visited;
+                    if (n.group == 1430 && n.item > 0 && n.item < 200000) ++filled;
+                    std::vector<IfaceChildRef> kids; iface_child_refs(h, n, kids);
+                    for (const auto& k : kids) stack.push_back(k);
+                }
+            }
+            d = std::to_string(named) + "/" + std::to_string(slots) + " slots read with an id and name; the bar holds " + std::to_string(filled) + " item slots";
+            if (slots == 0 && filled > 0) { ok = kFail; d += " (the slot reader finds none: label or id field moved)"; }
+            else if (slots == 0) { ok = kUnchecked; d = "no filled slots to check"; }
+            else ok = named > 0 ? kPass : kFail;
+        }
+        run.Add(G, "iface.actionbar", "Action bar", ok, d, "Ability Bar panel|Cooldown overlays", "", "", "iface.groups");
+    }
+    {
+        const bool dlg = std::find(open.begin(), open.end(), 1188) != open.end() || std::find(open.begin(), open.end(), 1184) != open.end();
+        run.Add(G, "iface.dialog", "Dialogs", dlg ? (DialogJson(c.pid).size() > 4 ? kPass : kFail) : kUnchecked,
+                dlg ? "dialog read" : "no dialog open", "Dialog detection|Quest helper", "", "", "iface.groups");
+    }
+}
+
+// ---- Packets ----
+// The first 48 bytes of a packet handler with its relative operands masked, so the same code at
+// another address hashes the same. Most handlers are a thunk (add rcx,8 ; jmp body): the body is hashed.
+std::uint32_t handler_fingerprint(HANDLE h, std::uint64_t fn) {
+    constexpr int kN = 48;
+    std::uint8_t b[kN];
+    for (int hop = 0; hop < 2; ++hop) {
+        if (!rpm_bytes(h, fn, b, 16)) return 0;
+        int j = -1;
+        if (b[0] == 0xE9) j = 0;
+        else if (b[0] == 0x48 && b[1] == 0x83 && b[2] == 0xC1 && b[4] == 0xE9) j = 4;
+        if (j < 0) break;
+        std::int32_t rel; std::memcpy(&rel, b + j + 1, 4);
+        fn = fn + (std::uint64_t)(j + 5) + (std::int64_t)rel;
+    }
+    if (!rpm_bytes(h, fn, b, sizeof(b))) return 0;
+    for (int i = 0; i < kN; ++i) {   // relative operands masked: calls, jumps and rip-relative operands
+        if ((b[i] == 0xE8 || b[i] == 0xE9) && i + 5 <= kN) { std::memset(b + i + 1, 0, 4); i += 4; continue; }
+        if (b[i] == 0x0F && i + 6 <= kN && b[i + 1] >= 0x80 && b[i + 1] <= 0x8F) { std::memset(b + i + 2, 0, 4); i += 5; continue; }
+        if ((b[i] == 0x48 || b[i] == 0x4C) && i + 7 <= kN && (b[i + 1] == 0x8B || b[i + 1] == 0x8D || b[i + 1] == 0x89) && (b[i + 2] & 0xC7) == 0x05) { std::memset(b + i + 3, 0, 4); i += 6; continue; }
+    }
+    std::uint32_t hsh = 2166136261u;
+    for (std::uint8_t x : b) { hsh ^= x; hsh *= 16777619u; }
+    return hsh;
+}
+
+void health_packets(HCtx& c, rtx::health::Run& run) {
+    const char* G = "Packets";
+    HANDLE h = c.h;
+    std::uint64_t tbl = 0;
+    {
+        std::uint64_t modSize = c.size;
+        tbl = (c.base && modSize) ? cached_optable(c.pid, h, c.base, modSize) : 0;
+    }
+    if (!tbl) { run.Add(G, "pkt.table", "Packet table", kFail, "descriptor table not found", "Every packet decoder", "", "", "code.packets"); return; }
+    {
+        const std::uint64_t dMax = rpm<std::uint64_t>(h, tbl + (std::uint64_t)rtx::sops::kOpMax * 8).value_or(0);
+        const std::uint64_t dPast = rpm<std::uint64_t>(h, tbl + (std::uint64_t)(rtx::sops::kOpMax + 1) * 8).value_or(0);
+        const bool atMax = dMax > 0x10000 && rpm<std::int32_t>(h, dMax).value_or(-1) == rtx::sops::kOpMax;
+        const bool past = dPast > 0x10000 && rpm<std::int32_t>(h, dPast).value_or(-1) == rtx::sops::kOpMax + 1;
+        run.Add(G, "pkt.table", "Packet table", atMax && !past ? kPass : kFail,
+                atMax && !past ? "opcodes 0.." + hx(rtx::sops::kOpMax) + ", nothing past" : (atMax ? "a descriptor past " + hx(rtx::sops::kOpMax) + ": more opcodes" : "no descriptor at " + hx(rtx::sops::kOpMax)),
+                "Every packet decoder", hx(rtx::sops::kOpMax), "", "code.packets");
+    }
+    // lengths and handler fingerprints of every opcode the reader decodes
+    {
+        std::map<std::uint32_t, int> fpOp;   // fingerprint -> opcode, this exe
+        std::vector<std::uint32_t> fps((std::size_t)rtx::sops::kOpMax + 1);
+        for (int op = 0; op <= rtx::sops::kOpMax; ++op) {
+            const std::uint64_t d = rpm<std::uint64_t>(h, tbl + (std::uint64_t)op * 8).value_or(0);
+            if (d <= 0x10000) continue;
+            const std::uint64_t vt = rpm<std::uint64_t>(h, d + kDescVtblOff).value_or(0);
+            const std::uint64_t fn = vt > 0x10000 ? rpm<std::uint64_t>(h, vt + kVtblHandlerOff).value_or(0) : 0;
+            const std::uint32_t fp = fn ? handler_fingerprint(h, fn) : 0;
+            fps[(std::size_t)op] = fp;
+            if (fp) fpOp[fp] = op;
+        }
         int okc = 0, total = 0; std::string bad;
         for (const auto& e : rtx::sops::kExpected) {
             ++total;
-            int len = 0x7FFF;
-            if (tbl) {
-                auto desc = rpm<std::uint64_t>(h, tbl + (std::uint64_t)e.op * 8);
-                if (desc && *desc > 0x10000) len = rpm<std::int32_t>(h, *desc + kDescLenOff).value_or(0x7FFF);
+            const std::uint64_t d = rpm<std::uint64_t>(h, tbl + (std::uint64_t)e.op * 8).value_or(0);
+            const int len = d > 0x10000 ? rpm<std::int32_t>(h, d + kDescLenOff).value_or(0x7FFF) : 0x7FFF;
+            char fpb[16]; std::snprintf(fpb, sizeof(fpb), "%08x", fps[(std::size_t)e.op]);
+            run.Fact(std::string("op.") + e.name + "." + hx((std::uint32_t)e.op), hx((std::uint32_t)e.op) + "/len=" + std::to_string(len) + "/h=" + fpb);
+            bool good = len == e.len;
+            std::string why;
+            if (!good) why = "length " + std::to_string(len) + ", expected " + std::to_string(e.len);
+            // the manifest's handler fingerprint for this opcode on this exe
+            const rtx::pins::Line pin = rtx::pins::Find("op", std::string(e.name) + "." + hx((std::uint32_t)e.op));
+            const std::string want = pin.kind.empty() ? std::string() : rtx::pins::StampValue(pin.expect, c.stamp);
+            if (!want.empty()) {
+                const std::size_t hp = want.find("h=");
+                const std::uint32_t wantFp = hp == std::string::npos ? 0 : (std::uint32_t)std::strtoul(want.c_str() + hp + 2, nullptr, 16);
+                if (wantFp && wantFp != fps[(std::size_t)e.op]) {
+                    good = false;
+                    auto it = fpOp.find(wantFp);
+                    why += std::string(why.empty() ? "" : ", ") + "handler changed" + (it != fpOp.end() ? " (the recorded handler is now op " + hx((std::uint32_t)it->second) + ")" : "");
+                }
             }
-            if (len == e.len) ++okc; else if (bad.empty()) bad = std::string(e.name) + " (0x" + [&]{ char hx[8]; std::snprintf(hx, sizeof(hx), "%02X", e.op); return std::string(hx); }() + ")";
+            if (good) ++okc;
+            else bad += std::string(bad.empty() ? "" : "; ") + e.name + " " + hx((std::uint32_t)e.op) + ": " + why;
         }
-        add("Server opcodes", !tbl ? 0 : okc == total ? 1 : 0,
-            !tbl ? "packet table not found" : okc == total ? (std::to_string(total) + " opcodes carry their expected wire length")
-                                                            : (std::to_string(okc) + "/" + std::to_string(total) + " match; first stale: " + bad + " (game update reshuffled opcodes)"));
+        run.Add(G, "pkt.opcodes", "Server opcodes", okc == total ? kPass : kFail,
+                okc == total ? std::to_string(total) + " opcodes carry their wire length" : std::to_string(okc) + "/" + std::to_string(total) + " match; " + bad,
+                "Chat capture|Events channel|Zone events|Var updates|GE offers", std::to_string(total), std::to_string(okc), "pkt.table");
     }
-    {   // Varp lookups: read_varp must agree with the full-dump walk (a wrong link offset only breaks deep ids).
-        std::string dump = VarpsDumpAllJson(pid);
-        int checked = 0, agree = 0; size_t pos = 0;
-        for (int k = 0; k < 4000 && checked < 40; ++k) {
-            size_t q = dump.find('"', pos); if (q == std::string::npos) break;
-            size_t e = dump.find('"', q + 1); if (e == std::string::npos) break;
-            size_t c = dump.find(':', e); if (c == std::string::npos) break;
-            size_t end = dump.find_first_of(",}", c); if (end == std::string::npos) break;
-            pos = end;
-            if ((k % 97) != 0) continue;                       // spread the sample across the map
-            const char* kp = dump.c_str() + q + 1; if (kp[0] == '4' && kp[1] == ':') kp += 2;
-            int id = std::atoi(kp), v = std::atoi(dump.c_str() + c + 1);
-            if (id <= 0) continue;
-            ++checked; if (read_varp(h, *root, id) == v) ++agree;
-        }
-        add("Varp lookups", checked == 0 ? 2 : agree == checked ? 1 : 0,
-            checked == 0 ? "no varps to sample" : (std::to_string(agree) + "/" + std::to_string(checked) + " sampled ids agree with the full dump" + (agree == checked ? "" : " (chain link offset)")));
-    }
-    {   // Player State / Tasks: PlayerInfoJson must find the local player while in-world
-        const bool inWorld = rpm<std::int8_t>(h, *root + kOffStatus).value_or(0) == 30;
-        std::string pj = PlayerInfoJson(pid);
-        const bool in = pj.find("\"in\":true") != std::string::npos;
-        add("Player state", !inWorld ? 2 : in ? 1 : 0,
-            !inWorld ? "not in-world" : in ? "" : "local player not found in the scene (entity layout)");
-    }
-    {   // Buffs panel: buff/debuff bar groups 284/291
-        std::uint64_t gs = 0, ge = 0; iface_groups_range(h, *root, gs, ge);
-        bool g284 = false, g291 = false;
-        if (gs && ge > gs)
-            for (std::uint64_t g = gs; g + 0x10 <= ge; g += 0x10) {
-                std::uint64_t ap2 = rpm<std::uint64_t>(h, g + 8).value_or(0);
-                if (ap2 <= 0x10000) continue;
-                int gid = rpm<std::int32_t>(h, ap2).value_or(-1);
-                g284 |= (gid == 284); g291 |= (gid == 291);
+    // zone sub-packets: the table the zone update dispatches through
+    {
+        const std::uint32_t pinned = rtx::pins::PinnedRva("zoneSub", c.stamp);
+        int ok = kUnchecked; std::string d = "no zone sub table pinned for this exe";
+        if (pinned) {
+            int agree = 0, n = 0; std::string bad;
+            for (int sub = 0; sub <= 0x12; ++sub) {
+                const std::uint64_t d0 = rpm<std::uint64_t>(h, c.base + pinned + (std::uint64_t)sub * 8).value_or(0);
+                const bool desc = d0 > 0x10000 && rpm<std::int32_t>(h, d0).value_or(-1) == sub;
+                if (sub == 0x12) { if (desc) { bad += " a sub-packet past 0x11"; ++n; } break; }
+                const int want = rtx::evzone::subLen(sub);
+                const int len = desc ? rpm<std::int32_t>(h, d0 + 4).value_or(-100) : -100;
+                ++n;
+                if (len == want) ++agree; else if (bad.size() < 60) bad += " sub " + std::to_string(sub) + " " + std::to_string(len) + "/" + std::to_string(want);
             }
-        std::string bj = BuffsJson(pid);
-        int n = 0; for (size_t i = 0; (i = bj.find("\"id\":", i)) != std::string::npos; ++i) ++n;
-        add("Buff bar", (g284 || g291) ? 1 : 0,
-            (g284 || g291) ? (std::to_string(n) + " effect" + (n == 1 ? "" : "s") + " read") : "buff bar interface not open (widget layout)");
+            ok = n && agree == n ? kPass : kFail;
+            d = std::to_string(agree) + "/" + std::to_string(n) + " zone sub-packet lengths agree" + (bad.empty() ? "" : ";" + bad);
+        }
+        run.Add(G, "pkt.zone", "Zone sub-packets", ok, d, "Ground items|Loc changes|Spot animations|Projectiles|Sounds", "", "", "pkt.table");
     }
-    {   // Chat log: chatbox widgets and the companion's packet ring (message_game opcode)
-        std::string cj = ChatJson(pid);
-        int lines = 0; for (size_t i = 0; (i = cj.find("\"raw\":", i)) != std::string::npos; ++i) ++lines;
-        add("Chat (interface)", lines > 0 ? 1 : 0, lines > 0 ? (std::to_string(lines) + " lines") : "chatbox text not readable (widget layout)");
-        wchar_t name[rtx::ipc::kNameChars]; rtx::netprobe::MakeSectionName(pid, name);
-        HANDLE m = OpenFileMappingW(FILE_MAP_READ, FALSE, name);
-        int st = 2; std::string d = "inactive (loads with the game client)";
-        if (m) {
-            auto* sh = reinterpret_cast<const rtx::netprobe::Share*>(MapViewOfFile(m, FILE_MAP_READ, 0, 0, sizeof(rtx::netprobe::Share)));
-            if (sh && sh->magic == rtx::netprobe::kMagic) {
-                const bool hooked = (sh->flags & 1) != 0;
-                const unsigned long long msgs = sh->chatWritten;
-                if (!hooked)          { st = 0; d = "framer not hooked (pattern moved)"; }
-                else if (msgs > 0)    { st = 1; d = std::to_string(msgs) + " messages captured"; }
-                else                  { st = 0; d = "framer hooked but no game message seen (message_game opcode moved?)"; }
+    // the event ring the launcher reads: mask as asked, message_game left to the chat ring
+    if (c.cli) {
+        run.Add(G, "pkt.events", "Event channel", kUnchecked, "launcher only", "Events channel (plugins)", "", "", "comp.boot");
+    } else {
+        wchar_t name[rtx::ipc::kNameChars]; rtx::events::MakeSectionName(c.pid, name);
+        ShareMap<rtx::events::Share> ev;
+        if (!ev.open(name) || ev.sh->magic != rtx::events::kMagic) run.Add(G, "pkt.events", "Event channel", kFail, "event ring not mapped", "Events channel (plugins)", "", "", "comp.boot");
+        else {
+            const bool hook = (ev.sh->flags & 1) != 0;
+            const bool chatOff = !(ev.sh->mask[rtx::sops::kMessageGame >> 5] & (1u << (rtx::sops::kMessageGame & 31)));
+            run.Add(G, "pkt.events", "Event channel", hook && chatOff ? kPass : kFail,
+                    std::string(hook ? "hook feeding" : "hook not feeding") + ", " + std::to_string(ev.sh->written) + " records, message_game " + (chatOff ? "left to the chat ring" : "in the mask"),
+                    "Events channel (plugins)", "", "", "comp.boot");
+        }
+    }
+}
+
+// ---- Content ----
+void health_dailies(HCtx& c, rtx::health::Run& run) {
+    std::string slots, changed, exp, got; int defsBad = 0, assigned = 0, n = 0;
+    auto bits = [](const std::string& fp) {   // dom=0;var=3240;lo=0;hi=5 -> varp 3240 [0..5]
+        const std::string dom = rtx::pins::Field(fp, "dom");
+        return (dom == "0" ? std::string("varp ") : "domain " + dom + " var ") + rtx::pins::Field(fp, "var") + " [" + rtx::pins::Field(fp, "lo") + ".." + rtx::pins::Field(fp, "hi") + "]";
+    };
+    for (int i = 0; i < 5; ++i) {
+        const int vb = 16574 + i * 4;
+        int vp = -1, lsb = -1, msb = -1;
+        const bool have = rtx::cache::GetVarbit(vb, vp, lsb, msb);
+        const rtx::pins::Line pin = rtx::pins::Find("varbit", std::to_string(vb));
+        if (!pin.kind.empty() && have) {
+            const std::string want = pin.expect, now = rtx::cache::PinFingerprint("varbit", std::to_string(vb), "");
+            if (want != now) {
+                ++defsBad;
+                changed += (changed.empty() ? "" : "; ") + std::to_string(vb) + " changed: was " + bits(want) + ", now " + bits(now);
+                if (exp.empty()) { exp = "varbit " + std::to_string(vb) + " = " + bits(want); got = bits(now); }
             }
-            if (sh) UnmapViewOfFile((void*)sh);
-            CloseHandle(m);
         }
-        add("Chat (packets)", st, d);
+        if (!have) { ++defsBad; slots += (slots.empty() ? "" : "; ") + std::to_string(vb) + " gone"; continue; }
+        ++n;
+        const int raw = read_varp(c.h, c.root, vp);
+        const int v = (raw >> lsb) & (int)((1u << (msb - lsb + 1)) - 1);
+        if (v >= 1) ++assigned;
+        slots += (slots.empty() ? "" : "; ") + std::to_string(vb) + " -> varp " + std::to_string(vp) + " [" + std::to_string(lsb) + ".." + std::to_string(msb) + "] raw " + std::to_string(raw);
     }
-    {   // Daily challenges: slots in varbits 16574/16578/16582 (category 1..31)
-        int cats = 0;
-        for (int vb : { 16574, 16578, 16582 }) {
-            int vp = -1, lsb = -1, msb = -1;
-            if (!rtx::cache::GetVarbit(vb, vp, lsb, msb) || vp < 0) continue;
-            int raw = read_varp(h, *root, vp);
-            int v = (raw >> lsb) & (int)((1u << (msb - lsb + 1)) - 1);
-            if (v >= 1 && v <= 31) ++cats;
+    int ok;
+    std::string d;
+    if (defsBad) { ok = kFail; d = std::to_string(defsBad) + (defsBad == 1 ? " slot definition changed: " : " slot definitions changed: ") + changed + "; now " + slots; }
+    else if (!c.inWorld) { ok = kUnchecked; d = "not in the world; " + slots; }
+    else if (assigned) { ok = kPass; d = std::to_string(assigned) + " slots assigned; " + slots; }
+    else {
+        ok = kUnchecked;
+        int day = 0, vp = -1, lo = 0, hi = 0;
+        if (rtx::cache::GetVarbit(16572, vp, lo, hi)) day = (read_varp(c.h, c.root, vp) >> lo) & (int)((1u << (hi - lo + 1)) - 1);
+        const long long today = (long long)((std::time(nullptr) - 1014768000LL) / 86400);   // runeday 0 = 2002-02-27
+        d = (day > 0 && day >= today - 1) ? "set of runeday " + std::to_string(day) + " is current: challenges completed; " + slots
+                                          : "no challenges assigned; " + slots;
+    }
+    run.Add("Content", "content.dailies.slots", "Daily challenge slots", ok, d, "D&D Tracker: daily challenges", exp, got, "content.cache");
+}
+
+// ---- Live values (manifest "live" lines) ----
+void health_live(HCtx& c, rtx::health::Run& run) {
+    const char* G = "Live values";
+    const auto lines = rtx::pins::Lines();
+    int total = 0, good = 0;
+    for (const auto& l : *lines) {
+        if (l.kind != "live") continue;
+        ++total;
+        const std::size_t colon = l.key.find(':');
+        const std::string vk = l.key.substr(0, colon);
+        const int id = std::atoi(l.key.c_str() + (colon == std::string::npos ? 0 : colon + 1));
+        const std::string gate = rtx::pins::Field(l.expect, "gate");
+        const std::string rid = "live." + vk + "." + std::to_string(id);
+        const std::string key = (vk == "varp" ? "Varp " : vk == "varc" ? "Varc " : "Varbit ") + std::to_string(id);
+        if (gate == "world" && !c.inWorld) { run.Add(G, rid, key, kUnchecked, "not in the world", l.features); continue; }
+        long long v = 0; bool found = true;
+        if (vk == "varp") v = read_varp(c.h, c.root, id);
+        else if (vk == "varc") { int x = 0; found = read_varc_found(c.h, c.root, id, x); v = x; }
+        else if (vk == "varbit") {
+            int vp = -1, lo = 0, hi = 0;
+            found = rtx::cache::GetVarbit(id, vp, lo, hi);
+            if (found) v = (read_varp(c.h, c.root, vp) >> lo) & (long long)((1ull << (hi - lo + 1)) - 1);
         }
-        const bool logged = read_varp(h, *root, 13538) > 0;
-        add("Daily challenges", !logged ? 2 : cats > 0 ? 1 : 0,
-            !logged ? "not logged in" : cats > 0 ? (std::to_string(cats) + " slots assigned") : "no slot reads a category (varbit ids moved?)");
+        if (!found) { run.Add(G, rid, key, kFail, "not present", l.features, l.expect, "absent", "data.varps"); continue; }
+        long long x = v;
+        const std::string field = rtx::pins::Field(l.expect, "field");
+        if (!field.empty()) {
+            const int lo = std::atoi(field.c_str()), hi = std::atoi(field.c_str() + field.find("..") + 2);
+            x = (v >> lo) & (long long)((1ull << (hi - lo + 1)) - 1);
+        }
+        bool ok = true; std::string why;
+        const std::string range = rtx::pins::Field(l.expect, "range");
+        if (!range.empty()) {
+            const long long lo = std::atoll(range.c_str()), hi = std::atoll(range.c_str() + range.find("..") + 2);
+            if (x < lo || x > hi) { ok = false; why = "out of " + range; }
+        }
+        const std::string mask = rtx::pins::Field(l.expect, "mask");
+        if (!mask.empty() && ((unsigned long long)(std::uint32_t)x & ~std::strtoull(mask.c_str(), nullptr, 0))) { ok = false; why = "bits outside " + mask; }
+        const std::string set = rtx::pins::Field(l.expect, "set");
+        if (!set.empty()) {
+            bool in = false; std::size_t at = 0;
+            while (at <= set.size()) { std::size_t e = set.find(',', at); if (e == std::string::npos) e = set.size(); if (std::atoll(set.c_str() + at) == x) in = true; at = e + 1; }
+            if (!in) { ok = false; why = "not one of " + set; }
+        }
+        const std::string check = rtx::pins::Field(l.expect, "check");
+        if (check == "pouch" && x != -1) {
+            std::string nm = rtx::cache::ItemName((int)x);
+            for (char& ch : nm) ch = (char)std::tolower((unsigned char)ch);
+            if (nm.size() < 5 || nm.compare(nm.size() - 5, 5, "pouch") != 0) { ok = false; why = "item " + std::to_string(x) + " is not a pouch"; }
+        } else if (check.rfind("structparam", 0) == 0 && x != -1 && x != 0) {
+            std::string s; const int p = std::atoi(check.c_str() + 11);
+            if (!rtx::cache::StructStrParam((int)x, p, s) || s.empty()) { ok = false; why = "struct " + std::to_string(x) + " has no param " + std::to_string(p); }
+        } else if (check.rfind("enumkey", 0) == 0 && x != 0) {
+            const int e = std::atoi(check.c_str() + 7);
+            if (rtx::cache::EnumJson(e).find("\"" + std::to_string(x) + "\":") == std::string::npos) { ok = false; why = "not a key of enum " + std::to_string(e); }
+        } else if (check == "lpmax") {
+            long long con = -1;
+            for (const auto& s : SampleAll()) if (s.pid == c.pid && s.skills.size() > 3) con = s.skills[3].real;
+            if (con > 0 && (x < con * 100 - 2000 || x > con * 100 + 25000)) { ok = false; why = "not near 100 x Constitution " + std::to_string(con); }
+        } else if (check.rfind("lpcur", 0) == 0) {   // current life points: boosts go past the maximum, never 3 times it
+            const int maxVarp = std::atoi(check.c_str() + 5);
+            const long long mx = read_varp(c.h, c.root, maxVarp);
+            if (mx <= 0 || x < 0 || x > 3 * mx) { ok = false; why = "not within 0..3 x the maximum " + std::to_string(mx) + " (varp " + std::to_string(maxVarp) + ")"; }
+        }
+        if (ok) ++good;
+        run.Add(G, rid, key, ok ? kPass : kFail, std::to_string(x) + (ok ? "" : " (" + why + ")"), l.features, l.expect, std::to_string(x), "data.varps");
     }
-    {   // Perk layout: domain-5 varbits 30212, 30215..30222 and perk dbrow rank counts (Talking = 1, Honed = 6).
-        const PerkFieldLayout& L = perk_field_layout();
-        int talking = rtx::cache::PerkRankCount(23), honed = rtx::cache::PerkRankCount(5);
-        std::string d;
-        int st = 1;
-        if (!L.from_cache) { st = 0; d = "varbits 30212/30215..30222 not all resolved, built-in 950-1 layout in use"; }
-        else d = L.drift ? (std::to_string(L.drift) + " fields differ from the built-in layout, cache layout in use")
-                         : "9 fields match the cache";
-        if (talking != 1 || honed != 6) { st = 0; d += "; perk rank counts Talking=" + std::to_string(talking) + " Honed=" + std::to_string(honed) + " (expected 1/6)"; }
-        else d += "; rank counts ok";
-        add("Perk layout", st, d);
+    if (total == 0) run.Add(G, "live.none", "Live values", kUnchecked, "no live lines in the manifest", "", "", "", "content.pins");
+}
+
+// ---- Cache format ----
+void health_cache(HCtx& c, rtx::health::Run& run) {
+    (void)c;
+    const char* G = "Cache format";
+    rtx::pins::CheckCacheFormat(run);
+    for (const auto& r : rtx::cache::CacheParseHealth()) {
+        std::string note; int status;
+        if (r.total == 0) { status = kUnchecked; note = "no data (cache not open yet?)"; }
+        else {
+            note = std::to_string(r.ok) + "/" + std::to_string(r.total) + (r.sampled ? " sampled" : " parsed");
+            if (r.stop_n > 0) {
+                if (r.stop_op == 256)      note += ", " + std::to_string(r.stop_n) + " overrun mid-record";
+                else if (r.stop_op == 257) note += ", " + std::to_string(r.stop_n) + " schema mismatch";
+                else if (r.stop_op == 258) note += ", " + std::to_string(r.stop_n) + " ended with bytes unread";
+                else                       note += ", " + std::to_string(r.stop_n) + " break at opcode " + std::to_string(r.stop_op) + " (a new opcode)";
+            }
+            status = (r.ok == r.total) ? kPass : (r.ok * 20 >= r.total * 19 ? kWarn : kFail);
+        }
+        std::string slug = r.name; for (char& ch : slug) if (ch == ' ' || ch == '(' || ch == ')') ch = '-';
+        run.Add(G, "cache.parse." + slug, "Decode: " + r.name, status, note, "Everything that reads " + r.name, "", "", "");
     }
-    {   // Var domains: varbit archive defines all nine domains (0 player .. 8 campaign); var config
+    {   // var domains and quest tracking, kept from the earlier checks
         std::string cen = rtx::cache::VarbitDomainsJson();
         int doms = 0;
         for (int dom = 0; dom <= 8; ++dom) if (cen.find("\"" + std::to_string(dom) + "\":{") != std::string::npos) ++doms;
-        auto unknownOf = [](const std::string& j) {
-            auto p = j.find("\"unknown\":"); return p == std::string::npos ? -1 : std::atoi(j.c_str() + p + 10);
-        };
-        int u60 = unknownOf(rtx::cache::VarDefsJson(60)), u62 = unknownOf(rtx::cache::VarDefsJson(62));
-        int st = (doms == 9 && u60 == 0 && u62 == 0) ? 1 : (doms == 0 ? 2 : 0);
-        add("Var domains", st, doms == 0 ? "varbit archive not readable yet" :
-            std::to_string(doms) + "/9 domains defined; unknown var-config opcodes: player " + std::to_string(u60) + ", client " + std::to_string(u62));
-    }
-    {   // Quest tracking: a quest with no progress tracker renders as "Untracked", so this is the
-        // number that separates a quiet account from a broken cache read or a changed config format.
+        auto unknownOf = [](const std::string& j) { auto p = j.find("\"unknown\":"); return p == std::string::npos ? -1 : std::atoi(j.c_str() + p + 10); };
+        const int u60 = unknownOf(rtx::cache::VarDefsJson(60)), u62 = unknownOf(rtx::cache::VarDefsJson(62));
+        run.Add(G, "cache.vardomains", "Var domains", (doms == 9 && u60 == 0 && u62 == 0) ? kPass : (doms == 0 ? kUnchecked : kFail),
+                std::to_string(doms) + "/9 domains defined; unknown var-config opcodes: player " + std::to_string(u60) + ", client " + std::to_string(u62), "Every varbit read");
         const std::string j = rtx::cache::QuestHealthJson();
-        auto num = [&](const char* k) {
-            auto p2 = j.find(std::string("\"") + k + "\":");
-            return p2 == std::string::npos ? -1 : std::atoi(j.c_str() + p2 + std::strlen(k) + 3);
-        };
-        const int quests = num("quests"), tracked = num("tracked");
-        const int failed = num("failedArchives"), varbits = num("varbits");
-        int st; std::string d;
-        if (quests <= 0) {
-            st = 2; d = "cache not open yet";
-        } else {
-            d = std::to_string(tracked) + "/" + std::to_string(quests) + " quests resolve a progress tracker";
-            if (varbits <= 0) d += "; varbit map EMPTY (config archive 69 unreadable)";
-            else              d += "; " + std::to_string(varbits) + " varbits";
-            if (failed > 0)   d += "; " + std::to_string(failed) + " config archive(s) failed to read";
-            st = (tracked == quests && failed <= 0) ? 1 : 0;
-            if (tracked < quests) d += " -- the rest show as Untracked (quest config opcode moved?)";
+        auto num = [&](const char* k) { auto p2 = j.find(std::string("\"") + k + "\":"); return p2 == std::string::npos ? -1 : std::atoi(j.c_str() + p2 + std::strlen(k) + 3); };
+        const int quests = num("quests"), tracked = num("tracked"), failed = num("failedArchives");
+        run.Add(G, "cache.quests", "Quest tracking", quests <= 0 ? kUnchecked : (tracked == quests && failed <= 0 ? kPass : kFail),
+                quests <= 0 ? "cache not open yet" : std::to_string(tracked) + "/" + std::to_string(quests) + " quests resolve a progress tracker" + (failed > 0 ? "; " + std::to_string(failed) + " config archives failed" : ""),
+                "Quests panel|Quest helper");
+        const PerkFieldLayout& L = perk_field_layout();
+        const int talking = rtx::cache::PerkRankCount(23), honed = rtx::cache::PerkRankCount(5);
+        run.Add(G, "cache.perks", "Perk layout", (L.from_cache && talking == 1 && honed == 6) ? kPass : kFail,
+                std::string(L.from_cache ? (L.drift ? std::to_string(L.drift) + " fields differ from the built-in layout, cache layout in use" : "9 fields match the cache") : "perk varbits not all resolved, built-in layout in use") +
+                "; rank counts Talking=" + std::to_string(talking) + " Honed=" + std::to_string(honed), "Perks panel");
+    }
+}
+
+// ---- Companion ----
+void health_companion(HCtx& c, rtx::health::Run& run) {
+    const char* G = "Companion";
+    const rtx::bootlog::Boot b = rtx::bootlog::Read(c.pid);
+    if (!b.found) {
+        run.Add(G, "comp.boot", "Boot record", kFail, "no companion boot record for this client (the companion did not load)", "Everything the companion does");
+    } else {
+        int attached = 0; std::string missing, refused;
+        for (const auto& hk : b.hooks) {
+            if (hk.state == "ATTACHED") ++attached;
+            else if (hk.state == "REFUSED") refused += (refused.empty() ? "" : ", ") + hk.name;
+            else missing += (missing.empty() ? "" : ", ") + hk.name + " " + hk.state;
         }
-        add("Quest tracking", st, d);
+        std::string d = std::to_string(attached) + " attached" + (missing.empty() ? "" : "; " + missing) +
+                        (refused.empty() ? "" : "; held back: " + refused) +
+                        (b.attached < 0 ? " (record predates the hook summary)" : "");
+        run.Add(G, "comp.boot", "Boot record", missing.empty() ? kPass : kFail, d, "Everything the companion does", "", "", "");
+        for (const auto& hk : b.hooks) {
+            const int sig = run.StatusOf("code.sig." + hk.name);
+            std::string dd = hk.state + (hk.rva ? " at " + hx(hk.rva) : std::string()) + (hk.note.empty() || hk.rva ? std::string() : " " + hk.note);
+            int ok = hk.state == "ATTACHED" ? kPass : hk.state == "REFUSED" ? kUnchecked : kFail;
+            if (ok == kFail && sig == kPass) dd += "; this build's signature finds it (the companion running now predates it; a companion built from this source attaches it)";
+            if (ok == kPass && sig == kFail) { ok = kWarn; dd += "; its signature row fails for this exe (see Signature " + hk.name + ")"; }
+            run.Fact("hook." + hk.name, hk.state + (hk.rva ? "@" + hx(hk.rva) : std::string()));
+            run.Add(G, "comp.hook." + hk.name, "Hook " + hk.name, ok, dd, "", "ATTACHED", hk.state, "comp.boot");
+        }
+        // heartbeat: a graphic id that never changes reads the wrong field
+        if (b.beats.size() >= 3) {
+            std::set<std::string> gfx;
+            for (const auto& s : b.beats) { const std::size_t p = s.find("gfx="); if (p != std::string::npos) gfx.insert(s.substr(p + 4, s.find(' ', p) - p - 4)); }
+            const bool constant = gfx.size() == 1 && *gfx.begin() != "0";
+            run.Add(G, "comp.heartbeat", "Heartbeat", constant ? kWarn : kPass,
+                    constant ? "type-4 graphic reads " + *gfx.begin() + " in every beat (graphic field offset wrong in the running companion)" : std::to_string(b.beats.size()) + " recent beats",
+                    "Specials: clue scan ring", "", "", "comp.boot");
+        }
+        for (const auto& n : b.notes)
+            if (n.find("are from game build") != std::string::npos || n.find("not extracted") != std::string::npos)
+                run.Add(G, "comp.engineops", "Engine ops names", kFail, n, "Asks|Sounds|Camera|In-frame panels", "", "", "comp.boot");
     }
-    {   // Var domain stores: player and client tables must resolve; clan / player group absent is normal.
-        std::string j = VarDomainStoresJson(pid);
-        auto field = [&](const char* dom, const char* name) -> std::string {
-            auto p = j.find("\"" + std::string(dom) + "\":{"); if (p == std::string::npos) return "";
-            auto q = j.find("\"" + std::string(name) + "\":", p); if (q == std::string::npos) return "";
-            q += std::strlen(name) + 3; auto e = j.find_first_of(",}", q);
-            return j.substr(q, e - q);
-        };
-        bool p0 = field("0", "live") == "true";
-        bool p2 = field("2", "live") == "true" && field("2", "vt") == "true";
-        std::string d = "player " + (p0 ? "ok (" + field("0", "count") + " vars)" : "FAILED") +
-                        ", client " + (p2 ? "ok (" + field("2", "count") + " vars)" : "FAILED") +
-                        ", clan " + (field("6", "live") == "true" ? field("6", "count") + " vars" : "absent") +
-                        ", player group " + (field("9", "live") == "true" ? field("9", "count") + " vars" : "absent");
-        add("Var domain stores", (p0 && p2) ? 1 : 0, d);
+    if (c.cli) {
+        run.Add(G, "comp.channels", "Live channels", kUnchecked, "launcher only (channel names are per session)", "Overlays|Specials|Live variables|Packets|Menus|Sounds|Chat mute", "", "", "comp.boot");
+        return;
     }
-    {   // Scene objects: runtime loc ids proven by a static map placement of that id on the same tile
+    {
+        wchar_t name[rtx::ipc::kNameChars]; rtx::frame::MakeSectionName(c.pid, name);
+        ShareMap<rtx::frame::Share> f;
+        int ok = kFail; std::string d = "frame channel not mapped";
+        if (f.open(name) && f.sh->magic == rtx::frame::kMagic) {
+            if (f.sh->module_seq > 0 && f.sh->client_w > 0 && f.sh->client_h > 0) { ok = kPass; d = "compositing at " + std::to_string(f.sh->client_w) + "x" + std::to_string(f.sh->client_h) + ", " + std::to_string(f.sh->module_seq) + " presents"; }
+            else d = "mapped, the game never presented through it";
+        }
+        run.Add(G, "comp.frame", "In-game UI frame", ok, d, "In-game panels|Overlays", "", "", "comp.boot");
+    }
+    {
+        wchar_t name[rtx::ipc::kNameChars]; rtx::render::MakeSectionName(c.pid, name);
+        ShareMap<rtx::render::Share> r;
+        int ok = kFail; std::string d = "render channel not mapped";
+        if (r.open(name) && r.sh->magic == rtx::render::kMagic) {
+            const std::uint32_t in = r.sh->installed;
+            const bool vk = c.flavour == "vulkan";
+            const bool want = (in & 3) == 3 && (vk || (in & 4));
+            ok = want ? kPass : kFail;
+            d = std::string((in & 1) ? "NPC hide" : "no NPC hide") + ", " + ((in & 2) ? "player hide" : "no player hide") + ", " + ((in & 4) ? "scene blank" : vk ? "no scene blank (Vulkan)" : "no scene blank");
+        }
+        run.Add(G, "comp.render", "Rendering toggles", ok, d, "Rendering panel", "", "", "comp.boot");
+    }
+    {
+        wchar_t name[rtx::ipc::kNameChars]; rtx::special::MakeSectionName(c.pid, name);
+        ShareMap<rtx::special::Share> s;
+        int ok = kFail; std::string d = "specials channel not mapped";
+        if (s.open(name) && s.sh->magic == rtx::special::kMagic) {
+            ok = (s.sh->flags & 1) ? kPass : kFail;
+            d = std::string((s.sh->flags & 1) ? "spawn observer installed" : "spawn observer missing") + ", tracked " + std::to_string(s.sh->diag[6]) + ", last graphic " + std::to_string(s.sh->diag[2]);
+        }
+        run.Add(G, "comp.specials", "Specials", ok, d, "Specials: graphic highlights|Clue scan", "", "", "comp.boot");
+    }
+    {
+        wchar_t name[rtx::ipc::kNameChars]; rtx::varc::MakeSectionName(c.pid, name);
+        ShareMap<rtx::varc::Share> v;
+        int ok = kFail; std::string d = "variables channel not mapped";
+        if (v.open(name) && v.sh->magic == rtx::varc::kMagic && v.sh->version == rtx::varc::kVersion) {
+            const std::uint32_t f = v.sh->flags;
+            ok = (f & 1) && (f & 2) ? kPass : kFail;
+            d = std::string((f & 1) ? "var observers installed" : "var observers missing") + ", " + ((f & 2) ? "drag observer installed" : "drag observer missing");
+        }
+        run.Add(G, "comp.vars", "Live variables", ok, d, "Live variable changes|Interface drag", "", "", "comp.boot");
+    }
+    {
+        wchar_t name[rtx::ipc::kNameChars]; rtx::netprobe::MakeSectionName(c.pid, name);
+        ShareMap<rtx::netprobe::Share> n;
+        int ok = kFail; std::string d = "packet channel not mapped";
+        if (n.open(name) && n.sh->magic == rtx::netprobe::kMagic) {
+            const bool hooked = (n.sh->flags & 1) != 0;
+            ok = hooked ? (n.sh->diag[2] ? kWarn : kPass) : kFail;
+            d = std::string(hooked ? "framer hooked at " + hx(n.sh->framerRva) : "framer not hooked") + ", " + std::to_string(n.sh->chatSeen) + " chat packets" +
+                (n.sh->diag[2] ? ", " + std::to_string(n.sh->diag[2]) + " opcodes above the bound dropped" : "");
+        }
+        run.Add(G, "comp.netprobe", "Packet capture", ok, d, "Chat capture|Events channel|Packet feed", "", "", "comp.boot");
+    }
+    {   // runtime scenery the companion publishes: loc ids on a cache placement of that id and tile
         std::vector<RuntimeObj> objs;
-        if (ReadRuntimeObjects(pid, objs) && !objs.empty()) {
-            std::unordered_map<int, std::unordered_set<long long>> regionSets;   // region key -> (id<<20|x<<10|y)
-            int matched = 0, total = 0, rendered = 0;
-            for (size_t i = 0; i < objs.size() && total < 300; ++i) {
+        int ok = kUnchecked, matched = 0, total = 0, rendered = 0; std::string d = "no runtime objects published yet";
+        if (ReadRuntimeObjects(c.pid, objs) && !objs.empty()) {
+            std::unordered_map<int, std::unordered_set<long long>> sets;
+            for (std::size_t i = 0; i < objs.size() && total < 300; ++i) {
                 const auto& r = objs[i];
                 if (r.config_id <= 0) continue;
                 ++total;
                 if (r.bmax[0] > r.bmin[0]) ++rendered;
                 const int rx = r.x >> 6, ry = r.y >> 6, key = (rx << 8) | ry;
-                auto it = regionSets.find(key);
-                if (it == regionSets.end()) {
-                    auto& set = regionSets[key];
+                auto it = sets.find(key);
+                if (it == sets.end()) {
+                    auto& s = sets[key];
                     for (const auto& pl : rtx::cache::RegionLocations(rx, ry))
-                        set.insert(((long long)pl.id << 20) | ((long long)(rx * 64 + pl.x) << 10) | (long long)(ry * 64 + pl.y));
-                    it = regionSets.find(key);
+                        s.insert(((long long)pl.id << 28) | ((long long)(rx * 64 + pl.x) << 14) | (long long)(ry * 64 + pl.y));
+                    it = sets.find(key);
                 }
-                if (it->second.count(((long long)r.config_id << 20) | ((long long)r.x << 10) | (long long)r.y)) ++matched;
+                if (it->second.count(((long long)r.config_id << 28) | ((long long)r.x << 14) | (long long)r.y)) ++matched;
             }
-            const bool ok = total == 0 || matched * 10 >= total;   // 10 % leaves headroom for dynamic areas
-            add("Scene objects", ok ? 1 : 0,
-                std::to_string(matched) + "/" + std::to_string(total) + " loc ids match a map placement on their tile, " +
-                std::to_string(rendered) + " with a live model" + (ok ? "" : " (companion loc-id field moved)"));
-        } else {
-            add("Scene objects", 2, "no runtime objects published yet");
+            ok = (total == 0 || matched * 10 >= total) ? kPass : kFail;   // 10 % leaves room for dynamic areas
+            d = std::to_string(matched) + "/" + std::to_string(total) + " loc ids sit on a map placement of that id, " +
+                std::to_string(rendered) + " with a live model" + (ok == kPass ? "" : " (companion loc id or tile field moved?)");
+        }
+        run.Add(G, "comp.objects", "Scene objects", ok, d, "Scene objects|Loc labels|Tree timers|Plugins scene API", "10 %",
+                std::to_string(matched) + "/" + std::to_string(total), "comp.boot");
+    }
+}
+
+}  // namespace
+
+void SetHealthHeadless(bool headless) { g_healthHeadless.store(headless); }
+
+std::string ReaderHealthJson(std::uint32_t pid, const std::string& runtimePinsJson) {
+    static std::mutex runMu;   // one run at a time: the build record and the history are per run
+    std::lock_guard<std::mutex> runLock(runMu);
+    const ULONGLONG t0 = GetTickCount64();
+    rtx::health::Run run;
+    HCtx c;
+    c.pid = pid;
+    c.cli = g_healthHeadless.load();
+    c.runtimePins = runtimePinsJson;
+    {
+        std::lock_guard<std::mutex> lk(g_mu);
+        auto it = g_states.find((DWORD)pid);
+        if (it != g_states.end()) { c.version = it->second.client_version; c.flavour = it->second.gfx_mode == "Vulkan" ? "vulkan" : it->second.gfx_mode == "OpenGL" ? "opengl" : ""; }
+    }
+    auto ps = snap_proc(pid);
+    if (!ps) {
+        run.Add("Context", "context.client", "Game client", kFail, "not connected (no rs2client.exe with this pid, or MainData not resolved)", "Everything");
+        run.Section("context", std::string("{\"process\":\"") + (c.cli ? "cli" : "launcher") + "\"}");
+        const std::string json = run.Json(c.version, (long long)(GetTickCount64() - t0));
+        if (!rtx::pins::Overridden()) rtx::health::SaveHistory(json, "");
+        return json;
+    }
+    c.h = ps.h; c.mgva = ps.mgva; c.base = ps.mod_base; c.size = ps.mod_size;
+    {
+        wchar_t path[MAX_PATH] = {}; DWORD n = MAX_PATH;
+        if (QueryFullProcessImageNameW(c.h, 0, path, &n)) c.exe = path;
+    }
+    c.root = rpm<std::uint64_t>(c.h, c.mgva).value_or(0);
+    if (c.root > 0x10000) {
+        c.status = rpm<std::int8_t>(c.h, c.root + kOffStatus).value_or(-1);
+        if (auto p1 = rpm<std::uint64_t>(c.h, c.root + kOffWorld); p1 && *p1 > 0x10000)
+            if (auto p2 = rpm<std::uint64_t>(c.h, *p1 + 0x20); p2 && *p2 > 0x10000) c.world = rpm<std::int32_t>(c.h, *p2 + 8).value_or(-1);
+        const std::uint64_t pdata = rpm<std::uint64_t>(c.h, c.root + kOffAccount).value_or(0);
+        c.localUid = pdata > 0x10000 ? rpm<std::int32_t>(c.h, pdata + rtx::scn::kLocalUid).value_or(-1) : -1;
+        const std::uint64_t cont = rpm<std::uint64_t>(c.h, c.root + rtx::scn::kContainer).value_or(0);
+        const int idx = cont > 0x10000 ? rpm<std::int32_t>(c.h, cont + rtx::scn::kActiveIdx).value_or(-1) : -1;
+        const std::uint64_t arr = cont > 0x10000 ? rpm<std::uint64_t>(c.h, cont + rtx::scn::kEntryArr).value_or(0) : 0;
+        c.wv = (idx >= 0 && arr > 0x10000) ? rpm<std::uint64_t>(c.h, arr + (std::uint64_t)idx * 0x10 + rtx::scn::kEntryWv).value_or(0) : 0;
+        if (c.wv > 0x10000) { CamProbes probes; auto w = scene_worker(c.h, pid, c.wv, &probes); c.worker = w ? *w : 0; }
+        if (c.localUid >= 0) c.localSec = local_player_sec_fast(c.h, c.root, c.localUid);
+        if (!c.localSec && c.worker) {
+            std::vector<std::pair<std::uint64_t, std::uint64_t>> secs; scene_secs(c, secs);
+            for (const auto& es : secs)
+                if (rpm<std::uint8_t>(c.h, es.second + rtx::scn::kType).value_or(0xFF) == 2 && rpm<std::int32_t>(c.h, es.second + rtx::scn::kUid).value_or(-1) == c.localUid) { c.localSec = es.second; break; }
         }
     }
-    {   // Actor true tile: every player and NPC must carry a well-formed movement route, and a moving
-        // actor's newest route entry must sit within 2 tiles of its visible position.
-        int total = 0, routes = 0, moving = 0, close = 0;
-        auto root = rpm<std::uint64_t>(h, ps.mgva);
-        auto cont = (root && *root > 0x10000) ? rpm<std::uint64_t>(h, *root + rtx::scn::kContainer) : std::nullopt;
-        auto idx  = (cont && *cont > 0x10000) ? rpm<std::int32_t>(h, *cont + rtx::scn::kActiveIdx) : std::nullopt;
-        auto arr  = (cont && *cont > 0x10000) ? rpm<std::uint64_t>(h, *cont + rtx::scn::kEntryArr) : std::nullopt;
-        auto wv   = (idx && *idx >= 0 && arr && *arr > 0x10000) ? rpm<std::uint64_t>(h, *arr + (std::uint64_t)*idx * 0x10 + rtx::scn::kEntryWv) : std::nullopt;
-        auto worker = (wv && *wv > 0x10000) ? scene_worker(h, pid, *wv, nullptr) : std::optional<std::uint64_t>{};
-        auto vb = worker ? rpm<std::uint64_t>(h, *worker + rtx::scn::kVecBegin) : std::nullopt;
-        auto ve = worker ? rpm<std::uint64_t>(h, *worker + rtx::scn::kVecEnd) : std::nullopt;
-        if (vb && ve && *vb > 0x10000 && *ve >= *vb) {
-            std::uint64_t n = (*ve - *vb) / 8; if (n > 20000) n = 20000;
-            for (std::uint64_t i = 0; i < n && total < 300; ++i) {
-                auto ep = rpm<std::uint64_t>(h, *vb + i * 8);
-                if (!ep || *ep <= 0x10000) continue;
-                auto sec = rpm<std::uint64_t>(h, *ep + rtx::scn::kSecPtr);
-                if (!sec || *sec <= 0x10000) continue;
-                int type = rpm<std::uint8_t>(h, *sec + rtx::scn::kType).value_or(0xff);
-                if (type != 1 && type != 2) continue;
-                auto fx = rpm<float>(h, *sec + rtx::scn::kPosX), fy = rpm<float>(h, *sec + rtx::scn::kPosY);
-                if (!fx || !fy || *fx <= 0.f || *fy <= 0.f) continue;
-                ++total;
-                auto mm = rpm<std::uint64_t>(h, *sec + rtx::scn::kMoveMgr);
-                if (!mm || *mm <= 0x10000) continue;
-                auto beg = rpm<std::uint64_t>(h, *mm + rtx::scn::kRouteBegin), end = rpm<std::uint64_t>(h, *mm + rtx::scn::kRouteEnd);
-                auto wr  = rpm<std::uint64_t>(h, *mm + rtx::scn::kRouteWrite);
-                if (!beg || !end || !wr || *beg <= 0x10000 || *end - *beg != 21 * rtx::scn::kRouteStride || *wr < *beg || *wr > *end) continue;
-                ++routes;
-                int tx = (int)(*fx / 512.f), ty = (int)(*fy / 512.f), ttx = tx, tty = ty;
-                if (!actor_true_tile(h, *sec, ttx, tty)) continue;
-                ++moving;
-                if (std::abs(ttx - tx) <= 2 && std::abs(tty - ty) <= 2) ++close;
-            }
-        }
-        if (total == 0) add("Actor true tile", 2, "no players or NPCs in the scene yet");
-        else {
-            const bool ok = routes * 10 >= total * 9 && (moving == 0 || close * 10 >= moving * 9);
-            add("Actor true tile", ok ? 1 : 0,
-                std::to_string(routes) + "/" + std::to_string(total) + " actors carry a movement route, " +
-                std::to_string(close) + "/" + std::to_string(moving) + " moving within 2 tiles of the visible position" +
-                (ok ? "" : " (route object at sec+0x268 moved?)"));
-        }
+    c.inWorld = c.status == 30 && c.localUid >= 0;
+
+    health_context(c, run);
+    health_build(c, run);
+    rtx::codescan::Check(c.exe, run);
+    health_calibration(c, run);
+    if (c.root > 0x10000) {
+        health_data(c, run);
+        health_player(c, run);
+        health_scene(c, run);
+        health_interfaces(c, run);
+        health_packets(c, run);
+    } else {
+        // the anchor is found and the root is empty: the lobby or a load, not a moved layout
+        const bool anchored = run.StatusOf("code.sig.main-anchor") == kPass;
+        run.Add("Game data", "data.root", "Root and status", anchored ? kUnchecked : kFail,
+                anchored ? "MainData root not set (lobby or loading)" : "MainData root not readable", "Everything", "", "", "code.sig.main-anchor");
     }
-    for (const auto& r : rtx::cache::CacheParseHealth()) {
-        std::string note;
-        int status;
-        if (r.total == 0) { status = 2; note = "no data (cache not open yet?)"; }
-        else {
-            note = std::to_string(r.ok) + "/" + std::to_string(r.total) +
-                   (r.sampled ? " sampled" : " parsed");
-            if (r.stop_n > 0) {
-                if (r.stop_op == 256)      note += ", " + std::to_string(r.stop_n) + " overrun mid-record";
-                else if (r.stop_op == 257) note += ", " + std::to_string(r.stop_n) + " schema mismatch";
-                else if (r.stop_op == 258) note += ", " + std::to_string(r.stop_n) + " ended with bytes unread";
-                else                       note += ", " + std::to_string(r.stop_n) + " break at opcode " + std::to_string(r.stop_op);
-            }
-            status = (r.ok == r.total) ? 1 : (r.ok * 20 >= r.total * 19 ? 2 : 0);
-        }
-        add(("Cache: " + r.name).c_str(), status, note);
+    {
+        run.Add("Content", "content.cache", "Cache open", rtx::cache::IndexInfo(2).open ? kPass : kFail,
+                rtx::cache::IndexInfo(2).open ? rtx::cache::CacheRoot() : "config index not readable", "Every cache read");
+        rtx::pins::CheckContent(run, c.runtimePins);
+        if (c.root > 0x10000) health_dailies(c, run);
     }
-    return "{\"version\":\"" + json_escape(version) + "\",\"checks\":[" + checks + "]}";
+    if (c.root > 0x10000) health_live(c, run);
+    health_cache(c, run);
+    health_companion(c, run);
+
+    const long long ms = (long long)(GetTickCount64() - t0);
+    char st[16]; std::snprintf(st, sizeof(st), "%08x", c.stamp);
+    const std::string json = run.Json(c.version, ms);
+    if (!rtx::pins::Overridden()) {   // a test manifest: not a verdict on this build
+        rtx::health::SaveHistory(json, st);
+        rtx::health::BuildsRecord(c.version, st, c.flavour, g_buildRevs, run.Count(kFail), g_buildCarried);
+    }
+    return json;
 }
 
 HostInfo ReadHost() {

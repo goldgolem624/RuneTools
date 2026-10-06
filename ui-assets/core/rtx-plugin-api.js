@@ -455,6 +455,12 @@ try{parent.postMessage({__rtxPlugin:P,kind:'hello'},'*');}catch(e){}})();`;
     'host.cacheStoreLoad':    { scope: 'host',        json: false, run: (a) => bridge().cacheStoreLoad(...pArgs(a)) },
     'host.xpPanelState':      { scope: 'host',        json: false, run: (a, pid) => bridge().xpPanelState(pid, ...pArgs(a)) },
     'host.readerHealth':      { scope: 'host',        json: true,  run: (a, pid) => bridge().readerHealth(pid, ...pArgs(a)) },
+    'host.readerHealthStart': { scope: 'host',        json: false, run: (a, pid) => bridge().readerHealthStart(pid, ...pArgs(a, 1 << 20)) },
+    'host.readerHealthPoll':  { scope: 'host',        json: true,  run: () => bridge().readerHealthPoll() },
+    'host.healthHistory':     { scope: 'host',        json: true,  run: () => bridge().healthHistory() },
+    'host.healthRead':        { scope: 'host',        json: true,  run: (a) => bridge().healthRead(...pArgs(a)) },
+    'host.healthDiff':        { scope: 'host',        json: true,  run: (a) => bridge().healthDiff(...pArgs(a)) },
+    'host.healthMarkReviewed':{ scope: 'host',        json: false, run: (a) => bridge().healthMarkReviewed(...pArgs(a)) },
     'cache.iconSource':   { scope: 'cache.read', json: false, run: (a) => bridge().iconSource(pClampId(a[0])) },   // pack | rendered | none
     'host.iconMisses':        { scope: 'host',        json: true,  run: () => bridge().iconMisses() },
     'host.iconCoverage':      { scope: 'host',        json: true,  run: () => bridge().iconCoverage() },

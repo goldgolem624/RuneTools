@@ -1,4 +1,5 @@
 #include "EngineHighlight.h"
+#include "Signatures.h"
 
 #include <windows.h>
 #include <cstring>
@@ -20,15 +21,7 @@ constexpr int kAny = -1;
 //   test rdx, rdx ; je              48 85 D2 74 ..
 //   cmp byte ptr [rdx+off], 0       80 BA <off32> 00       (the definition's opt-out)
 // Offsets and displacements are wildcards, so a build that moves them still matches.
-constexpr int kSwitchSig[] = {
-    0x80, 0x3D, kAny, kAny, kAny, kAny, 0x00,
-    0x0F, 0x29, 0x74, 0x24, kAny,
-    0x75, kAny,
-    0x80, 0x39, 0x00,
-    0x75, kAny,
-    0x48, 0x85, 0xD2, 0x74, kAny,
-    0x80, 0xBA, kAny, kAny, 0x00, 0x00, 0x00,
-};
+constexpr const auto& kSwitchSig = rtx::sig::kOutlineSwitch;
 constexpr std::size_t kSwitchDispAt = 2, kSwitchInsnEnd = 7;
 
 // The script op that sets a category's mode, which is where the category table is named:
@@ -38,14 +31,7 @@ constexpr std::size_t kSwitchDispAt = 2, kSwitchInsnEnd = 7;
 //   add rax, rax                    48 03 C0
 //   lea rcx, [rip+disp]             48 8D 0D <disp32>      <- the table
 //   mov [rcx+rax*8], r8b            44 88 04 C1
-constexpr int kTableSig[] = {
-    0x83, 0xF8, 0x07, 0x77, kAny,
-    0x44, 0x8B, 0x81, kAny, kAny, 0x00, 0x00,
-    0x41, 0x83, 0xF8, 0x03, 0x77, kAny,
-    0x48, 0x03, 0xC0,
-    0x48, 0x8D, 0x0D, kAny, kAny, kAny, kAny,
-    0x44, 0x88, 0x04, 0xC1,
-};
+constexpr const auto& kTableSig = rtx::sig::kOutlineTable;
 constexpr std::size_t kTableDispAt = 24, kTableInsnEnd = 28;
 
 // One category: mode byte, the outline width as a byte, then the colour as three floats 0..1.

@@ -13,6 +13,10 @@
 #include "Overlay.h"
 #include "Process.h"
 #include "../reader/Reader.h"
+#include "../reader/Calibrate.h"
+#include "../reader/CodeScan.h"
+#include "../reader/HealthRun.h"
+#include "../reader/Pins.h"
 #include "../cache/CacheReader.h"
 #include "WinNotify.h"
 #include "../shared/Log.h"
@@ -434,17 +438,81 @@ int APIENTRY wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
         LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
         // --iface-dump <pid> [group[:comps]]: print the open interface groups (with the engine mount and the
         // resolved screen origin of each) or one group's comps to iface-dump.txt and exit. No window.
-        // --health <pid>: the reader health rows for a live client to health.txt and exit. No window.
+        // --health <pid> [pins file]: the update check for a live client: health.txt (JSON),
+        // health-summary.txt (grouped text) and a copy in the run history. No window.
+        // --health-diff <a.json> <b.json>: what changed between two runs, to health-diff.txt.
+        // --health-diff - [run name]: a history run (the newest when left out) against the run the
+        // launcher compares it with (last clean, previous build or previous run).
+        // --sigs-check <exe>: the client code group alone for any exe on disk, to sigs-check.txt.
+        // --sigs-record <exe>: that exe's per-build pins file lines, to sigs-record.txt.
+        // --pins-check [pins file]: the cache content and format groups, no game, to pins-check.txt.
+        // --pins-record <ids.tsv> <out.tsv>: a pins file recorded from the cache now; log to pins-record.txt.
+        // All read only. They end the process directly: the reader's sampler threads are still
+        // running and would fault in static teardown.
+        auto headless_exit = [&](int code) -> int {
+            rtx::log::BeginShutdown();
+            LocalFree(argv);
+            TerminateProcess(GetCurrentProcess(), (UINT)code);
+            return code;
+        };
+        auto opcodes_json = []() -> std::wstring {
+            wchar_t up[MAX_PATH] = {};
+            return GetEnvironmentVariableW(L"USERPROFILE", up, MAX_PATH) ? std::wstring(up) + L"\\RuneToolsX\\cs2\\opcodes.json" : std::wstring();
+        };
         if (argv && argc >= 3 && std::wstring(argv[1]) == L"--health") {
             std::uint32_t pid = (std::uint32_t)_wtoi(argv[2]);
+            if (argc >= 4) rtx::pins::UseFile(argv[3]);
             rtx::log::Init();
+            rtx::reader::SetHealthHeadless(true);
             rtx::reader::SampleAll();
             Sleep(3000);
             rtx::reader::SampleAll();
             std::string out = rtx::reader::ReaderHealthJson(pid);
             { std::ofstream f("health.txt", std::ios::binary | std::ios::trunc); f << out; }
-            LocalFree(argv);
-            return 0;
+            { std::ofstream f("health-summary.txt", std::ios::binary | std::ios::trunc); f << rtx::health::SummaryText(out); }
+            return headless_exit(0);
+        }
+        if (argv && argc >= 3 && std::wstring(argv[1]) == L"--health-diff" && std::wstring(argv[2]) == L"-") {
+            std::string name;
+            if (argc >= 4) { for (const wchar_t* p = argv[3]; *p; ++p) name.push_back(*p < 0x80 ? static_cast<char>(*p) : '?'); }
+            else {
+                rtx::health::JVal list;
+                if (rtx::health::ParseJson(rtx::health::HistoryListJson(), list) && !list.a.empty()) name = list.a[0].str("name");
+            }
+            const std::string newer = rtx::health::HistoryRead(name);
+            rtx::health::JVal v;
+            std::string flavour, against;
+            if (rtx::health::ParseJson(newer, v)) if (const rtx::health::JVal* bl = v.get("build")) flavour = bl->str("flavour");
+            const std::string older = newer.empty() ? std::string() : rtx::health::LastGood(flavour, name, &against);
+            std::string out = "run: " + name + "\n";
+            out += older.empty() ? std::string("no run to compare with\n") : rtx::health::DiffText(older, newer, against);
+            { std::ofstream f("health-diff.txt", std::ios::binary | std::ios::trunc); f << out; }
+            return headless_exit(0);
+        }
+        if (argv && argc >= 4 && std::wstring(argv[1]) == L"--health-diff") {
+            auto slurp = [](const wchar_t* p) { std::ifstream f(p, std::ios::binary); std::ostringstream ss; ss << f.rdbuf(); return ss.str(); };
+            const std::string a = slurp(argv[2]), b = slurp(argv[3]);
+            { std::ofstream f("health-diff.txt", std::ios::binary | std::ios::trunc); f << rtx::health::DiffText(a, b); }
+            return headless_exit(0);
+        }
+        if (argv && argc >= 3 && (std::wstring(argv[1]) == L"--sigs-check" || std::wstring(argv[1]) == L"--sigs-record")) {
+            const bool record = std::wstring(argv[1]) == L"--sigs-record";
+            if (argc >= 4) rtx::pins::UseFile(argv[3]);
+            rtx::calib::Run(argv[2], opcodes_json());
+            const std::string out = record ? rtx::codescan::Record(argv[2]) : rtx::codescan::CheckText(argv[2]);
+            { std::ofstream f(record ? "sigs-record.txt" : "sigs-check.txt", std::ios::binary | std::ios::trunc); f << out; }
+            return headless_exit(0);
+        }
+        if (argv && argc >= 2 && std::wstring(argv[1]) == L"--pins-check") {
+            const std::string out = rtx::pins::CheckText(argc >= 3 ? std::wstring(argv[2]) : std::wstring());
+            { std::ofstream f("pins-check.txt", std::ios::binary | std::ios::trunc); f << out; }
+            return headless_exit(0);
+        }
+        if (argv && argc >= 4 && std::wstring(argv[1]) == L"--pins-record") {
+            std::string log;
+            const int n = rtx::pins::Record(argv[2], argv[3], log);
+            { std::ofstream f("pins-record.txt", std::ios::binary | std::ios::trunc); f << log; }
+            return headless_exit(n >= 0 ? 0 : 1);
         }
         if (argv && argc >= 3 && std::wstring(argv[1]) == L"--iface-dump") {
             std::uint32_t pid = (std::uint32_t)_wtoi(argv[2]);
