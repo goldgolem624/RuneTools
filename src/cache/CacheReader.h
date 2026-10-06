@@ -123,6 +123,8 @@ std::string MenuSearchJson(int kind, const std::string& query, int limit);
 bool GetLocMorph(int loc_id, int& varbit, int& varp, int& def_child, std::vector<int>& variants);
 
 bool GetVarbit(int varbit_id, int& varp, int& lsb, int& msb);
+// Bits of player varp `varp` that some varbit's field covers.
+std::uint64_t VarpFieldMask(int varp);
 // Domain-5 (item instance) varbit: `var` is the instance key (INV_GETVAR). Perks use 30212 (item XP), 30215..30222 (gizmo perks).
 bool GetObjVarbit(int varbit_id, int& var, int& lsb, int& msb);
 

@@ -10394,8 +10394,16 @@ void health_live(HCtx& c, rtx::health::Run& run) {
             const long long lo = std::atoll(range.c_str()), hi = std::atoll(range.c_str() + range.find("..") + 2);
             if (x < lo || x > hi) { ok = false; why = "out of " + range; }
         }
+        // mask=varbits: the bits some cache varbit defines on this varp, so no account's flags read as foreign
         const std::string mask = rtx::pins::Field(l.expect, "mask");
-        if (!mask.empty() && ((unsigned long long)(std::uint32_t)x & ~std::strtoull(mask.c_str(), nullptr, 0))) { ok = false; why = "bits outside " + mask; }
+        if (!mask.empty()) {
+            const bool fields = mask == "varbits";
+            const unsigned long long m = fields ? rtx::cache::VarpFieldMask(id) : std::strtoull(mask.c_str(), nullptr, 0);
+            if ((unsigned long long)(std::uint32_t)x & ~m) {
+                char mb[24]; std::snprintf(mb, sizeof(mb), "0x%llX", m);
+                ok = false; why = fields ? std::string("bits outside its varbits (") + mb + ")" : "bits outside " + mask;
+            }
+        }
         const std::string set = rtx::pins::Field(l.expect, "set");
         if (!set.empty()) {
             bool in = false; std::size_t at = 0;

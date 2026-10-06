@@ -1575,6 +1575,18 @@ bool GetVarbit(int varbit_id, int& varp, int& lsb, int& msb) {
     return true;
 }
 
+std::uint64_t VarpFieldMask(int varp) {
+    std::lock_guard<std::mutex> lk(g_mu);
+    EnsureInit();
+    LoadVarbitMapLocked();
+    std::uint64_t m = 0;
+    for (const auto& kv : g_varbit_defs) {
+        if (kv.second[0] != varp) continue;
+        for (int b = kv.second[1]; b <= kv.second[2] && b < 64; ++b) if (b >= 0) m |= 1ull << b;
+    }
+    return m;
+}
+
 bool GetObjVarbit(int varbit_id, int& var, int& lsb, int& msb) {
     if (varbit_id < 0) return false;
     std::lock_guard<std::mutex> lk(g_mu);
