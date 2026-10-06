@@ -499,6 +499,14 @@ export const getParamOps = [
     namedClientScriptOps.struct_getparam,
 ]
 
+//ops referred to by id only. An entry in namedClientScriptOps also becomes the op's printed
+//name, which would rename these in every rendered script
+export const dbValueOps = {
+    DB_FIND: 10113,
+    DB_FIND_REFINE: 10709,
+    DBQUERY_FIND_VALUE: 10257,
+};
+
 export const dynamicOps = [
     ...getParamOps,
     namedClientScriptOps.pushvar,

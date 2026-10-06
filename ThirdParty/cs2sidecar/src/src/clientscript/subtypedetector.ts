@@ -1,6 +1,6 @@
 import { ClientScriptFunction, CodeBlockNode, RawOpcodeNode, SubcallNode, generateAst } from "./ast";
 import { ClientscriptObfuscation, ScriptCandidate } from "./callibrator";
-import { ExactStack, PrimitiveType, StackConstants, StackDiff, branchInstructionsInt, branchInstructionsLong, debugKey, decomposeKey, dependencyGroup, dependencyIndex, dynamicOps, int32MathOps, knownDependency, namedClientScriptOps, subtypes } from "./definitions";
+import { ExactStack, PrimitiveType, StackConstants, StackDiff, branchInstructionsInt, branchInstructionsLong, debugKey, decomposeKey, dependencyGroup, dependencyIndex, dynamicOps, dbValueOps, int32MathOps, knownDependency, namedClientScriptOps, subtypes } from "./definitions";
 
 //to test
 //await cli("extract --mode clientscript -i 0");await deob.preloadData(false);deob.parseCandidateContents();detectSubTypes(deob);
@@ -16,6 +16,12 @@ const looseOps = [
     dependencyGroup("opout", namedClientScriptOps.lc_getparam) | dependencyIndex("int", 0),
     dependencyGroup("opin", namedClientScriptOps.cc_setparam) | dependencyIndex("int", 1),
     dependencyGroup("opin", namedClientScriptOps.db_find_with_count) | dependencyIndex("int", 1),
+    //the searched value takes the type of the column, so one op sees obj, npc, dbrow and
+    //achievement ids at different call sites. Typing the argument ties all of those
+    //together and feeds a false int back into every script local that reaches it
+    dependencyGroup("opin", dbValueOps.DB_FIND) | dependencyIndex("int", 1),
+    dependencyGroup("opin", dbValueOps.DB_FIND_REFINE) | dependencyIndex("int", 1),
+    dependencyGroup("opin", dbValueOps.DBQUERY_FIND_VALUE) | dependencyIndex("int", 1),
 
     dependencyGroup("opin", namedClientScriptOps.pop_array) | dependencyIndex("int", 1),
     dependencyGroup("opout", namedClientScriptOps.push_array) | dependencyIndex("int", 0),

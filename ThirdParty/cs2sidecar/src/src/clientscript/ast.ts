@@ -327,12 +327,28 @@ export class SwitchStatementNode extends AstNode {
         let valueop: AstNode | null = switchop.children[0] ?? null;
         let branches: { value: number, block: CodeBlockNode }[] = [];
 
+        //wrap loopable blocks with another codeblock, like the branches of an if statement, so
+        //a case that starts with a loop keeps its block when the loop replaces the inner one
+        let wrapped = new Map<CodeBlockNode, CodeBlockNode>();
+        let wrapLoopable = (block: CodeBlockNode) => {
+            if (!block.lastPointer) { return block; }
+            let newblock = wrapped.get(block);
+            if (!newblock) {
+                newblock = new CodeBlockNode(block.scriptid, block.subfuncid, block.originalindex);
+                newblock.mergeBlock(block, false);
+                newblock.maxEndIndex = block.maxEndIndex;
+                wrapped.set(block, newblock);
+            }
+            return newblock;
+        }
+
         let cases = scriptjson.switches[switchop.op.imm];
         if (!cases) { throw new Error("no matching cases in script"); }
         for (let casev of cases) {
             //TODO multiple values can point to the same case
             let node = nodes.find(q => q.originalindex == switchop.originalindex + 1 + casev.jump);
             if (!node) { throw new Error("switch case branch not found"); }
+            node = wrapLoopable(node);
             branches.push({ value: casev.value, block: node });
             node.maxEndIndex = endindex;
             if (node.originalindex != switchop.originalindex + 1 + casev.jump) {
@@ -351,6 +367,7 @@ export class SwitchStatementNode extends AstNode {
         }
 
         if (defaultblock) {
+            defaultblock = wrapLoopable(defaultblock);
             defaultblock.maxEndIndex = endindex;
         }
         return new SwitchStatementNode(switchop.originalindex, valueop, defaultblock, branches);
@@ -822,19 +839,22 @@ export function translateAst(ast: CodeBlockNode) {
     usablestackdata.length = 0;
     return ast;
 }
+//detect an or statement that wasn't caught before (a bit late, there should be a better way to do this)
+function mergeLateOr(node: IfStatementNode) {
+    let falseif = getSingleChild(node.falsebranch, IfStatementNode);
+    if (falseif && falseif.truebranch == node.truebranch) {
+        let combined = new BranchingStatement({ opcode: namedClientScriptOps.shorting_or, imm: 0, imm_obj: null }, node.statement.originalindex);
+        combined.push(node.statement);
+        combined.push(falseif.statement);
+        node.setBranches(combined, node.truebranch, falseif.falsebranch, falseif.ifEndIndex);
+    }
+}
 function fixControlFlow(ast: AstNode, scriptjson: clientscript) {
     let cursor = new RewriteCursor(ast);
     //find if statements
     oploop: for (let node = cursor.goToStart(); node; node = cursor.next()) {
         if (node instanceof IfStatementNode) {
-            //detect an or statement that wasn't caught before (a bit late, there should be a better way to do this)
-            let falseif = getSingleChild(node.falsebranch, IfStatementNode);
-            if (falseif && falseif.truebranch == node.truebranch) {
-                let combined = new BranchingStatement({ opcode: namedClientScriptOps.shorting_or, imm: 0, imm_obj: null }, node.statement.originalindex);
-                combined.push(node.statement);
-                combined.push(falseif.statement);
-                node.setBranches(combined, node.truebranch, falseif.falsebranch, falseif.ifEndIndex);
-            }
+            mergeLateOr(node);
             let trueif = getSingleChild(node.truebranch, IfStatementNode);
             if (trueif && trueif.falsebranch == node.falsebranch) {
                 let combined = new BranchingStatement({ opcode: namedClientScriptOps.shorting_and, imm: 0, imm_obj: null }, node.statement.originalindex);
@@ -941,6 +961,9 @@ function fixControlFlow(ast: AstNode, scriptjson: clientscript) {
                             ifnode.statement.unshift(codeblock.children[i]);
                         }
                         let originalparent = codeblock.parent;
+                        //the loop jump is reached before the if statement itself is revisited, so a
+                        //condition like (a && b) || (c && d) still holds its second half as else branch
+                        mergeLateOr(ifnode);
                         let loopstatement = WhileLoopStatementNode.fromIfStatement(codeblock.originalindex, ifnode);
                         originalparent.replaceChild(codeblock, loopstatement);
                         cursor.rebuildStack();
