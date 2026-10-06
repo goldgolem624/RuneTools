@@ -114,11 +114,40 @@ varc	5114	type=0	Overlay camera|Overlays: gameview and camera
 varc	1971	type=0	Overlay camera|Overlays: gameview and camera
 varp	13537	type=0	Combat log|Player State|Game text (rtx-gametext.js)
 varp	13538	type=0	Combat log|Player State
-varc	3001	type=0	Scene|Overlays|Overlays: gameview and camera
-varp	3680	type=0	Panel positions
-sprite	18788	w=24;h=24;f=1	Panel positions|Panel positions: tabbed layout
+varc	3001	type=0	Overlays|Overlays: gameview and camera|Panel positions (fallback): HUD windows
+varbit	38842	dom=0;var=3680;lo=22;hi=22	Panel positions (fallback)
+enum	7716	kt=0;vt=73;n=101	Panel positions (fallback)|Panel positions: HUD registry
+varp	11967	type=73	Panel positions (fallback)
+param	3505	type=9	Panel positions (fallback)
+param	3503	type=9	Panel positions (fallback)|Panel positions|Panel positions: HUD registry
+varbit	27169	dom=0;var=3680;lo=21;hi=21	Panel positions (fallback)
+varc	3477	type=1	Panel positions (fallback)
+param	3518	type=73	Panel positions (fallback)
+varbit	60446	dom=0;var=5839;lo=13;hi=14	Panel positions (fallback)|Game text (rtx-gametext.js)
+varbit	22875	dom=0;var=3814;lo=5;hi=11	Panel positions (fallback)|Game text (rtx-gametext.js)
+enum	9014	kt=0;vt=26;n=2	Panel positions (fallback)
+varbit	19925	dom=0;var=3814;lo=1;hi=1	Panel positions (fallback)
+param	5770	type=1	Panel positions (fallback)
+param	3795	type=73	Panel positions (fallback)
+param	3794	type=73	Panel positions (fallback)
+varbit	19928	dom=0;var=3814;lo=3;hi=3	Panel positions (fallback)
+varbit	19924	dom=0;var=3814;lo=0;hi=0	Panel positions (fallback)
+param	3509	type=9	Panel positions (fallback)
+param	3521	type=1	Panel positions (fallback)
+varc	3678	type=0	Panel positions (fallback)
+enum	7720	kt=0;vt=73;n=1	Panel positions (fallback)
+param	3638	type=0	Panel positions (fallback)
+param	3639	type=0	Panel positions (fallback)
+param	3533	type=1	Panel positions (fallback)
+varbit	60441	dom=0;var=3680;lo=23;hi=23	Panel positions (fallback)
+param	3506	type=9	Panel positions (fallback)
+param	8296	type=0	Panel positions (fallback)
+param	3547	type=0	Panel positions (fallback)
+param	3549	type=0	Panel positions (fallback)
+param	3577	type=0	Panel positions (fallback)
+param	3586	type=0	Panel positions (fallback)
+param	3550	type=0	Panel positions (fallback)
 varc	1323	type=22	Clue compass
-varp	3814	type=0	Inventory highlights
 param	8106	type=73	Buffs|Buffs: slot struct
 param	8112	type=1	Buffs
 param	8110	type=1	Buffs
@@ -126,9 +155,9 @@ param	8111	type=1	Buffs
 param	8113	type=1	Buffs
 iface	284	comps=69	Buffs|Health check
 iface	291	comps=52	Buffs|Buffs: debuffs
-varc	3005	type=0	Overlays
-varc	3006	type=0	Overlays
-varc	3002	type=0	Overlays|Overlays: gameview and camera
+varc	3005	type=0	Overlays|Panel positions (fallback): HUD windows
+varc	3006	type=0	Overlays|Panel positions (fallback): HUD windows
+varc	3002	type=0	Overlays|Overlays: gameview and camera|Panel positions (fallback): HUD windows
 iface	1477	comps=925	Health check|Panel positions
 iface	1473	comps=23	Health check|Panel positions
 iface	1430	comps=271	Health check|Ability Bar
@@ -145,27 +174,26 @@ param	2213	type=33	Skill guides: item levels
 param	2210	type=36	Skill guides: item levels
 param	596	type=36	World map: categories
 param	597	type=0	World map: categories
-param	3503	type=9	Panel positions|Panel positions: HUD registry
 iface	1188	comps=41	Panel positions|D&D Tracker
-varc	3082	type=0	Panel positions
-varc	3083	type=0	Panel positions
+varc	3082	type=0	Panel positions|Panel positions (fallback): HUD windows
+varc	3083	type=0	Panel positions|Panel positions (fallback): HUD windows
 iface	1184	comps=16	Panel positions
 iface	1191	comps=16	Panel positions
 iface	1189	comps=21	Panel positions
 iface	1186	comps=9	Panel positions
 iface	1552	comps=41	Panel positions
-varc	3096	type=0	Panel positions
-varc	3097	type=0	Panel positions
+varc	3096	type=0	Panel positions|Panel positions (fallback): HUD windows
+varc	3097	type=0	Panel positions|Panel positions (fallback): HUD windows
 iface	1603	comps=12	Panel positions
 varp	9102	exists	Panel positions
 varp	9103	exists	Panel positions
 iface	1370	comps=33	Panel positions
-varc	3089	type=0	Panel positions
-varc	3090	type=0	Panel positions
+varc	3089	type=0	Panel positions|Panel positions (fallback): HUD windows
+varc	3090	type=0	Panel positions|Panel positions (fallback): HUD windows
 iface	13	comps=18	Panel positions
 iface	1466	comps=15	Panel positions
-varc	3166	type=0	Panel positions
-varc	3167	type=0	Panel positions
+varc	3166	type=0	Panel positions|Panel positions (fallback): HUD windows
+varc	3167	type=0	Panel positions|Panel positions (fallback): HUD windows
 iface	1224	comps=50	Panel positions
 iface	533	comps=36	Panel positions
 iface	1286	comps=59	Panel positions
@@ -173,31 +201,31 @@ iface	1665	comps=40	Panel positions
 iface	1223	comps=30	Panel positions
 iface	923	comps=80	Panel positions
 iface	919	comps=88	Panel positions
-varc	3047	type=0	Panel positions
-varc	3048	type=0	Panel positions
+varc	3047	type=0	Panel positions|Panel positions (fallback): HUD windows
+varc	3048	type=0	Panel positions|Panel positions (fallback): HUD windows
 iface	1222	comps=149	Panel positions
-varc	6463	type=0	Panel positions
-varc	6464	type=0	Panel positions
+varc	6463	type=0	Panel positions|Panel positions (fallback): HUD windows
+varc	6464	type=0	Panel positions|Panel positions (fallback): HUD windows
 iface	660	comps=31	Panel positions
 varp	9121	exists	Panel positions
 varp	9122	exists	Panel positions
 iface	656	comps=63	Panel positions
-varc	6310	type=0	Panel positions
-varc	6311	type=0	Panel positions
+varc	6310	type=0	Panel positions|Panel positions (fallback): HUD windows
+varc	6311	type=0	Panel positions|Panel positions (fallback): HUD windows
 iface	691	comps=225	Panel positions
 iface	1594	comps=122	Panel positions
 iface	517	comps=341	Panel positions
-varc	5632	type=0	Panel positions
-varc	5633	type=0	Panel positions
+varc	5632	type=0	Panel positions|Panel positions (fallback): HUD windows
+varc	5633	type=0	Panel positions|Panel positions (fallback): HUD windows
 iface	190	comps=21	Panel positions
-varc	5846	type=0	Panel positions
-varc	5847	type=0	Panel positions
+varc	5846	type=0	Panel positions|Panel positions (fallback): HUD windows
+varc	5847	type=0	Panel positions|Panel positions (fallback): HUD windows
 iface	1092	comps=68	Panel positions
 iface	584	comps=9	Panel positions
 varp	10071	exists	Panel positions
 varp	10072	exists	Panel positions
-varc	3040	type=0	Panel positions
-varc	3041	type=0	Panel positions
+varc	3040	type=0	Panel positions|Panel positions (fallback): HUD windows
+varc	3041	type=0	Panel positions|Panel positions (fallback): HUD windows
 iface	394	comps=196	Panel positions
 iface	519	comps=180	Panel positions
 iface	525	comps=218	Panel positions
@@ -215,13 +243,437 @@ iface	1933	comps=35	Panel positions
 iface	1371	comps=29	Panel positions
 iface	720	comps=46	Panel positions
 iface	743	comps=11	Panel positions
-varc	6423	type=0	Panel positions
-varc	6424	type=0	Panel positions
+varc	6423	type=0	Panel positions|Panel positions (fallback): HUD windows
+varc	6424	type=0	Panel positions|Panel positions (fallback): HUD windows
 iface	1512	comps=30	Panel positions
 iface	1030	comps=32	Panel positions
 iface	1518	comps=34	Panel positions
 iface	1516	comps=41	Panel positions
 iface	1931	comps=39	Panel positions
+varc	3162	type=0	Panel positions (fallback): HUD windows
+varc	3163	type=0	Panel positions (fallback): HUD windows
+varc	5520	type=0	Panel positions (fallback): HUD windows
+varc	3036	type=0	Panel positions (fallback): HUD windows
+varc	3037	type=0	Panel positions (fallback): HUD windows
+varc	5502	type=0	Panel positions (fallback): HUD windows
+varc	3075	type=0	Panel positions (fallback): HUD windows
+varc	3076	type=0	Panel positions (fallback): HUD windows
+varc	3071	type=0	Panel positions (fallback): HUD windows
+varc	3072	type=0	Panel positions (fallback): HUD windows
+varc	5507	type=0	Panel positions (fallback): HUD windows
+varc	3173	type=0	Panel positions (fallback): HUD windows
+varc	3174	type=0	Panel positions (fallback): HUD windows
+varc	3169	type=0	Panel positions (fallback): HUD windows
+varc	3170	type=0	Panel positions (fallback): HUD windows
+varc	5521	type=0	Panel positions (fallback): HUD windows
+varc	3131	type=0	Panel positions (fallback): HUD windows
+varc	3132	type=0	Panel positions (fallback): HUD windows
+varc	3127	type=0	Panel positions (fallback): HUD windows
+varc	3128	type=0	Panel positions (fallback): HUD windows
+varc	5515	type=0	Panel positions (fallback): HUD windows
+varc	3117	type=0	Panel positions (fallback): HUD windows
+varc	3118	type=0	Panel positions (fallback): HUD windows
+varc	3113	type=0	Panel positions (fallback): HUD windows
+varc	3114	type=0	Panel positions (fallback): HUD windows
+varc	5513	type=0	Panel positions (fallback): HUD windows
+varc	3124	type=0	Panel positions (fallback): HUD windows
+varc	3125	type=0	Panel positions (fallback): HUD windows
+varc	3120	type=0	Panel positions (fallback): HUD windows
+varc	3121	type=0	Panel positions (fallback): HUD windows
+varc	5514	type=0	Panel positions (fallback): HUD windows
+varc	3138	type=0	Panel positions (fallback): HUD windows
+varc	3139	type=0	Panel positions (fallback): HUD windows
+varc	3134	type=0	Panel positions (fallback): HUD windows
+varc	3135	type=0	Panel positions (fallback): HUD windows
+varc	5516	type=0	Panel positions (fallback): HUD windows
+varc	3159	type=0	Panel positions (fallback): HUD windows
+varc	3160	type=0	Panel positions (fallback): HUD windows
+varc	3155	type=0	Panel positions (fallback): HUD windows
+varc	3156	type=0	Panel positions (fallback): HUD windows
+varc	5519	type=0	Panel positions (fallback): HUD windows
+varc	3187	type=0	Panel positions (fallback): HUD windows
+varc	3188	type=0	Panel positions (fallback): HUD windows
+varc	3183	type=0	Panel positions (fallback): HUD windows
+varc	3184	type=0	Panel positions (fallback): HUD windows
+varc	5523	type=0	Panel positions (fallback): HUD windows
+varc	3194	type=0	Panel positions (fallback): HUD windows
+varc	3195	type=0	Panel positions (fallback): HUD windows
+varc	3190	type=0	Panel positions (fallback): HUD windows
+varc	3191	type=0	Panel positions (fallback): HUD windows
+varc	5524	type=0	Panel positions (fallback): HUD windows
+varc	3103	type=0	Panel positions (fallback): HUD windows
+varc	3104	type=0	Panel positions (fallback): HUD windows
+varc	3099	type=0	Panel positions (fallback): HUD windows
+varc	3100	type=0	Panel positions (fallback): HUD windows
+varc	5511	type=0	Panel positions (fallback): HUD windows
+varc	3201	type=0	Panel positions (fallback): HUD windows
+varc	3202	type=0	Panel positions (fallback): HUD windows
+varc	3197	type=0	Panel positions (fallback): HUD windows
+varc	3198	type=0	Panel positions (fallback): HUD windows
+varc	5525	type=0	Panel positions (fallback): HUD windows
+varc	5611	type=0	Panel positions (fallback): HUD windows
+varc	5612	type=0	Panel positions (fallback): HUD windows
+varc	5607	type=0	Panel positions (fallback): HUD windows
+varc	5608	type=0	Panel positions (fallback): HUD windows
+varc	5533	type=0	Panel positions (fallback): HUD windows
+varc	3208	type=0	Panel positions (fallback): HUD windows
+varc	3209	type=0	Panel positions (fallback): HUD windows
+varc	3204	type=0	Panel positions (fallback): HUD windows
+varc	3205	type=0	Panel positions (fallback): HUD windows
+varc	5526	type=0	Panel positions (fallback): HUD windows
+varc	3092	type=0	Panel positions (fallback): HUD windows
+varc	3093	type=0	Panel positions (fallback): HUD windows
+varc	5510	type=0	Panel positions (fallback): HUD windows
+varc	3033	type=0	Panel positions (fallback): HUD windows
+varc	3034	type=0	Panel positions (fallback): HUD windows
+varc	3029	type=0	Panel positions (fallback): HUD windows
+varc	3030	type=0	Panel positions (fallback): HUD windows
+varc	5501	type=0	Panel positions (fallback): HUD windows
+varc	3054	type=0	Panel positions (fallback): HUD windows
+varc	3055	type=0	Panel positions (fallback): HUD windows
+varc	3050	type=0	Panel positions (fallback): HUD windows
+varc	3051	type=0	Panel positions (fallback): HUD windows
+varc	5504	type=0	Panel positions (fallback): HUD windows
+varc	3061	type=0	Panel positions (fallback): HUD windows
+varc	3062	type=0	Panel positions (fallback): HUD windows
+varc	3057	type=0	Panel positions (fallback): HUD windows
+varc	3058	type=0	Panel positions (fallback): HUD windows
+varc	5505	type=0	Panel positions (fallback): HUD windows
+varc	3068	type=0	Panel positions (fallback): HUD windows
+varc	3069	type=0	Panel positions (fallback): HUD windows
+varc	3064	type=0	Panel positions (fallback): HUD windows
+varc	3065	type=0	Panel positions (fallback): HUD windows
+varc	5506	type=0	Panel positions (fallback): HUD windows
+varc	3180	type=0	Panel positions (fallback): HUD windows
+varc	3181	type=0	Panel positions (fallback): HUD windows
+varc	3176	type=0	Panel positions (fallback): HUD windows
+varc	3177	type=0	Panel positions (fallback): HUD windows
+varc	5522	type=0	Panel positions (fallback): HUD windows
+varc	5653	type=0	Panel positions (fallback): HUD windows
+varc	5654	type=0	Panel positions (fallback): HUD windows
+varc	5649	type=0	Panel positions (fallback): HUD windows
+varc	5650	type=0	Panel positions (fallback): HUD windows
+varc	5539	type=0	Panel positions (fallback): HUD windows
+varc	5688	type=0	Panel positions (fallback): HUD windows
+varc	5689	type=0	Panel positions (fallback): HUD windows
+varc	5684	type=0	Panel positions (fallback): HUD windows
+varc	5685	type=0	Panel positions (fallback): HUD windows
+varc	5544	type=0	Panel positions (fallback): HUD windows
+varc	5695	type=0	Panel positions (fallback): HUD windows
+varc	5696	type=0	Panel positions (fallback): HUD windows
+varc	5691	type=0	Panel positions (fallback): HUD windows
+varc	5692	type=0	Panel positions (fallback): HUD windows
+varc	5545	type=0	Panel positions (fallback): HUD windows
+varc	5681	type=0	Panel positions (fallback): HUD windows
+varc	5682	type=0	Panel positions (fallback): HUD windows
+varc	5677	type=0	Panel positions (fallback): HUD windows
+varc	5678	type=0	Panel positions (fallback): HUD windows
+varc	5543	type=0	Panel positions (fallback): HUD windows
+varc	5709	type=0	Panel positions (fallback): HUD windows
+varc	5710	type=0	Panel positions (fallback): HUD windows
+varc	5705	type=0	Panel positions (fallback): HUD windows
+varc	5706	type=0	Panel positions (fallback): HUD windows
+varc	5547	type=0	Panel positions (fallback): HUD windows
+varc	5737	type=0	Panel positions (fallback): HUD windows
+varc	5738	type=0	Panel positions (fallback): HUD windows
+varc	5733	type=0	Panel positions (fallback): HUD windows
+varc	5734	type=0	Panel positions (fallback): HUD windows
+varc	5551	type=0	Panel positions (fallback): HUD windows
+varc	5807	type=0	Panel positions (fallback): HUD windows
+varc	5808	type=0	Panel positions (fallback): HUD windows
+varc	5803	type=0	Panel positions (fallback): HUD windows
+varc	5804	type=0	Panel positions (fallback): HUD windows
+varc	5561	type=0	Panel positions (fallback): HUD windows
+varc	5821	type=0	Panel positions (fallback): HUD windows
+varc	5822	type=0	Panel positions (fallback): HUD windows
+varc	5817	type=0	Panel positions (fallback): HUD windows
+varc	5818	type=0	Panel positions (fallback): HUD windows
+varc	5563	type=0	Panel positions (fallback): HUD windows
+varc	5842	type=0	Panel positions (fallback): HUD windows
+varc	5843	type=0	Panel positions (fallback): HUD windows
+varc	5849	type=0	Panel positions (fallback): HUD windows
+varc	6011	type=0	Panel positions (fallback): HUD windows
+varc	6012	type=0	Panel positions (fallback): HUD windows
+varc	6007	type=0	Panel positions (fallback): HUD windows
+varc	6008	type=0	Panel positions (fallback): HUD windows
+varc	6014	type=0	Panel positions (fallback): HUD windows
+varc	6140	type=0	Panel positions (fallback): HUD windows
+varc	6141	type=0	Panel positions (fallback): HUD windows
+varc	6136	type=0	Panel positions (fallback): HUD windows
+varc	6137	type=0	Panel positions (fallback): HUD windows
+varc	6143	type=0	Panel positions (fallback): HUD windows
+varc	6148	type=0	Panel positions (fallback): HUD windows
+varc	6149	type=0	Panel positions (fallback): HUD windows
+varc	6144	type=0	Panel positions (fallback): HUD windows
+varc	6145	type=0	Panel positions (fallback): HUD windows
+varc	6151	type=0	Panel positions (fallback): HUD windows
+varc	6156	type=0	Panel positions (fallback): HUD windows
+varc	6157	type=0	Panel positions (fallback): HUD windows
+varc	6152	type=0	Panel positions (fallback): HUD windows
+varc	6153	type=0	Panel positions (fallback): HUD windows
+varc	6159	type=0	Panel positions (fallback): HUD windows
+varc	6164	type=0	Panel positions (fallback): HUD windows
+varc	6165	type=0	Panel positions (fallback): HUD windows
+varc	6160	type=0	Panel positions (fallback): HUD windows
+varc	6161	type=0	Panel positions (fallback): HUD windows
+varc	6167	type=0	Panel positions (fallback): HUD windows
+varc	6172	type=0	Panel positions (fallback): HUD windows
+varc	6173	type=0	Panel positions (fallback): HUD windows
+varc	6168	type=0	Panel positions (fallback): HUD windows
+varc	6169	type=0	Panel positions (fallback): HUD windows
+varc	6175	type=0	Panel positions (fallback): HUD windows
+varc	6180	type=0	Panel positions (fallback): HUD windows
+varc	6181	type=0	Panel positions (fallback): HUD windows
+varc	6176	type=0	Panel positions (fallback): HUD windows
+varc	6177	type=0	Panel positions (fallback): HUD windows
+varc	6183	type=0	Panel positions (fallback): HUD windows
+varc	6283	type=0	Panel positions (fallback): HUD windows
+varc	6284	type=0	Panel positions (fallback): HUD windows
+varc	6279	type=0	Panel positions (fallback): HUD windows
+varc	6280	type=0	Panel positions (fallback): HUD windows
+varc	6286	type=0	Panel positions (fallback): HUD windows
+varc	7172	type=0	Panel positions (fallback): HUD windows
+varc	7173	type=0	Panel positions (fallback): HUD windows
+varc	7168	type=0	Panel positions (fallback): HUD windows
+varc	7169	type=0	Panel positions (fallback): HUD windows
+varc	7175	type=0	Panel positions (fallback): HUD windows
+varc	7180	type=0	Panel positions (fallback): HUD windows
+varc	7181	type=0	Panel positions (fallback): HUD windows
+varc	7176	type=0	Panel positions (fallback): HUD windows
+varc	7177	type=0	Panel positions (fallback): HUD windows
+varc	7183	type=0	Panel positions (fallback): HUD windows
+varc	7188	type=0	Panel positions (fallback): HUD windows
+varc	7189	type=0	Panel positions (fallback): HUD windows
+varc	7184	type=0	Panel positions (fallback): HUD windows
+varc	7185	type=0	Panel positions (fallback): HUD windows
+varc	7191	type=0	Panel positions (fallback): HUD windows
+varc	8190	type=0	Panel positions (fallback): HUD windows
+varc	8191	type=0	Panel positions (fallback): HUD windows
+varc	8186	type=0	Panel positions (fallback): HUD windows
+varc	8187	type=0	Panel positions (fallback): HUD windows
+varc	8193	type=0	Panel positions (fallback): HUD windows
+varc	8198	type=0	Panel positions (fallback): HUD windows
+varc	8199	type=0	Panel positions (fallback): HUD windows
+varc	8194	type=0	Panel positions (fallback): HUD windows
+varc	8195	type=0	Panel positions (fallback): HUD windows
+varc	8201	type=0	Panel positions (fallback): HUD windows
+varc	5497	type=0	Panel positions (fallback): HUD windows
+varc	5646	type=0	Panel positions (fallback): HUD windows
+varc	5647	type=0	Panel positions (fallback): HUD windows
+varc	5642	type=0	Panel positions (fallback): HUD windows
+varc	5643	type=0	Panel positions (fallback): HUD windows
+varc	5538	type=0	Panel positions (fallback): HUD windows
+varc	3012	type=0	Panel positions (fallback): HUD windows
+varc	3013	type=0	Panel positions (fallback): HUD windows
+varc	3008	type=0	Panel positions (fallback): HUD windows
+varc	3009	type=0	Panel positions (fallback): HUD windows
+varc	5498	type=0	Panel positions (fallback): HUD windows
+varc	3026	type=0	Panel positions (fallback): HUD windows
+varc	3027	type=0	Panel positions (fallback): HUD windows
+varc	3022	type=0	Panel positions (fallback): HUD windows
+varc	3023	type=0	Panel positions (fallback): HUD windows
+varc	5500	type=0	Panel positions (fallback): HUD windows
+varc	3019	type=0	Panel positions (fallback): HUD windows
+varc	3020	type=0	Panel positions (fallback): HUD windows
+varc	3015	type=0	Panel positions (fallback): HUD windows
+varc	3016	type=0	Panel positions (fallback): HUD windows
+varc	5499	type=0	Panel positions (fallback): HUD windows
+varc	3043	type=0	Panel positions (fallback): HUD windows
+varc	3044	type=0	Panel positions (fallback): HUD windows
+varc	5503	type=0	Panel positions (fallback): HUD windows
+varc	3078	type=0	Panel positions (fallback): HUD windows
+varc	3079	type=0	Panel positions (fallback): HUD windows
+varc	5508	type=0	Panel positions (fallback): HUD windows
+varc	3085	type=0	Panel positions (fallback): HUD windows
+varc	3086	type=0	Panel positions (fallback): HUD windows
+varc	5509	type=0	Panel positions (fallback): HUD windows
+varc	3152	type=0	Panel positions (fallback): HUD windows
+varc	3153	type=0	Panel positions (fallback): HUD windows
+varc	3148	type=0	Panel positions (fallback): HUD windows
+varc	3149	type=0	Panel positions (fallback): HUD windows
+varc	5518	type=0	Panel positions (fallback): HUD windows
+varc	5569	type=0	Panel positions (fallback): HUD windows
+varc	5570	type=0	Panel positions (fallback): HUD windows
+varc	5565	type=0	Panel positions (fallback): HUD windows
+varc	5566	type=0	Panel positions (fallback): HUD windows
+varc	5527	type=0	Panel positions (fallback): HUD windows
+varc	5576	type=0	Panel positions (fallback): HUD windows
+varc	5577	type=0	Panel positions (fallback): HUD windows
+varc	5572	type=0	Panel positions (fallback): HUD windows
+varc	5573	type=0	Panel positions (fallback): HUD windows
+varc	5528	type=0	Panel positions (fallback): HUD windows
+varc	5590	type=0	Panel positions (fallback): HUD windows
+varc	5591	type=0	Panel positions (fallback): HUD windows
+varc	5586	type=0	Panel positions (fallback): HUD windows
+varc	5587	type=0	Panel positions (fallback): HUD windows
+varc	5530	type=0	Panel positions (fallback): HUD windows
+varc	5597	type=0	Panel positions (fallback): HUD windows
+varc	5598	type=0	Panel positions (fallback): HUD windows
+varc	5593	type=0	Panel positions (fallback): HUD windows
+varc	5594	type=0	Panel positions (fallback): HUD windows
+varc	5531	type=0	Panel positions (fallback): HUD windows
+varc	5604	type=0	Panel positions (fallback): HUD windows
+varc	5605	type=0	Panel positions (fallback): HUD windows
+varc	5600	type=0	Panel positions (fallback): HUD windows
+varc	5601	type=0	Panel positions (fallback): HUD windows
+varc	5532	type=0	Panel positions (fallback): HUD windows
+varc	5618	type=0	Panel positions (fallback): HUD windows
+varc	5619	type=0	Panel positions (fallback): HUD windows
+varc	5614	type=0	Panel positions (fallback): HUD windows
+varc	5615	type=0	Panel positions (fallback): HUD windows
+varc	5534	type=0	Panel positions (fallback): HUD windows
+varc	5625	type=0	Panel positions (fallback): HUD windows
+varc	5626	type=0	Panel positions (fallback): HUD windows
+varc	5621	type=0	Panel positions (fallback): HUD windows
+varc	5622	type=0	Panel positions (fallback): HUD windows
+varc	5535	type=0	Panel positions (fallback): HUD windows
+varc	5628	type=0	Panel positions (fallback): HUD windows
+varc	5629	type=0	Panel positions (fallback): HUD windows
+varc	5536	type=0	Panel positions (fallback): HUD windows
+varc	5639	type=0	Panel positions (fallback): HUD windows
+varc	5640	type=0	Panel positions (fallback): HUD windows
+varc	5635	type=0	Panel positions (fallback): HUD windows
+varc	5636	type=0	Panel positions (fallback): HUD windows
+varc	5537	type=0	Panel positions (fallback): HUD windows
+varc	3110	type=0	Panel positions (fallback): HUD windows
+varc	3111	type=0	Panel positions (fallback): HUD windows
+varc	3106	type=0	Panel positions (fallback): HUD windows
+varc	3107	type=0	Panel positions (fallback): HUD windows
+varc	5512	type=0	Panel positions (fallback): HUD windows
+varc	5674	type=0	Panel positions (fallback): HUD windows
+varc	5675	type=0	Panel positions (fallback): HUD windows
+varc	5670	type=0	Panel positions (fallback): HUD windows
+varc	5671	type=0	Panel positions (fallback): HUD windows
+varc	5542	type=0	Panel positions (fallback): HUD windows
+varc	5702	type=0	Panel positions (fallback): HUD windows
+varc	5703	type=0	Panel positions (fallback): HUD windows
+varc	5698	type=0	Panel positions (fallback): HUD windows
+varc	5699	type=0	Panel positions (fallback): HUD windows
+varc	5546	type=0	Panel positions (fallback): HUD windows
+varc	5716	type=0	Panel positions (fallback): HUD windows
+varc	5717	type=0	Panel positions (fallback): HUD windows
+varc	5712	type=0	Panel positions (fallback): HUD windows
+varc	5713	type=0	Panel positions (fallback): HUD windows
+varc	5548	type=0	Panel positions (fallback): HUD windows
+varc	5723	type=0	Panel positions (fallback): HUD windows
+varc	5724	type=0	Panel positions (fallback): HUD windows
+varc	5719	type=0	Panel positions (fallback): HUD windows
+varc	5720	type=0	Panel positions (fallback): HUD windows
+varc	5549	type=0	Panel positions (fallback): HUD windows
+varc	5730	type=0	Panel positions (fallback): HUD windows
+varc	5731	type=0	Panel positions (fallback): HUD windows
+varc	5726	type=0	Panel positions (fallback): HUD windows
+varc	5727	type=0	Panel positions (fallback): HUD windows
+varc	5550	type=0	Panel positions (fallback): HUD windows
+varc	5744	type=0	Panel positions (fallback): HUD windows
+varc	5745	type=0	Panel positions (fallback): HUD windows
+varc	5740	type=0	Panel positions (fallback): HUD windows
+varc	5741	type=0	Panel positions (fallback): HUD windows
+varc	5552	type=0	Panel positions (fallback): HUD windows
+varc	5751	type=0	Panel positions (fallback): HUD windows
+varc	5752	type=0	Panel positions (fallback): HUD windows
+varc	5747	type=0	Panel positions (fallback): HUD windows
+varc	5748	type=0	Panel positions (fallback): HUD windows
+varc	5553	type=0	Panel positions (fallback): HUD windows
+varc	5758	type=0	Panel positions (fallback): HUD windows
+varc	5759	type=0	Panel positions (fallback): HUD windows
+varc	5754	type=0	Panel positions (fallback): HUD windows
+varc	5755	type=0	Panel positions (fallback): HUD windows
+varc	5554	type=0	Panel positions (fallback): HUD windows
+varc	5765	type=0	Panel positions (fallback): HUD windows
+varc	5766	type=0	Panel positions (fallback): HUD windows
+varc	5761	type=0	Panel positions (fallback): HUD windows
+varc	5762	type=0	Panel positions (fallback): HUD windows
+varc	5555	type=0	Panel positions (fallback): HUD windows
+varc	5772	type=0	Panel positions (fallback): HUD windows
+varc	5773	type=0	Panel positions (fallback): HUD windows
+varc	5768	type=0	Panel positions (fallback): HUD windows
+varc	5769	type=0	Panel positions (fallback): HUD windows
+varc	5556	type=0	Panel positions (fallback): HUD windows
+varc	5779	type=0	Panel positions (fallback): HUD windows
+varc	5780	type=0	Panel positions (fallback): HUD windows
+varc	5775	type=0	Panel positions (fallback): HUD windows
+varc	5776	type=0	Panel positions (fallback): HUD windows
+varc	5557	type=0	Panel positions (fallback): HUD windows
+varc	5786	type=0	Panel positions (fallback): HUD windows
+varc	5787	type=0	Panel positions (fallback): HUD windows
+varc	5782	type=0	Panel positions (fallback): HUD windows
+varc	5783	type=0	Panel positions (fallback): HUD windows
+varc	5558	type=0	Panel positions (fallback): HUD windows
+varc	5793	type=0	Panel positions (fallback): HUD windows
+varc	5794	type=0	Panel positions (fallback): HUD windows
+varc	5789	type=0	Panel positions (fallback): HUD windows
+varc	5790	type=0	Panel positions (fallback): HUD windows
+varc	5559	type=0	Panel positions (fallback): HUD windows
+varc	5800	type=0	Panel positions (fallback): HUD windows
+varc	5801	type=0	Panel positions (fallback): HUD windows
+varc	5796	type=0	Panel positions (fallback): HUD windows
+varc	5797	type=0	Panel positions (fallback): HUD windows
+varc	5560	type=0	Panel positions (fallback): HUD windows
+varc	5814	type=0	Panel positions (fallback): HUD windows
+varc	5815	type=0	Panel positions (fallback): HUD windows
+varc	5810	type=0	Panel positions (fallback): HUD windows
+varc	5811	type=0	Panel positions (fallback): HUD windows
+varc	5562	type=0	Panel positions (fallback): HUD windows
+varc	5828	type=0	Panel positions (fallback): HUD windows
+varc	5829	type=0	Panel positions (fallback): HUD windows
+varc	5824	type=0	Panel positions (fallback): HUD windows
+varc	5825	type=0	Panel positions (fallback): HUD windows
+varc	5564	type=0	Panel positions (fallback): HUD windows
+varc	5953	type=0	Panel positions (fallback): HUD windows
+varc	5954	type=0	Panel positions (fallback): HUD windows
+varc	5949	type=0	Panel positions (fallback): HUD windows
+varc	5950	type=0	Panel positions (fallback): HUD windows
+varc	5956	type=0	Panel positions (fallback): HUD windows
+varc	6052	type=0	Panel positions (fallback): HUD windows
+varc	6053	type=0	Panel positions (fallback): HUD windows
+varc	6048	type=0	Panel positions (fallback): HUD windows
+varc	6049	type=0	Panel positions (fallback): HUD windows
+varc	6055	type=0	Panel positions (fallback): HUD windows
+varc	6306	type=0	Panel positions (fallback): HUD windows
+varc	6307	type=0	Panel positions (fallback): HUD windows
+varc	6313	type=0	Panel positions (fallback): HUD windows
+varc	6329	type=0	Panel positions (fallback): HUD windows
+varc	6330	type=0	Panel positions (fallback): HUD windows
+varc	6325	type=0	Panel positions (fallback): HUD windows
+varc	6326	type=0	Panel positions (fallback): HUD windows
+varc	6332	type=0	Panel positions (fallback): HUD windows
+varc	6419	type=0	Panel positions (fallback): HUD windows
+varc	6420	type=0	Panel positions (fallback): HUD windows
+varc	6426	type=0	Panel positions (fallback): HUD windows
+varc	6459	type=0	Panel positions (fallback): HUD windows
+varc	6460	type=0	Panel positions (fallback): HUD windows
+varc	6466	type=0	Panel positions (fallback): HUD windows
+varc	6627	type=0	Panel positions (fallback): HUD windows
+varc	6628	type=0	Panel positions (fallback): HUD windows
+varc	6623	type=0	Panel positions (fallback): HUD windows
+varc	6624	type=0	Panel positions (fallback): HUD windows
+varc	6630	type=0	Panel positions (fallback): HUD windows
+varc	6939	type=0	Panel positions (fallback): HUD windows
+varc	6940	type=0	Panel positions (fallback): HUD windows
+varc	6935	type=0	Panel positions (fallback): HUD windows
+varc	6936	type=0	Panel positions (fallback): HUD windows
+varc	6942	type=0	Panel positions (fallback): HUD windows
+varc	7018	type=0	Panel positions (fallback): HUD windows
+varc	7019	type=0	Panel positions (fallback): HUD windows
+varc	7014	type=0	Panel positions (fallback): HUD windows
+varc	7015	type=0	Panel positions (fallback): HUD windows
+varc	7021	type=0	Panel positions (fallback): HUD windows
+varc	7369	type=0	Panel positions (fallback): HUD windows
+varc	7370	type=0	Panel positions (fallback): HUD windows
+varc	7365	type=0	Panel positions (fallback): HUD windows
+varc	7366	type=0	Panel positions (fallback): HUD windows
+varc	7372	type=0	Panel positions (fallback): HUD windows
+varc	7390	type=0	Panel positions (fallback): HUD windows
+varc	7391	type=0	Panel positions (fallback): HUD windows
+varc	7386	type=0	Panel positions (fallback): HUD windows
+varc	7387	type=0	Panel positions (fallback): HUD windows
+varc	7393	type=0	Panel positions (fallback): HUD windows
+varc	5667	type=0	Panel positions (fallback): HUD windows
+varc	5668	type=0	Panel positions (fallback): HUD windows
+varc	5663	type=0	Panel positions (fallback): HUD windows
+varc	5664	type=0	Panel positions (fallback): HUD windows
+varc	5541	type=0	Panel positions (fallback): HUD windows
 inv	93	size=28	Backpack and equipment
 inv	94	size=19	Backpack and equipment
 param	4677	type=33	Buffs: identity
@@ -233,9 +685,6 @@ iface	1672	comps=194	Ability Bar
 iface	1673	comps=194	Ability Bar
 iface	996	comps=9	Clue compass
 script	13824	h=06e4e47e;n=1447	Tooltip text (item prices, levels)
-varbit	27169	dom=0;var=3680;lo=21;hi=21	Panel positions: house controls (varp 3680 bit 21)
-varbit	19924	dom=0;var=3814;lo=0;hi=0	Panel positions: slim headers (varp 3814 bit 0)
-enum	7716	kt=0;vt=73;n=101	Panel positions: HUD registry
 param	3514	type=9	Panel positions: HUD registry
 param	3515	type=9	Panel positions: HUD registry
 param	3516	type=9	Panel positions: HUD registry
@@ -273,6 +722,7 @@ varc	6071	type=0	Buffs: timers (BuffVars.h)
 varc	6076	type=0	Buffs: timers (BuffVars.h)
 varc	8410	type=0	Buffs: timers (BuffVars.h)
 varc	8480	type=0	Buffs: timers (BuffVars.h)
+varc	8481	type=0	Buffs: timers (BuffVars.h)
 varc	8477	type=0	Buffs: timers (BuffVars.h)
 varc	8478	type=0	Buffs: timers (BuffVars.h)
 varc	8479	type=0	Buffs: timers (BuffVars.h)
@@ -698,11 +1148,15 @@ varc	8403	type=0	Buffs: timers (BuffVars.h)
 varc	8404	type=0	Buffs: timers (BuffVars.h)
 varc	8407	type=0	Buffs: timers (BuffVars.h)
 varc	8408	type=0	Buffs: timers (BuffVars.h)
+varc	8489	type=0	Buffs: timers (BuffVars.h)
+varc	8490	type=0	Buffs: timers (BuffVars.h)
+varc	8491	type=0	Buffs: timers (BuffVars.h)
 varbit	30947	dom=0;var=6209;lo=1;hi=4	Buffs: timers (BuffVars.h)
 varbit	30948	dom=0;var=6209;lo=5;hi=8	Buffs: timers (BuffVars.h)
 varbit	35737	dom=0;var=6940;lo=6;hi=9	Buffs: timers (BuffVars.h)
 varp	12679	type=0	Buffs: timers (BuffVars.h)
 varbit	36378	dom=0;var=6890;lo=9;hi=12	Buffs: timers (BuffVars.h)|Game text (rtx-gametext.js)
+varbit	60643	dom=0;var=12744;lo=2;hi=5	Buffs: timers (BuffVars.h)|Game text (rtx-gametext.js)
 varbit	1898	dom=0;var=689;lo=5;hi=11	Buffs: timers (BuffVars.h)
 varbit	51103	dom=0;var=10401;lo=0;hi=7	Buffs: timers (BuffVars.h)
 varbit	43703	dom=0;var=8407;lo=12;hi=15	Buffs: timers (BuffVars.h)
@@ -1122,7 +1576,6 @@ script	3382	h=65280a36;n=130	Game text (rtx-gametext.js)
 script	3386	h=991dc80a;n=135	Game text (rtx-gametext.js)
 script	3509	h=d99d8aee;n=71	Game text (rtx-gametext.js)
 script	3721	h=39f3a178;n=533	Game text (rtx-gametext.js)
-varbit	60643	dom=0;var=12744;lo=2;hi=5	Game text (rtx-gametext.js)
 script	3726	h=699d331e;n=376	Game text (rtx-gametext.js)
 script	3862	h=dfd00bb3;n=111	Game text (rtx-gametext.js)
 varbit	39460	dom=0;var=7799;lo=0;hi=0	Game text (rtx-gametext.js)|panel_globetrotter.js
@@ -1461,6 +1914,8 @@ varbit	58116	dom=0;var=12236;lo=0;hi=13	Game text (rtx-gametext.js)
 varbit	58117	dom=0;var=12237;lo=0;hi=19	Game text (rtx-gametext.js)
 varbit	60144	dom=0;var=12482;lo=3;hi=12	Game text (rtx-gametext.js)
 varbit	61611	dom=0;var=13496;lo=30;hi=31	Game text (rtx-gametext.js)
+varbit	62039	dom=0;var=13670;lo=20;hi=30	Game text (rtx-gametext.js)
+varbit	62056	dom=0;var=13672;lo=19;hi=21	Game text (rtx-gametext.js)
 varp	183	type=0	Game text (rtx-gametext.js)
 varp	185	type=0	Game text (rtx-gametext.js)
 varp	3079	type=0	Game text (rtx-gametext.js)|D&D Tracker
@@ -1473,6 +1928,9 @@ varc	4645	type=36	Game text (rtx-gametext.js)
 varc	6492	type=0	Game text (rtx-gametext.js)
 script	5839	h=6cec0a90;n=75	Game text (rtx-gametext.js)
 varbit	44135	dom=0;var=8572;lo=2;hi=2	Game text (rtx-gametext.js)
+script	6240	h=eb706821;n=213	Game text (rtx-gametext.js)
+script	6244	h=86617db0;n=210	Game text (rtx-gametext.js)
+script	6245	h=fdd16e1a;n=207	Game text (rtx-gametext.js)
 script	6345	h=e3c9e4db;n=2629	Game text (rtx-gametext.js)
 script	6430	h=85c5d542;n=81	Game text (rtx-gametext.js)
 script	6438	h=a650aa15;n=40	Game text (rtx-gametext.js)
@@ -1761,6 +2219,12 @@ varc	8392	type=0	Game text (rtx-gametext.js)
 varc	8393	type=0	Game text (rtx-gametext.js)
 varc	8397	type=0	Game text (rtx-gametext.js)
 varc	8398	type=0	Game text (rtx-gametext.js)
+varc	8483	type=0	Game text (rtx-gametext.js)
+varc	8484	type=0	Game text (rtx-gametext.js)
+varc	8485	type=0	Game text (rtx-gametext.js)
+varc	8486	type=0	Game text (rtx-gametext.js)
+varc	8487	type=0	Game text (rtx-gametext.js)
+varc	8488	type=0	Game text (rtx-gametext.js)
 script	6553	h=8ac30070;n=1534	Game text (rtx-gametext.js)
 script	6554	h=bf13d727;n=10139	Game text (rtx-gametext.js)
 script	6592	h=47d843f5;n=124	Game text (rtx-gametext.js)
@@ -2046,6 +2510,7 @@ varp	12528	type=0	Game text (rtx-gametext.js)
 varp	12796	type=0	Game text (rtx-gametext.js)
 varp	12872	type=0	Game text (rtx-gametext.js)
 varp	13487	type=0	Game text (rtx-gametext.js)
+varp	13652	type=0	Game text (rtx-gametext.js)
 script	10903	h=95669a49;n=157	Game text (rtx-gametext.js)
 script	11034	h=3baaa929;n=4821	Game text (rtx-gametext.js)
 varbit	21558	dom=0;var=10191;lo=16;hi=31	Game text (rtx-gametext.js)
@@ -2688,7 +3153,6 @@ varbit	60739	dom=0;var=7040;lo=2;hi=2	Game text (rtx-gametext.js)
 varp	1397	type=0	Game text (rtx-gametext.js)
 script	15709	h=08dd744c;n=155	Game text (rtx-gametext.js)
 script	15721	h=70cee093;n=88	Game text (rtx-gametext.js)
-varbit	22875	dom=0;var=3814;lo=5;hi=11	Game text (rtx-gametext.js)
 script	15732	h=b9f1dac0;n=310	Game text (rtx-gametext.js)
 script	15734	h=ff822221;n=185	Game text (rtx-gametext.js)
 script	15735	h=fc937b39;n=565	Game text (rtx-gametext.js)
@@ -3103,8 +3567,11 @@ script	20395	h=b36dc6f2;n=170	Game text (rtx-gametext.js)
 script	20396	h=4ed819bc;n=207	Game text (rtx-gametext.js)
 script	20397	h=f9f86044;n=193	Game text (rtx-gametext.js)
 script	20451	h=555431a4;n=109	Game text (rtx-gametext.js)
-varbit	60446	dom=0;var=5839;lo=13;hi=14	Game text (rtx-gametext.js)
 script	20487	h=b3e7e6b4;n=349	Game text (rtx-gametext.js)
+script	20674	h=796e722a;n=203	Game text (rtx-gametext.js)
+script	20675	h=9c91541f;n=184	Game text (rtx-gametext.js)
+script	20676	h=4aa12c65;n=362	Game text (rtx-gametext.js)
+script	20677	h=78f73532;n=260	Game text (rtx-gametext.js)
 script	20699	h=e40b9a21;n=173	Game text (rtx-gametext.js)
 script	20700	h=e1e2e03e;n=192	Game text (rtx-gametext.js)
 script	20701	h=7f98e3dd;n=366	Game text (rtx-gametext.js)

@@ -7,7 +7,7 @@ namespace rtx::buffvars {
 // Var kinds: 1 varc (client), 2 varp (player), 3 varbit (player).
 struct Entry { std::int32_t structId; std::uint8_t kind; std::int32_t var; };
 
-// script 11073: struct -> var holding the buff's END in CLIENTCLOCK cycles (50/s). 472 entries.
+// script 11073: struct -> var holding the buff's END in CLIENTCLOCK cycles (50/s). 476 entries.
 inline constexpr Entry kTimer[] = {
     { 625, 1, 6872 },
     { 920, 1, 8258 },
@@ -20,6 +20,7 @@ inline constexpr Entry kTimer[] = {
     { 1626, 1, 6076 },
     { 2907, 1, 8410 },
     { 3595, 1, 8480 },
+    { 3596, 1, 8481 },
     { 3601, 1, 8477 },
     { 3602, 1, 8478 },
     { 3603, 1, 8479 },
@@ -481,18 +482,21 @@ inline constexpr Entry kTimer[] = {
     { 53041, 1, 8404 },
     { 53077, 1, 8407 },
     { 53078, 1, 8408 },
+    { 53441, 1, 8489 },
+    { 53442, 1, 8490 },
+    { 53443, 1, 8491 },
 };
 // Not lifted (needs script logic, left to the text fallback):
-//   3596: return varclient_8481; return CLIENTCLOCK();
 //   31989: if ((script6667(7) == 1)) { return 0; return varclient_4982;
 
-// script 11077: struct -> var holding the buff's stack count. 125 entries.
+// script 11077: struct -> var holding the buff's stack count. 126 entries.
 inline constexpr Entry kCount[] = {
     { 516, 3, 30947 },
     { 517, 3, 30948 },
     { 1408, 3, 35737 },
     { 1489, 2, 12679 },
     { 1626, 3, 36378 },
+    { 1869, 3, 60643 },
     { 3636, 3, 1898 },
     { 3694, 3, 51103 },
     { 6938, 3, 43703 },
@@ -618,7 +622,6 @@ inline constexpr Entry kCount[] = {
 //   680: return (varbitplayer_42160 / 10);
 //   1392: return (varbitplayer_35735 * 10);
 //   1624: if (((INV_GETOBJ(94, 2) == 44550) && (varbitplayer_35985 == 0))) { if ((OC_CATEGORY(INV_GETOBJ(94, 17)) == 3021)) { return (INV_GETVAR(94, 2
-//   1869: return varbitplayer_60643; return 0;
 //   6850: if (((INV_GETOBJ(94, 2) == 44550) && (varbitplayer_35985 == 1))) { return INV_GETVAR(94, 2, 30214);
 //   14885: return (STAT(0) - STAT_BASE(0));
 //   14886: return (STAT_BASE(0) - STAT(0));
