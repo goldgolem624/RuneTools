@@ -37,7 +37,12 @@ bool ReadOne(InputStream& s, NpcDef& d, int op) {
         case 95: d.combat_level = s.ReadUnsignedShort(); return true;
         case 97: case 98: s.ReadShort();            return true;   // resize x/y
         case 99:                                    return true;
-        case 100: case 101: case 102: s.ReadUnsignedByte(); return true;
+        case 100: case 101: s.ReadUnsignedByte();   return true;
+        case 102: {                                  // head icons: per set mask bit, a sprite and an index
+            for (int m = s.ReadUnsignedByte(); m != 0; m >>= 1)
+                if (m & 1) { s.ReadBigSmart(); s.ReadUnsignedSmart(); }
+            return true;
+        }
         case 103: s.ReadShort();                    return true;
         case 106: case 118: {                        // varbit/varp transform
             // u16 ids, read unsigned; 0xFFFF = none.

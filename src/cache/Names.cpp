@@ -427,7 +427,7 @@ bool NpcExtraOps(const Bytes& b, std::vector<std::pair<std::size_t, std::size_t>
         case 26: case 27: c.Skip(2); cuts.push_back({ at, at + 3 }); break;
         case 1: case 60: { const int k = (int)c.U8(); for (int j = 0; j < k && !c.bad; ++j) bigsmart(); break; }
         case 2: str(); break;
-        case 12: case 39: case 100: case 101: case 102: case 119: case 125: case 128: case 140: case 163:
+        case 12: case 39: case 100: case 101: case 119: case 125: case 128: case 140: case 163:
         case 165: case 168: case 180: case 183: case 184: case 253: c.Skip(1); break;
         case 40: case 41: { const int k = (int)c.U8(); c.Skip((std::size_t)k * 4); break; }
         case 42: { const int k = (int)c.U8(); c.Skip((std::size_t)k); break; }
@@ -442,6 +442,7 @@ bool NpcExtraOps(const Bytes& b, std::vector<std::pair<std::size_t, std::size_t>
         case 134: c.Skip(9); break;
         case 135: case 136: case 181: c.Skip(3); break;
         case 138: case 139: bigsmart(); break;
+        case 102: for (int m = (int)c.U8(); m != 0 && !c.bad; m >>= 1) if (m & 1) { bigsmart(); usmart(); } break;
         case 160: { const int k = (int)c.U8(); c.Skip((std::size_t)k * 2); break; }
         case 179: for (int j = 0; j < 6; ++j) usmart(); break;
         case 186: {

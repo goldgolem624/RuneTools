@@ -1419,11 +1419,11 @@ int DbRowSchemaCheckLocked(std::vector<std::uint8_t> bytes) {
     return 0;
 }
 
-// PARAM defs: CONFIGS index 2, archive 11 (file = param id). op1/op101 = vartype byte, op2 = default int,
-// op5 = default string, op4/131/207/209 = payload-less flags (131/207/209 since build 949).
+// PARAM defs: CONFIGS index 2, archive 11 (file = param id). op1 = vartype char, op101 = vartype id
+// (1 or 2 bytes), op2 = default int, op5 = default string, op4 = payload-less flag.
 constexpr int kParamsArchive = 11;
 struct ParamDef {
-    int  type = 0;                    // vartype byte from op1/101 (0 when absent)
+    int  type = 0;                    // vartype from op1/101 (0 when absent)
     int  def_int = 0;   bool has_int = false;
     std::string def_str; bool has_str = false;
 };
@@ -1435,11 +1435,10 @@ int DecodeParamFile(std::vector<std::uint8_t> bytes, ParamDef* out) {
     while (s.remaining() > 0) {
         int op = s.ReadUnsignedByte();
         if (op == 0) break;
-        else if (op == 1 || op == 101) { int t = s.ReadUnsignedByte(); if (out) out->type = t; }
+        else if (op == 1 || op == 101) { int t = op == 1 ? s.ReadUnsignedByte() : s.ReadUnsignedSmart(); if (out) out->type = t; }
         else if (op == 2) { int v = s.ReadInt(); if (out) { out->def_int = v; out->has_int = true; } }
         else if (op == 4) { /* flag, no payload */ }
         else if (op == 5) { std::string v = s.ReadString(); if (out) { out->def_str = std::move(v); out->has_str = true; } }
-        else if (op == 131 || op == 207 || op == 209) { /* flags, added build 949 */ }
         else return op;                               // unknown opcode -> length unknown, stop
     }
     return 0;
@@ -1945,8 +1944,8 @@ std::string EnumJson(int enum_id) {
     while (s.remaining() > 0) {
         int op = s.ReadUnsignedByte();
         if (op == 0) break;
-        if      (op == 1 || op == 101) s.ReadUnsignedByte(); // key type (101 = extended)
-        else if (op == 2 || op == 102) s.ReadUnsignedByte(); // value type (102 = extended)
+        if      (op == 1 || op == 2) s.ReadUnsignedByte();       // key / value type char
+        else if (op == 101 || op == 102) s.ReadUnsignedSmart();  // key / value type id, 1 or 2 bytes
         else if (op == 3) s.ReadString();                    // default (string)
         else if (op == 4) s.ReadInt();                       // default (int)
         else if (op == 5) { int n = s.ReadUnsignedShort();   // string map, i32 keys
@@ -1959,7 +1958,6 @@ std::string EnumJson(int enum_id) {
         else if (op == 8) { s.ReadUnsignedShort();           // int map, u16 keys
                             int n = s.ReadUnsignedShort();
                             for (int i = 0; i < n; ++i) { int k = s.ReadUnsignedShort(); num(k, s.ReadInt()); } }
-        else if (op == 131 || op == 207 || op == 209) { }    // flags, added build 949
         else break;                                          // unknown opcode -> length unknown
     }
     out += "}";
@@ -3240,8 +3238,8 @@ const EnumInts* enum_ints_locked(int enumId) {
     while (s.remaining() > 0) {
         int op = s.ReadUnsignedByte();
         if (op == 0) break;
-        if      (op == 1 || op == 101) s.ReadUnsignedByte();
-        else if (op == 2 || op == 102) s.ReadUnsignedByte();
+        if      (op == 1 || op == 2) s.ReadUnsignedByte();
+        else if (op == 101 || op == 102) s.ReadUnsignedSmart();
         else if (op == 3) s.ReadString();
         else if (op == 4) { e.def = s.ReadInt(); e.has_default = true; }
         else if (op == 5) { int n = s.ReadUnsignedShort();
@@ -3252,7 +3250,6 @@ const EnumInts* enum_ints_locked(int enumId) {
                             for (int i = 0; i < n; ++i) { s.ReadUnsignedShort(); s.ReadString(); } }
         else if (op == 8) { s.ReadUnsignedShort(); int n = s.ReadUnsignedShort();
                             for (int i = 0; i < n; ++i) { int k = s.ReadUnsignedShort(); e.map[k] = s.ReadInt(); } }
-        else if (op == 131 || op == 207 || op == 209) { }
         else break;
     }
     return &g_enum_int_memo.emplace(enumId, std::move(e)).first->second;
@@ -3485,15 +3482,14 @@ std::map<int, int> EnumIntsLocked(int enum_id) {
     while (s.remaining() > 0) {
         int op = s.ReadUnsignedByte();
         if (op == 0) break;
-        if      (op == 1 || op == 101) s.ReadUnsignedByte();
-        else if (op == 2 || op == 102) s.ReadUnsignedByte();
+        if      (op == 1 || op == 2) s.ReadUnsignedByte();
+        else if (op == 101 || op == 102) s.ReadUnsignedSmart();
         else if (op == 3) s.ReadString();
         else if (op == 4) s.ReadInt();
         else if (op == 5) { int n = s.ReadUnsignedShort(); for (int i = 0; i < n; ++i) { s.ReadInt(); s.ReadString(); } }
         else if (op == 6) { int n = s.ReadUnsignedShort(); for (int i = 0; i < n; ++i) { int k = s.ReadInt(); out[k] = s.ReadInt(); } }
         else if (op == 7) { s.ReadUnsignedShort(); int n = s.ReadUnsignedShort(); for (int i = 0; i < n; ++i) { s.ReadUnsignedShort(); s.ReadString(); } }
         else if (op == 8) { s.ReadUnsignedShort(); int n = s.ReadUnsignedShort(); for (int i = 0; i < n; ++i) { int k = s.ReadUnsignedShort(); out[k] = s.ReadInt(); } }
-        else if (op == 131 || op == 207 || op == 209) { }
         else break;
     }
     return out;
@@ -3662,8 +3658,8 @@ std::string MapCategoriesJson() {
     while (s.remaining() > 0) {
         int op = s.ReadUnsignedByte();
         if (op == 0) break;
-        if      (op == 1 || op == 101) s.ReadUnsignedByte();
-        else if (op == 2 || op == 102) s.ReadUnsignedByte();
+        if      (op == 1 || op == 2) s.ReadUnsignedByte();
+        else if (op == 101 || op == 102) s.ReadUnsignedSmart();
         else if (op == 3) s.ReadString();
         else if (op == 4) s.ReadInt();
         else if (op == 5) { int n = s.ReadUnsignedShort();
@@ -3674,7 +3670,6 @@ std::string MapCategoriesJson() {
                             for (int i = 0; i < n; ++i) { s.ReadUnsignedShort(); s.ReadString(); } }
         else if (op == 8) { s.ReadUnsignedShort(); int n = s.ReadUnsignedShort();
                             for (int i = 0; i < n; ++i) { int k = s.ReadUnsignedShort(); pairs.emplace_back(k, s.ReadInt()); } }
-        else if (op == 131 || op == 207 || op == 209) { }
         else break;
     }
     const auto& entries = structs->ref().entries();
@@ -3718,8 +3713,8 @@ void BuildPanelMountsLocked() {
     while (s.remaining() > 0) {
         int op = s.ReadUnsignedByte();
         if (op == 0) break;
-        if      (op == 1 || op == 101) s.ReadUnsignedByte();
-        else if (op == 2 || op == 102) s.ReadUnsignedByte();
+        if      (op == 1 || op == 2) s.ReadUnsignedByte();
+        else if (op == 101 || op == 102) s.ReadUnsignedSmart();
         else if (op == 3) s.ReadString();
         else if (op == 4) s.ReadInt();
         else if (op == 5) { int n = s.ReadUnsignedShort();
@@ -3730,7 +3725,6 @@ void BuildPanelMountsLocked() {
                             for (int i = 0; i < n; ++i) { s.ReadUnsignedShort(); s.ReadString(); } }
         else if (op == 8) { s.ReadUnsignedShort(); int n = s.ReadUnsignedShort();
                             for (int i = 0; i < n; ++i) { int k = s.ReadUnsignedShort(); pairs.emplace_back(k, s.ReadInt()); } }
-        else if (op == 131 || op == 207 || op == 209) { }
         else break;
     }
     const auto& entries = structs->ref().entries();
@@ -4844,14 +4838,14 @@ std::vector<CacheParseRow> CacheParseHealth() {
         while (s.remaining() > 0) {
             int op = s.ReadUnsignedByte();
             if (op == 0) break;
-            else if (op == 1 || op == 101 || op == 2 || op == 102) s.ReadUnsignedByte();
+            else if (op == 1 || op == 2) s.ReadUnsignedByte();
+            else if (op == 101 || op == 102) s.ReadUnsignedSmart();
             else if (op == 3) s.ReadString();
             else if (op == 4) s.ReadInt();
             else if (op == 5) { int n = s.ReadUnsignedShort(); for (int i = 0; i < n; ++i) { s.ReadInt(); s.ReadString(); } }
             else if (op == 6) { int n = s.ReadUnsignedShort(); for (int i = 0; i < n; ++i) { s.ReadInt(); s.ReadInt(); } }
             else if (op == 7) { s.ReadUnsignedShort(); int n = s.ReadUnsignedShort(); for (int i = 0; i < n; ++i) { s.ReadUnsignedShort(); s.ReadString(); } }
             else if (op == 8) { s.ReadUnsignedShort(); int n = s.ReadUnsignedShort(); for (int i = 0; i < n; ++i) { s.ReadUnsignedShort(); s.ReadInt(); } }
-            else if (op == 131 || op == 207 || op == 209) { }
             else return op;
         }
         return 0; });
@@ -5109,15 +5103,16 @@ std::string PinEnumLocked(int id, const std::string& want, bool hash) {
     while (s.remaining() > 0) {
         int op = s.ReadUnsignedByte();
         if (op == 0) break;
-        if (op == 1 || op == 101)      kt = s.ReadUnsignedByte();
-        else if (op == 2 || op == 102) vt = s.ReadUnsignedByte();
+        if (op == 1)                   kt = s.ReadUnsignedByte();
+        else if (op == 101)            kt = s.ReadUnsignedSmart();
+        else if (op == 2)              vt = s.ReadUnsignedByte();
+        else if (op == 102)            vt = s.ReadUnsignedSmart();
         else if (op == 3) s.ReadString();
         else if (op == 4) s.ReadInt();
         else if (op == 5) { int n = s.ReadUnsignedShort(); for (int i = 0; i < n; ++i) { int k = s.ReadInt(); vals[k] = "s:" + s.ReadString(); } }
         else if (op == 6) { int n = s.ReadUnsignedShort(); for (int i = 0; i < n; ++i) { int k = s.ReadInt(); vals[k] = std::to_string(s.ReadInt()); } }
         else if (op == 7) { s.ReadUnsignedShort(); int n = s.ReadUnsignedShort(); for (int i = 0; i < n; ++i) { int k = s.ReadUnsignedShort(); vals[k] = "s:" + s.ReadString(); } }
         else if (op == 8) { s.ReadUnsignedShort(); int n = s.ReadUnsignedShort(); for (int i = 0; i < n; ++i) { int k = s.ReadUnsignedShort(); vals[k] = std::to_string(s.ReadInt()); } }
-        else if (op == 131 || op == 207 || op == 209) { }
         else return "op=" + std::to_string(op);
     }
     if (hash) {
