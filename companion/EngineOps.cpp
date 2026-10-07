@@ -126,9 +126,91 @@ std::string RunningBuild() {
     return {};
 }
 
+// The running exe's PE time stamp: builds that share a version string (the live and beta clients are
+// both 950.1.0.0) differ in it.
+std::uint32_t RunningStamp() {
+    const auto* base = reinterpret_cast<const std::uint8_t*>(GetModuleHandleW(nullptr));
+    if (!base) return 0;
+    const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
+    if (dos->e_magic != IMAGE_DOS_SIGNATURE) return 0;
+    const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS*>(base + dos->e_lfanew);
+    return nt->Signature == IMAGE_NT_SIGNATURE ? nt->FileHeader.TimeDateStamp : 0;
+}
+
+// Handlers that name themselves in their error text, by the name the operation table gives them.
+struct Spot { const char* text; const char* op; };
+constexpr Spot kSpots[] = {
+    { "db_getfield",                    "dbrow_getfield" },
+    { "array_sort",                     "ARRAY_SORT" },
+    { "_minimenuopen",                  "MINIMENUOPEN" },
+    { "_deeplink_get",                  "DEEPLINK_GET" },
+    { "_shop_applypendingtransactions", "SHOP_APPLYPENDINGTRANSACTIONS" },
+};
+
+// The one string in .rdata whose whole text ends in `text`; null when absent or not unique.
+const std::uint8_t* FindNamedString(const std::uint8_t* base, const char* text) {
+    const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
+    const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS*>(base + dos->e_lfanew);
+    const IMAGE_SECTION_HEADER* sec = IMAGE_FIRST_SECTION(nt);
+    const std::size_t tl = std::strlen(text);
+    const std::uint8_t* found = nullptr;
+    for (WORD k = 0; k < nt->FileHeader.NumberOfSections; ++k, ++sec) {
+        if (std::memcmp(sec->Name, ".rdata", 6) != 0) continue;
+        const std::uint8_t* b = base + sec->VirtualAddress;
+        const std::size_t n = sec->Misc.VirtualSize;
+        for (std::size_t i = 0; i + tl + 1 <= n; ++i) {
+            if (b[i] != (std::uint8_t)text[0] || std::memcmp(b + i, text, tl) != 0 || b[i + tl] != 0) continue;
+            std::size_t st = i;
+            while (st > 0 && b[st - 1] != 0) --st;
+            if (found) return nullptr;
+            found = b + st;
+        }
+    }
+    return found;
+}
+
+// True when the handler's first 0x400 bytes load `str` with a rip-relative lea.
+bool HandlerLoads(const std::uint8_t* h, const std::uint8_t* str) {
+    __try {
+        for (std::size_t i = 0; i + 7 <= 0x400; ++i) {
+            if ((h[i] == 0x48 || h[i] == 0x4C) && h[i + 1] == 0x8D && (h[i + 2] & 0xC7) == 0x05) {
+                std::int32_t rel; std::memcpy(&rel, h + i + 3, 4);
+                if (h + i + 7 + rel == str) return true;
+            }
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {}
+    return false;
+}
+
+// How many self-naming handlers sit under another number than the table gives them; `checked` counts
+// the ones that could be compared. A table from another exe of the same version disagrees here.
+int SpotDisagreements(int& checked) {
+    checked = 0;
+    const auto* base = reinterpret_cast<const std::uint8_t*>(GetModuleHandleW(nullptr));
+    if (!base) return 0;
+    int bad = 0;
+    for (const Spot& sp : kSpots) {
+        const auto named = g_byName.find(sp.op);
+        const std::uint8_t* str = FindNamedString(base, sp.text);
+        if (named == g_byName.end() || !str) continue;
+        bool any = false, agrees = false;
+        for (const auto& kv : g_byNumber) {
+            if (!HandlerLoads(reinterpret_cast<const std::uint8_t*>(kv.second), str)) continue;
+            any = true;
+            if (kv.first == named->second) agrees = true;
+        }
+        if (!any) continue;
+        ++checked;
+        if (!agrees) ++bad;
+    }
+    return bad;
+}
+
 // Operation numbers move between game builds, so names from another build's table would call the wrong
-// handlers. Only a table extracted from this build names anything; operations recognised by their own
-// code (projection, positions) do not depend on it.
+// handlers. Only a table extracted from this build names anything: its version must be this exe's, and
+// the self-naming handlers must sit under the table's numbers (or, when too few can be compared, its
+// label must carry this exe's time stamp). Operations recognised by their own code (projection,
+// positions) do not depend on it.
 bool NamesMatchBuild() {
     wchar_t up[MAX_PATH] = {};
     if (!GetEnvironmentVariableW(L"USERPROFILE", up, MAX_PATH)) return false;
@@ -136,10 +218,22 @@ bool NamesMatchBuild() {
     HANDLE h = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0, nullptr);
     char buf[64] = {}; DWORD got = 0;
     if (h != INVALID_HANDLE_VALUE) { ReadFile(h, buf, sizeof(buf) - 1, &got, nullptr); CloseHandle(h); }
-    std::string table(buf, got);
-    table = table.substr(0, table.find(' '));   // "950.1.0.0 6a9986f8": the build, then the exe's time stamp
-    while (!table.empty() && (table.back() == '\r' || table.back() == '\n' || table.back() == ' ')) table.pop_back();
+    std::string label(buf, got);
+    while (!label.empty() && (label.back() == '\r' || label.back() == '\n' || label.back() == ' ')) label.pop_back();
+    const std::size_t sp = label.find(' ');      // "950.1.0.0 6a9986f8": the build, then the exe's time stamp
+    const std::string table = label.substr(0, sp);
+    const std::uint32_t tableStamp = sp == std::string::npos ? 0 : (std::uint32_t)std::strtoul(label.c_str() + sp + 1, nullptr, 16);
     const std::string running = RunningBuild();
+    const std::uint32_t runningStamp = RunningStamp();
+    if (!running.empty() && table == running) {
+        int checked = 0;
+        const int bad = SpotDisagreements(checked);
+        if (bad > 0 || (checked < 3 && (tableStamp == 0 || runningStamp == 0 || tableStamp != runningStamp))) {
+            Say("engine ops: the operation table is from another exe of build %s (%d of %d self-naming handlers disagree, stamp %08x, this is %08x); named operations are off until the tables are extracted again",
+                running.c_str(), bad, checked, tableStamp, runningStamp);
+            return false;
+        }
+    }
     if (!running.empty() && table == running) {
         // The launcher gives the label its table's write time. A label newer than the table was
         // written for an extraction that never rewrote it (earlier launchers wrote it when the run
