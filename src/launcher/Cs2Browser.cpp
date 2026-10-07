@@ -1,5 +1,7 @@
 #include "Cs2Browser.h"
 
+#include "../cache/Names.h"
+
 #include <windows.h>
 
 #include <algorithm>
@@ -180,6 +182,20 @@ std::uint32_t game_client_stamp() {
     return stamp;
 }
 
+// Jagex's own names, dumped beside the export for the sidecar to prefer. Empty when there are none or
+// they are not ready in time: the export then runs without them, as before.
+constexpr int kNamesWaitMs = 2000;   // on the UI thread: a click never stalls longer; not ready = no names this run
+std::wstring official_names_dump() {
+    const fs::path dir = fs::path(OutDir()) / L"official";
+    std::error_code ec;
+    fs::remove_all(dir, ec);
+    const rtx::names::State s = rtx::names::Status(kNamesWaitMs);
+    if (!s.ready || s.total <= 0) return {};
+    std::string log;
+    if (rtx::names::Dump(dir.wstring(), log, false) <= 0) { fs::remove_all(dir, ec); return {}; }
+    return dir.wstring();
+}
+
 int script_id_from_name(const fs::path& p) {
     // clientscript-<id>.ts
     std::wstring st = p.stem().wstring();
@@ -264,6 +280,8 @@ std::string StartExtract() {
                             : L"node";
     std::wstring cmd = node + L" --max-old-space-size=8192 \"" + entry.wstring() +
                        L"\" \"" + OutDir() + L"\"";
+    const std::wstring official = official_names_dump();
+    if (!official.empty()) cmd += L" --official \"" + official + L"\"";
     STARTUPINFOW si{};
     si.cb = sizeof(si);
     if (logf != INVALID_HANDLE_VALUE) {

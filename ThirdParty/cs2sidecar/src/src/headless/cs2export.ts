@@ -16,12 +16,21 @@
 // enums = js5-17 with op209 as a flag, dbrows = smart rowcount + row-major,
 // structs = op249 only.
 //
-// Usage: node dist/cs2export.js <outdir>
+// Official names: with --official <dir> (the launcher's names dump, <dir>/<kind>.json =
+// {"<id>": "NAME"}), Jagex's own names win over every derived var name and join the id
+// annotations as "<label> | NAME", or "NAME" where there was no label. Var identifiers keep the
+// <prefix><id>_<name> form: vb, vp, vc for player varbits, varps and varcs, and vnpc, vobj,
+// vclan, vclansetting, vgroup (vars) and vbnpc, vbobj, vbclan, vbclansetting (varbits) for the
+// other domains. Without the folder the export is the same as before.
+//
+// Usage: node dist/cs2export.js <outdir> [--official <dir>]
 // Output tree:
 //   <outdir>/scripts/clientscript-<id>.ts
 //   <outdir>/progress.json   {stage, done, total, startedAt}  (updated ~1/s)
 //   <outdir>/meta.json       {date, buildnr, total, ok, failed[], names, annotations, notes[]}
-//   <outdir>/names.json      generated rename tables
+//   <outdir>/names.json      the names var identifiers carry: {varbit, varp, varc: {<id>: name}};
+//                            with official names also the other var domains and the derived
+//                            names under "guessed"
 //   <outdir>/switches.json   {ver, buildnr, scripts:{<id>:{desc,keyKind,cols,varKind,entries}}}
 //                            baked case -> var maps for the switches the panels otherwise
 //                            hand-transcribe (collection log, toolbelt, shop caps, ...)
@@ -77,6 +86,62 @@ class R {
 
 type NameTables = { varbit: Map<number, string>, varp: Map<number, string>, varc: Map<number, string> };
 type CastTables = { [kind: string]: Map<number, string> };
+
+// ---- official names (the launcher's dump of the cache's own name table) ----
+const OFFICIAL_KINDS = ["varp", "varbit", "varc", "varnpc", "varobj", "varclan", "varclansetting", "vargroup",
+    "obj", "npc", "loc", "quest", "achievement", "dbrow", "dbtable", "struct", "category", "enum", "param",
+    "seq", "inv", "bas", "cursor", "sprite", "model", "font", "material", "stylesheet", "music", "sound",
+    "mapelement", "hitmark", "interface", "component"];
+type Official = Map<string, Map<number, string>>;
+function loadOfficial(dir: string | null): Official | null {
+    if (!dir) { return null; }
+    const out: Official = new Map();
+    for (const kind of OFFICIAL_KINDS) {
+        let obj: any;
+        try { obj = JSON.parse(fs.readFileSync(path.join(dir, `${kind}.json`), "utf8")); } catch (e) { continue; }
+        if (!obj || typeof obj != "object") { continue; }
+        const m = new Map<number, string>();
+        for (const k of Object.keys(obj)) {
+            const v = obj[k];
+            // names become part of identifiers, so only identifier characters are taken
+            if (/^\d+$/.test(k) && typeof v == "string" && /^[A-Za-z0-9_]+$/.test(v)) { m.set(parseInt(k, 10), v); }
+        }
+        if (m.size) { out.set(kind, m); }
+    }
+    return out.size ? out : null;
+}
+
+// Decompiler var identifiers (<word>_<id>) and the <prefix><id>_<name> form a named one takes.
+const VAR_IDENTS: { [word: string]: { kind: string, prefix: string } } = {
+    varbitplayer: { kind: "varbit", prefix: "vb" },
+    varplayer: { kind: "varp", prefix: "vp" },
+    varclient: { kind: "varc", prefix: "vc" },
+    varnpc: { kind: "varnpc", prefix: "vnpc" },
+    varbitnpc: { kind: "varbit", prefix: "vbnpc" },
+    varobject: { kind: "varobj", prefix: "vobj" },
+    varbitobject: { kind: "varbit", prefix: "vbobj" },
+    varclan: { kind: "varclan", prefix: "vclan" },
+    varbitclan: { kind: "varbit", prefix: "vbclan" },
+    varclansettings: { kind: "varclansetting", prefix: "vclansetting" },
+    varbitclansettings: { kind: "varbit", prefix: "vbclansetting" },
+    varplayergroup: { kind: "vargroup", prefix: "vgroup" },
+};
+type IdentTables = Map<string, { prefix: string, names: Map<number, string>, official: Map<number, string> | undefined }>;
+// Official names first, then the derived ones (player varbits, varps and varcs only).
+function identTables(names: NameTables, official: Official | null): IdentTables {
+    const derived: { [word: string]: Map<number, string> } = { varbitplayer: names.varbit, varplayer: names.varp, varclient: names.varc };
+    const t: IdentTables = new Map();
+    for (const word of Object.keys(VAR_IDENTS)) {
+        const { kind, prefix } = VAR_IDENTS[word];
+        const off = official?.get(kind);
+        const base = derived[word];
+        if (!off && !base) { continue; }
+        let m = base ?? new Map<number, string>();
+        if (off) { m = new Map(m); for (const [id, nm] of off) { m.set(id, nm); } }
+        t.set(word, { prefix, names: m, official: off });
+    }
+    return t;
+}
 
 // ---- quest configs (js5-2 archive 35): op1 = name, op3/op4 = progress vars ----
 function decodeQuest(buf: Buffer): { name: string | null, varps: number[], varbits: number[] } {
@@ -1009,13 +1074,17 @@ function applyIfaceNames(text: string): string {
     });
 }
 
-function applyNames(text: string, names: NameTables) {
-    const PREFIX: { [k: string]: string } = { varbitplayer: "vb", varplayer: "vp", varclient: "vc" };
-    return text.replace(/\b(varbitplayer|varplayer|varclient)_(\d+)\b/g, (m, kind, ids) => {
+function identRegex(tables: IdentTables) {
+    return new RegExp(String.raw`\b(` + [...tables.keys()].join("|") + String.raw`)_(\d+)\b`, "g");
+}
+function applyNames(text: string, tables: IdentTables, re: RegExp, counts: { [k: string]: number }) {
+    return text.replace(re, (m, word, ids) => {
         const id = parseInt(ids, 10);
-        const nm = (kind === "varbitplayer" ? names.varbit : kind === "varplayer" ? names.varp : names.varc).get(id);
+        const t = tables.get(word)!;
+        const nm = t.names.get(id);
         if (!nm) { return m; }
-        return `${PREFIX[kind]}${id}_${nm}`;
+        if (t.official && t.official.get(id) === nm) { counts.vars = (counts.vars || 0) + 1; }
+        return `${t.prefix}${id}_${nm}`;
     });
 }
 
@@ -1062,6 +1131,23 @@ const LEAGUE_TASK_TABLE = 334;
 const SWITCH_TYPES = ["obj", "npc", "loc", "quest", "stat", "achievement", "dbrow", "struct"];
 const TYPE_ALT = SWITCH_TYPES.join("|");
 const CAST_RE = /(?<![\w.\-])(\d+) as (obj|npc|loc|quest|stat|achievement|dbrow|struct|category)\b/g;
+// Cast type -> official name kind. With official names every one of these casts is annotated.
+const CAST_KIND: { [t: string]: string } = {
+    obj: "obj", npc: "npc", loc: "loc", quest: "quest", achievement: "achievement", dbrow: "dbrow",
+    struct: "struct", category: "category", cs2enum: "enum", seq: "seq", inv: "inv", bas: "bas",
+    graphic: "sprite", model: "model", fontmetrics: "font", material: "material", stylesheet: "stylesheet",
+    midi: "music", synth: "sound", cursor: "cursor", mapelement: "mapelement", hitmark: "hitmark",
+    interface: "interface", toplevelinterface: "interface", overlayinterface: "interface", clientinterface: "interface",
+};
+const CAST_ALL_RE = new RegExp(String.raw`(?<![\w.\-])(\d+) as (stat|` + Object.keys(CAST_KIND).join("|") + String.raw`)\b`, "g");
+// An id's official name joined to its annotation text, or alone when there is none.
+function withOfficial(text: string | null, official: Official | null, kind: string | undefined, id: number,
+                      offCounts: { [k: string]: number }): string | null {
+    const nm = official && kind ? official.get(kind)?.get(id) : undefined;
+    if (!nm) { return text; }
+    offCounts[kind!] = (offCounts[kind!] || 0) + 1;
+    return text ? `${text} | ${nm}` : nm;
+}
 const ENUM_RE = /enum_getvalue\(\s*-?\d+\s*,\s*-?\d+\s*,\s*(\d+)(?:\s+as\s+cs2enum)?\s*,\s*(-?\d+)\s*\)/g;
 const FUNC_RE = /\bfunction\s+\w+\(([^)]*)\)/g;
 const SWITCH_RE = new RegExp(String.raw`\bswitch\s*\(\s*([A-Za-z_]\w*)\s*\)\s*\{`, "g");
@@ -1144,7 +1230,8 @@ function dbComment(packed: number, dbschema: Map<number, Map<number, number[]>>)
 // Rule 2: annotate case labels of switches whose bareword scrutinee is typed by a cast.
 function switchCaseInsertions(masked: string, blocks: Map<number, number>,
                               cast: CastTables, counts: { [k: string]: number },
-                              already: (at: number) => boolean): Array<[number, string]> {
+                              already: (at: number) => boolean,
+                              official: Official | null, offCounts: { [k: string]: number }): Array<[number, string]> {
     const ins: Array<[number, string]> = [];
     const funcSpans: Array<[number, number, Map<string, string>, Set<string>]> = [];
     for (const m of masked.matchAll(FUNC_RE)) {
@@ -1206,7 +1293,7 @@ function switchCaseInsertions(masked: string, blocks: Map<number, number>,
         if (owner === null || !typedMap.has(owner)) { continue; }
         const typ = typedMap.get(owner)!;
         const name = (cast as any)[typ].get(parseInt(cm[1], 10));
-        const cc = cleanComment(name, 60);
+        const cc = withOfficial(cleanComment(name, 60), official, CAST_KIND[typ], parseInt(cm[1], 10), offCounts);
         if (cc == null) { continue; }
         const at = cm.index! + cm[0].length;      // right after the ':'
         if (already(at)) { continue; }
@@ -1232,13 +1319,15 @@ const DBQUERY_OP_CALL_RE = /\b(DBQUERY_FIND_VALUE|DBQUERY_FILTER_FIELD_OP)\(/g;
 function annotate(text: string, cast: CastTables, enumTables: Map<number, Map<number, string>>,
                   paramtypes: Map<number, number>, dbschema: Map<number, Map<number, number[]>>,
                   ifaceCounts: Map<number, number>, ifaceComps: Map<number, string>,
-                  counts: { [k: string]: number }): string {
+                  counts: { [k: string]: number },
+                  official: Official | null = null, offCounts: { [k: string]: number } = {}): string {
     const masked = maskStrings(text);
     const already = (at: number) => text.slice(at, at + 3) === " /*";
     const ins: Array<[number, string]> = [];
     // Rule 1: typed cast literals
-    for (const m of masked.matchAll(CAST_RE)) {
-        const cc = cleanComment((cast as any)[m[2]].get(parseInt(m[1], 10)), 60);
+    for (const m of masked.matchAll(official ? CAST_ALL_RE : CAST_RE)) {
+        const id = parseInt(m[1], 10);
+        const cc = withOfficial(cleanComment((cast as any)[m[2]]?.get(id), 60), official, CAST_KIND[m[2]], id, offCounts);
         if (cc == null) { continue; }
         ins.push([m.index! + m[0].length, ` /* ${cc} */`]);
         counts["cast_" + m[2]] = (counts["cast_" + m[2]] || 0) + 1;
@@ -1253,16 +1342,17 @@ function annotate(text: string, cast: CastTables, enumTables: Map<number, Map<nu
     }
     // Rule 2: typed switch cases
     const blocks = braceBlocks(masked);
-    for (const it of switchCaseInsertions(masked, blocks, cast, counts, already)) { ins.push(it); }
+    for (const it of switchCaseInsertions(masked, blocks, cast, counts, already, official, offCounts)) { ins.push(it); }
     // Rule 4: db column-type tags
     for (const m of masked.matchAll(DB_CALL_RE)) {
         const ca = callArgs(masked, m.index! + m[0].length - 1);
         if (!ca || ca[1].length < 2) { continue; }
         const got = argInt(masked, ca[1][1]);
         if (!got) { continue; }
-        const cc = dbComment(parseInt(got[0], 10), dbschema);
+        const packedDb = parseInt(got[0], 10);
+        const cc = dbComment(packedDb, dbschema);
         if (cc == null || already(got[1])) { continue; }
-        ins.push([got[1], ` /* ${cc} */`]);
+        ins.push([got[1], ` /* ${withOfficial(cc, official, "dbtable", packedDb >>> 12, offCounts)} */`]);
         counts["db_col"] = (counts["db_col"] || 0) + 1;
     }
     // Rule 5: param type tags
@@ -1273,11 +1363,14 @@ function annotate(text: string, cast: CastTables, enumTables: Map<number, Map<nu
         const span = (name === "cc_setparam" || name === "cc_getparam") ? ca[1][0] : ca[1][ca[1].length - 1];
         const got = argInt(masked, span);
         if (!got) { continue; }
-        const t = paramtypes.get(parseInt(got[0], 10));
-        if (t === undefined || !MEANINGFUL_TYPES.has(t)) { continue; }
+        const pid = parseInt(got[0], 10);
+        const t = paramtypes.get(pid);
+        const tag = t === undefined || !MEANINGFUL_TYPES.has(t) ? null : typeName(t);
+        if (tag == null && !official?.get("param")?.has(pid)) { continue; }
         if (already(got[1])) { continue; }
-        ins.push([got[1], ` /* ${typeName(t)} */`]);
-        counts["param_type"] = (counts["param_type"] || 0) + 1;
+        ins.push([got[1], ` /* ${withOfficial(tag, official, "param", pid, offCounts)} */`]);
+        const pk = tag != null ? "param_type" : "param_name";
+        counts[pk] = (counts[pk] || 0) + 1;
     }
     // Rule 6: literal obj ids in object setters
     for (const m of masked.matchAll(OBJ_CALL_RE)) {
@@ -1286,7 +1379,8 @@ function annotate(text: string, cast: CastTables, enumTables: Map<number, Map<nu
         if (!ca || ca[1].length <= idx) { continue; }
         const got = argInt(masked, ca[1][idx]);
         if (!got) { continue; }
-        const cc = cleanComment(cast.obj.get(parseInt(got[0], 10)), 60);
+        const label = cleanComment(cast.obj.get(parseInt(got[0], 10)), 60);
+        const cc = withOfficial(label, official, "obj", parseInt(got[0], 10), offCounts);
         if (cc == null || already(got[1])) { continue; }
         ins.push([got[1], ` /* ${cc} */`]);
         counts["objset"] = (counts["objset"] || 0) + 1;
@@ -1306,7 +1400,10 @@ function annotate(text: string, cast: CastTables, enumTables: Map<number, Map<nu
         if (cnt === undefined || comp >= cnt) { continue; }
         if (already(got[1])) { continue; }
         const label = cleanComment(ifaceComps.get(packed), 40);
-        ins.push([got[1], ` /* if ${group}:${comp}${label ? ` '${label}'` : ""} */`]);
+        const cc = `if ${group}:${comp}${label ? ` '${label}'` : ""}`;
+        const ofc = official?.get("component")?.has(packed) ? withOfficial(cc, official, "component", packed, offCounts)
+                                                            : withOfficial(cc, official, "interface", group, offCounts);
+        ins.push([got[1], ` /* ${ofc} */`]);
         counts["ifcomp"] = (counts["ifcomp"] || 0) + 1;
     }
     // Rule 8: the operator argument (3rd) of the DB query ops renders as a name.
@@ -1334,6 +1431,9 @@ function annotate(text: string, cast: CastTables, enumTables: Map<number, Map<nu
     const startedAt = new Date().toISOString();
     const t0 = Date.now();
     const notes: string[] = [];
+    const oi = process.argv.indexOf("--official", 3);
+    const official = loadOfficial(oi > 0 && process.argv[oi + 1] ? process.argv[oi + 1] : null);
+    const offCounts: { [k: string]: number } = {};
     const writeProgress = (stage: string, done: number, total: number) => {
         const tmp = path.join(outdir, "progress.json.tmp");
         fs.writeFileSync(tmp, JSON.stringify({ stage, done, total, startedAt }));
@@ -1382,10 +1482,30 @@ function annotate(text: string, cast: CastTables, enumTables: Map<number, Map<nu
     fs.writeFileSync(path.join(outdir, "enums.json"), JSON.stringify(enumDump));
     fs.writeFileSync(path.join(outdir, "structs.json"), JSON.stringify(structDump));
     fs.writeFileSync(path.join(outdir, "locs.json"), JSON.stringify(locDump));
-    fs.writeFileSync(path.join(outdir, "names.json"), JSON.stringify({
-        varbit: Object.fromEntries(names.varbit), varp: Object.fromEntries(names.varp),
-        varc: Object.fromEntries(names.varc),
-    }));
+    // Official names win; the derived ones fill the rest and stay listed under "guessed".
+    const idents = identTables(names, official);
+    const identRe = identRegex(idents);
+    const shown = {
+        varbit: idents.get("varbitplayer")?.names ?? names.varbit,
+        varp: idents.get("varplayer")?.names ?? names.varp,
+        varc: idents.get("varclient")?.names ?? names.varc,
+    };
+    const namesOut: { [k: string]: any } = {
+        varbit: Object.fromEntries(shown.varbit), varp: Object.fromEntries(shown.varp),
+        varc: Object.fromEntries(shown.varc),
+    };
+    if (official) {
+        for (const k of ["varnpc", "varobj", "varclan", "varclansetting", "vargroup"]) {
+            const m = official.get(k);
+            if (m) { namesOut[k] = Object.fromEntries(m); }
+        }
+        namesOut.guessed = {
+            varbit: Object.fromEntries(names.varbit), varp: Object.fromEntries(names.varp),
+            varc: Object.fromEntries(names.varc),
+        };
+        notes.push(`official names: ${[...official].map(([k, m]) => `${k} ${m.size}`).join(", ")}`);
+    }
+    fs.writeFileSync(path.join(outdir, "names.json"), JSON.stringify(namesOut));
 
     const indices = await engine.rawsource.getCacheIndex(CLIENTSCRIPT_MAJOR);
     const ids: number[] = [];
@@ -1406,9 +1526,9 @@ function annotate(text: string, cast: CastTables, enumTables: Map<number, Map<nu
                 // "not compatible" (lazy init inside rsmv); retry once now that it's warm
                 text = await renderClientScript(engine.rawsource, buf, id);
             }
-            text = applyNames(text, names);
+            text = applyNames(text, idents, identRe, offCounts);
             text = applyIfaceNames(text);
-            text = annotate(text, cast, enumTables, paramtypes, dbschema, ifaceCounts, ifaceComps, annCounts);
+            text = annotate(text, cast, enumTables, paramtypes, dbschema, ifaceCounts, ifaceComps, annCounts, official, offCounts);
             fs.writeFileSync(path.join(scriptsdir, `clientscript-${id}.ts`), text);
             ok++;
         } catch (e) {
@@ -1438,8 +1558,9 @@ function annotate(text: string, cast: CastTables, enumTables: Map<number, Map<nu
     const annTotal = Object.values(annCounts).reduce((a, b) => a + b, 0);
     const meta = {
         ver: 3, date: startedAt, buildnr, total: ids.length, ok,
-        failed, names: { varbit: names.varbit.size, varp: names.varp.size, varc: names.varc.size },
+        failed, names: { varbit: shown.varbit.size, varp: shown.varp.size, varc: shown.varc.size },
         annotations: { total: annTotal, ...annCounts },
+        ...(official ? { official: { loaded: Object.fromEntries([...official].map(([k, m]) => [k, m.size])), used: offCounts } } : {}),
         switches: { scripts: Object.keys(switches).length, entries: swEntries },
         xref: {
             items: cast.obj.size, npcs: cast.npc.size, locs: cast.loc.size,

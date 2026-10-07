@@ -46,10 +46,10 @@
           m.ok.toLocaleString() + ' of ' + m.total.toLocaleString() + ' decompiled' +
           (m.failed && m.failed.length ? ' (' + m.failed.length + ' failed)' : ''));
         cs2Pill(box, 'named vars', ((m.names && (m.names.varbit + m.names.varp)) || 0).toLocaleString(), '',
-          'Ground-truth renames: quest trackers + npc/loc morph vars');
+          'Official names where the cache has them, else derived ones (quest trackers, npc/loc morph vars)');
         if (m.annotations && m.annotations.total)
           cs2Pill(box, 'annotations', m.annotations.total.toLocaleString(), '',
-            'Inline /* name */ comments: items, npcs, locs, quests, stats, achievements, dbrows, structs, enum values');
+            'Inline /* name */ comments: items, npcs, locs, quests, stats, achievements, dbrows, structs, enum values, official names');
         if (outdated) cs2Pill(box, '', (ver ? 'game updated' : 'build unknown') + ' - re-extract', 'warn');
       } else {
         cs2Pill(box, '', 'No extraction yet', 'mut');

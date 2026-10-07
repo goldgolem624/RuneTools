@@ -10,7 +10,8 @@ std::wstring OutDir();
 // {"running":bool,"sidecar":bool,"meta":<meta.json|null>,"progress":<progress.json|null>}
 std::string StatusJson();
 
-// Spawn the sidecar (node dist/cs2export.js <outdir>). {"ok":true} or {"err":"..."}.
+// Spawn the sidecar (node dist/cs2export.js <outdir> [--official <outdir>\official], the second when the
+// launcher has Jagex's names to dump there). {"ok":true} or {"err":"..."}.
 std::string StartExtract();
 
 // Terminate a running extraction. {"ok":bool}
@@ -23,7 +24,8 @@ std::string SearchJson(const std::string& query, int max_results);
 // One script's text, chunked. {"id":n,"size":n,"offset":n,"more":bool,"text":".."}
 std::string ScriptJson(int id, size_t offset);
 
-// {"varbit":{"<id>":"name"},"varp":{"<id>":"name"}} or {} when never extracted.
+// {"varbit":{"<id>":"name"},"varp":{..},"varc":{..}} (official names first; with them also the other
+// var domains and "guessed") or {} when never extracted.
 std::string NamesJson();
 // Baked switch maps from the last extraction; "{}" when none has been run.
 std::string SwitchesJson();

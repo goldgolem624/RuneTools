@@ -2,6 +2,7 @@
 
 #include "Bridge.h"
 #include "Companion.h"
+#include "Cs2Browser.h"
 #include "Dock.h"
 #include "Http.h"
 #include "IconCache.h"
@@ -576,6 +577,16 @@ int APIENTRY wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
             const int n = rtx::names::Dump(argv[2], log, argc >= 4 && std::wstring(argv[3]) == L"rebuild");
             { std::ofstream f("names-dump.txt", std::ios::binary | std::ios::trunc); f << log; }
             return headless_exit(n >= 0 ? 0 : 1);
+        }
+        // --cs2-extract: one script extraction as the CS2 panel starts it, official names included, into
+        // %USERPROFILE%\RuneToolsX\cs2; waits for it, then the start reply and final status to cs2-extract.txt.
+        if (argv && argc >= 2 && std::wstring(argv[1]) == L"--cs2-extract") {
+            std::string out = cs2browser::StartExtract() + "\n";
+            if (out.find("\"ok\":true") != std::string::npos)
+                while (cs2browser::StatusJson().find("\"running\":true") != std::string::npos) Sleep(1000);
+            out += cs2browser::StatusJson() + "\n";
+            { std::ofstream f("cs2-extract.txt", std::ios::binary | std::ios::trunc); f << out; }
+            return headless_exit(0);
         }
         // --loc-dump <out.tsv>: every loc definition (name, footprint, actions, models, morphs) for offline tooling.
         if (argv && argc >= 3 && std::wstring(argv[1]) == L"--loc-dump") {
