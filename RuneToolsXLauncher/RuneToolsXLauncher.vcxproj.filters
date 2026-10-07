@@ -51,6 +51,9 @@
     <ClCompile Include="..\src\cache\MapTiles.cpp">
       <Filter>Cache</Filter>
     </ClCompile>
+    <ClCompile Include="..\src\cache\Names.cpp">
+      <Filter>Cache</Filter>
+    </ClCompile>
     <ClCompile Include="..\src\cache\NpcType.cpp">
       <Filter>Cache</Filter>
     </ClCompile>
@@ -162,6 +165,9 @@
       <Filter>Cache</Filter>
     </ClInclude>
     <ClInclude Include="..\src\cache\MapTiles.h">
+      <Filter>Cache</Filter>
+    </ClInclude>
+    <ClInclude Include="..\src\cache\Names.h">
       <Filter>Cache</Filter>
     </ClInclude>
     <ClInclude Include="..\src\cache\NpcType.h">

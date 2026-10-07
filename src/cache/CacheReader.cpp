@@ -3,6 +3,7 @@
 
 #include "Achievements.h"
 #include "Constants.h"
+#include "IdSplit.h"
 #include "CachePath.h"   // Jagex / Steam / moved-cache resolution
 #include "ItemType.h"
 #include "JagexContainer.h"   // Decompress (NXT "ZL" wrapper) for the raw audio archives
@@ -799,13 +800,14 @@ void BuildNameIndexLocked(int kind) {
     auto* index = g_store ? g_store->Get(idx) : nullptr;
     if (!index) return;
     int emptyRun = 0;
-    for (int archive = 0; archive < 512 && emptyRun < 8; ++archive) {
+    const int arcs = index->ready() ? (int)index->ref().entries().size() : 512;
+    for (int archive = 0; archive < arcs && emptyRun < 8; ++archive) {
         bool any = false;
         for (int file = 0; file < 256; ++file) {
             auto bytes = index->ReadFile(archive, file);
             if (bytes.empty()) continue;
             any = true;
-            const int id = (archive << 8) | file;
+            const int id = (archive << IdSplitBits(idx)) | file;   // npcs hold 128 per archive
             std::string nm;
             if (kind == 0)      nm = DecodeItem(id, std::move(bytes)).name;
             else if (kind == 1) nm = DecodeLoc(id, std::move(bytes)).name;
@@ -3949,8 +3951,10 @@ std::string VarDefsJson(int archive) {
             ++ops[op];
             if (op == 3)        type = s.ReadUnsignedByte();
             else if (op == 4)   flag |= s.ReadUnsignedByte();
+            else if (op == 5)   s.ReadUnsignedByte();          // u8, read by the client, unused in the cache so far
             else if (op == 7)   flag |= 0x100;                 // no payload (client vars 2852.., with op 4 = 2)
             else if (op == 8)   flag |= 0x200;                 // no payload (40 player vars 12352..)
+            else if (op == 9)   flag |= 0x400;                 // no payload (plugin client: player var 13511)
             else if (op == 110) s.ReadUnsignedShort();
             else {
                 if (unknown < 6) unk += (unk.empty() ? "" : ",") + ("\"" + std::to_string(fid) + ":" + hex + "\"");
@@ -5085,8 +5089,8 @@ std::string PinVarLocked(int archive, int id) {
         int op = s.ReadUnsignedByte();
         if (op == 0) break;
         if (op == 3)        type = s.ReadUnsignedByte();
-        else if (op == 4)   s.ReadUnsignedByte();
-        else if (op == 7 || op == 8) { }
+        else if (op == 4 || op == 5) s.ReadUnsignedByte();
+        else if (op == 7 || op == 8 || op == 9) { }    // flags, no payload
         else if (op == 110) s.ReadUnsignedShort();
         else return "op=" + std::to_string(op);
     }
@@ -5324,7 +5328,8 @@ IndexFacts IndexInfo(int index) {
     f.archives = (int)rt.valid_archive_ids().size();
     for (int a : rt.valid_archive_ids()) {
         if (a > f.maxArchive) f.maxArchive = a;
-        if (a >= 0 && a < (int)rt.entries().size() && rt.entries()[a].largest_file_id > f.maxFile) f.maxFile = rt.entries()[a].largest_file_id;
+        // the file ids the cache holds: largest_file_id is the reader's own split for items, npcs and locs
+        if (a >= 0 && a < (int)rt.entries().size()) for (int fid : rt.entries()[a].valid_file_ids) f.maxFile = std::max(f.maxFile, fid);
     }
     f.failed = idx->FailedArchives();
     return f;

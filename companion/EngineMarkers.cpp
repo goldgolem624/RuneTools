@@ -7,6 +7,7 @@
 
 #include <windows.h>
 #include <detours.h>
+#include "CodeFind.h"
 #include <atomic>
 #include <cstdarg>
 #include <cstdio>
@@ -22,9 +23,9 @@ constexpr int kAny = -1;
 // byte into a slot (top three bits) and a kind, and then names the arrow manager:
 //   movzx ebx, byte ptr [r8+rax] ; mov rax,[rcx] ; mov r14d,ebx ; shr r14d,5 ; and ebx,1Fh
 //   mov rdi, [rax+disp]                                   <- the manager, inside the client's root
+// The match is inside the routine; the routine is the function holding it.
 constexpr const auto& kArrowSig = rtx::sig::kArrowMessage;
 constexpr std::size_t kArrowLen = sizeof(kArrowSig) / sizeof(kArrowSig[0]);
-constexpr std::size_t kArrowDispAt = kArrowLen - 4;
 
 // The routine for the server's "trail" message: a slot byte, then a model that is either two
 // bytes or, with the top bit set, four.
@@ -35,7 +36,8 @@ constexpr const auto& kTrailMgrSig = rtx::sig::kTrailManager;
 constexpr std::size_t kTrailMgrLen = sizeof(kTrailMgrSig) / sizeof(kTrailMgrSig[0]);
 
 // The arrow manager's turn in every frame of the game's own thread. This is what gets hooked:
-// the two routines above touch the scene, and this is a moment the game itself touches it.
+// the two routines above touch the scene, and this is a moment the game itself touches it. Found
+// where the game calls it, which also names both managers and the size of their slots.
 constexpr const auto& kFrameSig = rtx::sig::kArrowFrame;
 constexpr std::size_t kFrameLen = sizeof(kFrameSig) / sizeof(kFrameSig[0]);
 
@@ -122,6 +124,7 @@ std::uint32_t g_passFlags = 0;
 bool    g_tileDrawHooked = false;
 std::uint32_t g_arrowDisp = 0, g_trailDisp = 0;
 bool    g_installed = false;
+bool    g_markersOn = false;                   // the managers' slots have the layout this file knows
 
 std::mutex g_mu;
 Want    g_want;                                // under g_mu
@@ -455,6 +458,7 @@ void ApplyUnguarded(std::uint8_t* manager) {
 }
 
 void Apply(std::uint8_t* manager) {
+    if (!g_markersOn) return;
     __try {
         ApplyUnguarded(manager);
     } __except (EXCEPTION_EXECUTE_HANDLER) {
@@ -492,10 +496,20 @@ void TileDrawHook(void* self, void* a2, void* a3, void* a4, void* pass, void* a6
     if (g_done.tile_rgb != 0 && g_done.tile_width != 0 && OurTile(self)) TileExtraPass(self, a2, a3, pass, a6);
 }
 
+// The root the manager keeps at +8, when that root names this manager back; the pump calls into the
+// game with it, so a manager laid out otherwise gets nothing.
+std::uint8_t* RootOf(std::uint8_t* manager) {
+    __try {
+        std::uint8_t* root = *reinterpret_cast<std::uint8_t**>(manager + kMgrRoot);
+        if (root && *reinterpret_cast<std::uint8_t**>(root + g_arrowDisp) == manager) return root;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+    }
+    return nullptr;
+}
+
 void FrameHook(void* manager) {
     if (manager) Apply(static_cast<std::uint8_t*>(manager));
-    if (manager) {
-        std::uint8_t* root = *reinterpret_cast<std::uint8_t**>(static_cast<std::uint8_t*>(manager) + 8);
+    if (std::uint8_t* root = manager ? RootOf(static_cast<std::uint8_t*>(manager)) : nullptr) {
         rtx::enginecc::Apply(root);
         rtx::enginecc::ApplyText(root);
         rtx::engineops::Pump(root);
@@ -549,19 +563,33 @@ bool Install() {
     if (g_installed) return true;
     Image im;
     if (!OpenImage(im)) return false;
-    const std::uint8_t* arrow = FindUnique(im, kArrowSig, kArrowLen);
+    const std::uint8_t* arrowAt = FindUnique(im, kArrowSig, kArrowLen);
     const std::uint8_t* trail = FindUnique(im, kTrailSig, kTrailLen);
-    const std::uint8_t* frame = FindUnique(im, kFrameSig, kFrameLen);
-    if (!arrow || !trail || !frame) return false;
+    const std::uint8_t* site = FindUnique(im, kFrameSig, kFrameLen);
+    if (!arrowAt || !trail || !site) return false;
+    const std::uint8_t* arrow = reinterpret_cast<const std::uint8_t*>(
+        rtx::codefind::FunctionStart(reinterpret_cast<std::uint64_t>(im.base), reinterpret_cast<std::uint64_t>(arrowAt)));
+    std::int32_t frameRel;
+    std::memcpy(&frameRel, site + rtx::sig::kArrowFrameCall + 1, 4);
+    const std::uint8_t* frame = site + rtx::sig::kArrowFrameCall + 5 + frameRel;
+    if (!arrow || frame <= im.base || frame >= im.base + im.nt->OptionalHeader.SizeOfImage) return false;
 
-    std::memcpy(&g_arrowDisp, arrow + kArrowDispAt, 4);
+    // the frame's call site names both managers; the two message routines must name the same ones
+    std::memcpy(&g_arrowDisp, site + rtx::sig::kArrowFrameArrow, 4);
+    std::memcpy(&g_trailDisp, site + rtx::sig::kArrowFrameTrail, 4);
     const std::uint8_t* named = nullptr;
     for (std::size_t o = kTrailLen; o < 0xA0 && !named; ++o)
         if (Matches(trail + o, kTrailMgrSig, kTrailMgrLen)) named = trail + o;
     if (!named) return false;
-    std::memcpy(&g_trailDisp, named + 3, 4);
-    // the two managers sit side by side in the root; anything else is not the layout this knows
-    if (g_arrowDisp == 0 || g_arrowDisp > 0x100000 || g_trailDisp != g_arrowDisp + 8) return false;
+    std::uint32_t trailNamed = 0;
+    std::memcpy(&trailNamed, named + 3, 4);
+    const std::uint32_t arrowNamed = rtx::sig::RootFieldLoad(arrowAt + kArrowLen, rtx::sig::kArrowLoadSpan);
+    if (g_arrowDisp == 0 || g_arrowDisp > 0x100000 || arrowNamed != g_arrowDisp || trailNamed != g_trailDisp) return false;
+    // markers write into the managers' slots: only with the slot size this file knows; the frame
+    // hook itself also serves the panels, sounds and asks, and stays
+    const std::uint32_t slotSize = rtx::sig::ArrowSlotSize(site);
+    g_markersOn = slotSize == rtx::sig::kArrowSlotSize;
+    if (!g_markersOn) Say("markers: manager slots are %u bytes on this client, markers off", slotSize);
 
     g_arrow = reinterpret_cast<Message>(const_cast<std::uint8_t*>(arrow));
     g_trail = reinterpret_cast<Message>(const_cast<std::uint8_t*>(trail));
@@ -571,7 +599,7 @@ bool Install() {
     DetourAttach(&reinterpret_cast<PVOID&>(g_frame), reinterpret_cast<PVOID>(FrameHook));
     g_installed = DetourTransactionCommit() == NO_ERROR;
     // how the game has a moved node show it: read out of the frame routine, an extra as well
-    for (std::size_t o = kFrameLen; g_installed && o < 0x200 && !g_refresh; ++o) {
+    for (std::size_t o = 0; g_installed && o < 0x200 && !g_refresh; ++o) {
         if (!Matches(frame + o, kRefreshSig, kRefreshLen)) continue;
         for (std::size_t c = o + kRefreshLen; c < o + kRefreshLen + 0x20; ++c) {
             if (frame[c] != 0xE8) continue;

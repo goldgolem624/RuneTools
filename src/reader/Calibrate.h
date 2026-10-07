@@ -29,6 +29,7 @@ struct Found {
     std::uint32_t found;     // what the exe says; 0 = not found
     const char*  op;         // the operation that proved it
     Outcome      status = Outcome::NotFound;
+    bool         ref = false;   // a compiled table's offset nothing reads through Use(): reported, not applied
 };
 
 // Runs once per exe file and table (path + size + write time); later calls return the same table.
@@ -44,8 +45,15 @@ std::uint32_t Use(const char* name, std::uint32_t compiled);
 // One line per rule, for the log.
 std::string Report();
 
-// The rules as the last Run left them (compiled values filled in by Use).
+// The rules as the last Run left them (compiled values filled in by Use). References() are the
+// rules for offsets the compiled tables (MainDataOffsets.h, SceneOffsets.h, literals in the reader and
+// the companion) still carry: what the client says, against the compiled value, ready for an update.
 std::vector<Found> Results();
+std::vector<Found> References();
+
+// --calib-check: every rule against an exe and an operation table on disk, as text. The table's
+// build label is not required (the self-naming handlers still have to agree); nothing is applied.
+std::string CheckText(const std::wstring& exePath, const std::wstring& opcodesJson);
 
 // Why nothing was calibrated, empty when the rules ran. Kept with the last Run.
 std::string Why();

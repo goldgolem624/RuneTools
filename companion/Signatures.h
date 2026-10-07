@@ -3,6 +3,7 @@
 // and the check cannot drift. Every byte pattern is used by the companion exactly as written here.
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 
 namespace rtx::sig {
 
@@ -31,9 +32,13 @@ inline constexpr unsigned char kNpcDisBody[] = {
     0x90, 0x10, 0x01, 0x00, 0x00,
 };
 
-// Player visibility: mov rax,[rcx+0x1078] ; mov rbp,r9
+// Player visibility: mov rax,[rcx+0x1078] ; mov rbp,r9. The actor field's low byte is open
+// (0x1088 on the plugin client).
 inline constexpr unsigned char kPlDisBody[] = {
     0x48, 0x8B, 0x81, 0x78, 0x10, 0x00, 0x00, 0x49, 0x8B, 0xE9,
+};
+inline constexpr unsigned char kPlDisMask[] = {
+    1, 1, 1, 0, 1, 1, 1, 1, 1, 1,
 };
 
 // Render thread: mov rax,[rcx+8] ; mov r15,rcx ; mov r14,[rip+..]. The scene switch is the Jcc at
@@ -84,7 +89,8 @@ inline constexpr unsigned char kT13DisplayBody[] = {
     0x00, 0x00,
 };
 
-// Menu string-init: the language-index load at MainData+0x19B10.
+// Menu string-init: the language-index load at MainData+0x19B10 (low byte open: 0x19B30 on the
+// plugin client).
 inline constexpr unsigned char kMenuInit[] = {
     0x40, 0x57, 0x48, 0x83, 0xEC, 0x30, 0x48, 0x8B, 0x41, 0x08, 0x48, 0x8B, 0xF9, 0x48, 0x8D, 0x0D,
     0x00, 0x00, 0x00, 0x00, 0x48, 0x89, 0x5C, 0x24, 0x40, 0x48, 0x8D, 0x99, 0x00, 0x00, 0x00, 0x00,
@@ -98,7 +104,7 @@ inline constexpr unsigned char kMenuInit[] = {
 inline constexpr unsigned char kMenuInitMask[] = {
     1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
     0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0,
-    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+    1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
     1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1,
     1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0,
     1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1, 1,
@@ -106,26 +112,15 @@ inline constexpr unsigned char kMenuInitMask[] = {
     0, 0, 0, 0, 1, 1, 1, 1,
 };
 
-// Menu clear(): [rcx+0x1388] end, [rcx+0x1380] begin, 0x2E8 stride.
+// Menu clear(), inside its body: mov byte [rcx+0x68],0 ; movzx ebp,dl ; mov rsi,[rcx+0x1388] (end) ;
+// mov rdi,rcx ; mov rbx,[rcx+0x1380] (begin) ; cmp rbx,rsi ; je. The hook is the function holding it.
 inline constexpr unsigned char kMenuClear[] = {
-    0x48, 0x89, 0x5C, 0x24, 0x08, 0x48, 0x89, 0x6C, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18, 0x57,
-    0x48, 0x83, 0xEC, 0x20, 0xC6, 0x41, 0x68, 0x00, 0x0F, 0xB6, 0xEA, 0x48, 0x8B, 0xB1, 0x88, 0x13,
-    0x00, 0x00, 0x48, 0x8B, 0xF9, 0x48, 0x8B, 0x99, 0x80, 0x13, 0x00, 0x00, 0x48, 0x3B, 0xDE, 0x74,
-    0x19, 0x48, 0x8B, 0x53, 0x18, 0x48, 0x8D, 0x4B, 0x08, 0xE8, 0x00, 0x00, 0x00, 0x00, 0x48, 0x81,
-    0xC3, 0xE8, 0x02, 0x00, 0x00, 0x48, 0x3B, 0xDE, 0x75, 0xE7, 0x48, 0x8B, 0x87, 0x80, 0x13, 0x00,
-    0x00, 0x48, 0x89, 0x87, 0x88, 0x13, 0x00, 0x00, 0x48, 0x8B, 0x97, 0xA8, 0x13, 0x00, 0x00, 0x48,
-    0x8B, 0x8F, 0xA0, 0x13, 0x00, 0x00, 0xE8, 0x00, 0x00, 0x00, 0x00, 0x48, 0x8B, 0x87, 0xA0, 0x13,
-    0x00, 0x00, 0x48, 0x89, 0x87, 0xA8, 0x13, 0x00, 0x00,
+    0xC6, 0x41, 0x68, 0x00, 0x0F, 0xB6, 0xEA, 0x48, 0x8B, 0xB1, 0x88, 0x13, 0x00, 0x00, 0x48, 0x8B,
+    0xF9, 0x48, 0x8B, 0x99, 0x80, 0x13, 0x00, 0x00, 0x48, 0x3B, 0xDE, 0x74,
 };
 inline constexpr unsigned char kMenuClearMask[] = {
-    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
-    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
-    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
-    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 1, 1,
-    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
-    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
-    1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1, 1, 1,
-    1, 1, 1, 1, 1, 1, 1, 1, 1,
+    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1,
+    1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1,
 };
 
 // Per-tick menu builder.
@@ -139,48 +134,56 @@ inline constexpr unsigned char kMenuBuild[] = {
     0x80, 0x00, 0x00, 0x00, 0x4C, 0x89, 0x6C, 0x24, 0x30, 0xE8, 0x42, 0xC4, 0x71, 0x00, 0x4C, 0x8B,
     0xF0, 0xE8, 0x1E, 0xC4, 0x71, 0x00, 0x49, 0x81, 0xFE, 0x80, 0x96, 0x98, 0x00,
 };
-inline constexpr unsigned char kMenuBuildMask[] = {
+inline constexpr unsigned char kMenuBuildMask[] = {   // the frame size, the rbp bias, MapMgr and the home slot are open
     1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
-    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
-    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 1, 1,
+    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1,
+    1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 1, 1,
     1, 1, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0,
-    0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+    0, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
     1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
-    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 1, 1,
+    0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 1, 1,
     1, 1, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0,
 };
 
-// Menu snapshot: copies the top records into mgr+0x13F0 and +0x13E0.
+// Menu snapshot, inside its body: inc qword [rcx+0x21B0] (counter) ; lea reg,[rcx+0x1A80] (base).
+// It copies the top records into the left-click slots. The hook is the function holding it.
 inline constexpr unsigned char kMenuSnap[] = {
-    0x48, 0x89, 0x4C, 0x24, 0x08, 0x55, 0x53, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41,
-    0x57, 0x48, 0x8D, 0xAC, 0x24, 0x00, 0x00, 0x00, 0x00, 0x48, 0x81, 0xEC, 0x00, 0x00, 0x00, 0x00,
-    0x48, 0xFF, 0x81, 0x00, 0x00, 0x00, 0x00, 0x48, 0x8D, 0xB1, 0x00, 0x00, 0x00, 0x00, 0x48, 0x8B,
-    0xF9, 0x4C, 0x8D, 0xB6, 0x00, 0x00, 0x00, 0x00,
+    0x48, 0xFF, 0x81, 0xB0, 0x21, 0x00, 0x00, 0x48, 0x8D, 0xB1, 0x80, 0x1A, 0x00, 0x00,
 };
 inline constexpr unsigned char kMenuSnapMask[] = {
-    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
-    1, 1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0,
-    1, 1, 1, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0, 1, 1,
-    1, 1, 1, 1, 0, 0, 0, 0,
+    1, 1, 1, 0, 1, 1, 1, 1, 1, 0, 0, 1, 1, 1,
 };
 
-// Menu action executor.
+// Menu action executor, inside its body: mov rax,[rcx+8] ; mov r14,r8 ; mov r15,rdx ; mov reg,rcx ;
+// cmp dword [rax+status],0x28 ; je. The hook is the function holding it.
 inline constexpr unsigned char kMenuExec[] = {
-    0x40, 0x53, 0x41, 0x56, 0x41, 0x57, 0x48, 0x83, 0xEC, 0x20, 0x48, 0x8B, 0x41, 0x08, 0x4D, 0x8B,
-    0xF0, 0x4C, 0x8B, 0xFA, 0x48, 0x8B, 0xD9, 0x83, 0xB8, 0x00, 0x00, 0x00, 0x00, 0x28, 0x0F, 0x84,
+    0x48, 0x8B, 0x41, 0x08, 0x4D, 0x8B, 0xF0, 0x4C, 0x8B, 0xFA, 0x48, 0x8B, 0xD9, 0x83, 0xB8, 0xA0,
+    0x9F, 0x01, 0x00, 0x28, 0x0F, 0x84,
 };
 inline constexpr unsigned char kMenuExecMask[] = {
-    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
-    1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1,
+    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 0,
+    0, 0, 0, 1, 1, 1,
 };
 
-// Inside the snapshot: lea rcx,[rdi+0x13f0] and lea rcx,[rdi+0x13e0], each followed by the assign call.
-inline constexpr unsigned char kMenuLea13f0[] = {
-    0x48, 0x8D, 0x8F, 0xF0, 0x13, 0x00, 0x00,
-};
-inline constexpr unsigned char kMenuLea13e0[] = {
-    0x48, 0x8D, 0x8F, 0xE0, 0x13, 0x00, 0x00,
-};
+// Inside the snapshot, the left-click slot assigns: lea rcx,[reg+slot] ; call assign. The first
+// one in the body names the slot the lift hooks (0x13E0, 0x13E8 on the plugin client); a later one
+// with a higher slot must call the same routine.
+inline constexpr std::uint32_t kMenuSlotLo = 0x13C0, kMenuSlotHi = 0x1420;
+inline constexpr std::size_t kMenuSnapSpan = 0x1400;
+struct MenuAssign { std::size_t site = 0, check = 0; std::uint32_t slot = 0; std::int64_t target = 0; bool ok = false; };   // offsets into the body; target relative to it
+inline MenuAssign FindMenuAssign(const unsigned char* body, std::size_t n) {
+    MenuAssign m;
+    for (std::size_t i = 0; i + 12 <= n; ++i) {
+        if ((body[i] != 0x48 && body[i] != 0x49) || body[i + 1] != 0x8D || (body[i + 2] & 0xF8) != 0x88 || (body[i + 2] & 7) == 4 || body[i + 7] != 0xE8) continue;
+        std::uint32_t disp; std::memcpy(&disp, body + i + 3, 4);
+        if (disp < kMenuSlotLo || disp > kMenuSlotHi) continue;
+        std::int32_t rel; std::memcpy(&rel, body + i + 8, 4);
+        const std::int64_t target = (std::int64_t)(i + 7) + 5 + rel;
+        if (!m.site) { m.site = i + 7; m.slot = disp; m.target = target; continue; }
+        if (target == m.target && disp > m.slot) { m.check = i + 7; m.ok = true; return m; }
+    }
+    return MenuAssign{};
+}
 
 // Hover entry op stub ending in jmp rel32 to the routine that pushes the tooltip strings. Two ops
 // share it; every match must name the same target.
@@ -203,14 +206,23 @@ inline constexpr int kOutlineTable[] = {
     0x77, kAny, 0x48, 0x03, 0xC0, 0x48, 0x8D, 0x0D, kAny, kAny, kAny, kAny, 0x44, 0x88, 0x04, 0xC1,
 };
 
-// Server arrow message: ends in mov rdi,[rax+disp], the arrow manager inside the root.
+// Server arrow message, inside its body: the stream advance, the first byte split into slot (>> 5)
+// and kind, then within kArrowLoadSpan mov reg,[rax+disp], the arrow manager inside the root. The
+// routine is the function holding it.
 inline constexpr int kArrowMessage[] = {
-    0x48, 0x89, 0x5C, 0x24, 0x20, 0x48, 0x89, 0x4C, 0x24, 0x08, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41,
-    0x56, 0x48, 0x81, 0xEC, kAny, kAny, 0x00, 0x00, 0x4C, 0x8B, 0x42, 0x18, 0x4C, 0x8B, 0xE1, 0x33,
-    0xED, 0x48, 0x8B, 0xF2, 0x49, 0x8D, 0x40, 0x01, 0x48, 0x89, 0x42, 0x18, 0x48, 0x8B, 0x42, 0x10,
-    0x41, 0x0F, 0xB6, 0x1C, 0x00, 0x48, 0x8B, 0x01, 0x44, 0x8B, 0xF3, 0x41, 0xC1, 0xEE, 0x05, 0x83,
-    0xE3, 0x1F, 0x48, 0x8B, 0xB8, kAny, kAny, kAny, kAny,
+    0x49, 0x8D, 0x40, 0x01, 0x48, 0x89, 0x42, 0x18, 0x48, 0x8B, 0x42, 0x10, kAny, 0x0F, 0xB6, kAny,
+    0x00, 0x48, 0x8B, 0x01, kAny, 0x8B, kAny, 0x41, 0xC1, kAny, 0x05,
 };
+inline constexpr std::size_t kArrowLoadSpan = 0x20;
+// The first mov r64,[rax+disp32] in p[0..n) with a MainData-sized disp, else 0.
+inline std::uint32_t RootFieldLoad(const unsigned char* p, std::size_t n) {
+    for (std::size_t i = 0; i + 7 <= n; ++i) {
+        if ((p[i] != 0x48 && p[i] != 0x4C) || p[i + 1] != 0x8B || (p[i + 2] & 0xC7) != 0x80) continue;
+        std::uint32_t d; std::memcpy(&d, p + i + 3, 4);
+        return d >= 0x18000 && d < 0x60000 ? d : 0;
+    }
+    return 0;
+}
 
 // Server trail message; kTrailManager follows within 0xA0 bytes: add rcx,disp ; mov rcx,[rcx] ; call.
 inline constexpr int kTrailMessage[] = {
@@ -221,12 +233,33 @@ inline constexpr int kTrailManager[] = {
     0x48, 0x81, 0xC1, kAny, kAny, kAny, kAny, 0x48, 0x8B, 0x09, 0xE8,
 };
 
-// The arrow manager's per-frame routine (the hook point); kArrowRefresh is the node refresh call inside it.
+// Where the game gives the arrow manager its turn every frame: mov rcx,[rcx+arrow] ; call frame ;
+// mov rax,[reg+8] ; mov reg,[rax+trail] ; lea rbx,[reg+0x10]. The call names the arrow manager's
+// per-frame routine (the hook point); the two loads name both managers inside the root. The lea
+// after it bounds the trail manager's eight slots, which gives their size (ArrowSlotSize).
+// kArrowRefresh is the node refresh call inside the frame routine.
 inline constexpr int kArrowFrame[] = {
-    0x48, 0x89, 0x5C, 0x24, 0x20, 0x57, 0x48, 0x83, 0xEC, 0x40, 0x48, 0x8D, 0x79, 0x50, 0x48, 0x89,
-    0x6C, 0x24, 0x50, 0x48, 0x8D, 0x6F, 0x40, 0x4C, 0x89, 0x74, 0x24, 0x60, 0x4C, 0x8B, 0xF1, 0x48,
-    0x8B, 0xDF, 0x48, 0x3B, 0xFD,
+    0x48, 0x8B, 0x89, kAny, 0x98, 0x01, 0x00, 0xE8, kAny, kAny, kAny, kAny, kAny, 0x8B, kAny, 0x08,
+    0x48, 0x8B, kAny, kAny, kAny, 0x01, 0x00, 0x48, 0x8D, kAny, 0x10,
 };
+inline constexpr std::size_t kArrowFrameCall = 7, kArrowFrameArrow = 3, kArrowFrameTrail = 19;
+// Bytes per manager slot from the two leas that bound them (lea rbx,[mgr+0x10] ; lea rdi,[mgr or
+// rbx + disp]); 8 on 950-1, 16 on the plugin client; 0 when the shape is another.
+inline std::uint32_t ArrowSlotSize(const unsigned char* site) {
+    const unsigned char* a = site + 23;
+    if (a[0] != 0x48 || a[1] != 0x8D || (a[2] >> 6) != 1 || (a[2] & 7) == 4 || a[3] != 0x10) return 0;
+    const int start = (a[2] >> 3) & 7, mgr = a[2] & 7;
+    const unsigned char* b = a + 4;
+    if (b[0] != 0x48 || b[1] != 0x8D || (b[2] & 7) == 4) return 0;
+    const int mod = b[2] >> 6, base = b[2] & 7;
+    std::int32_t disp = 0;
+    if (mod == 1) disp = (std::int8_t)b[3];
+    else if (mod == 2) std::memcpy(&disp, b + 3, 4);
+    else return 0;
+    const std::int32_t span = base == mgr ? disp - 0x10 : base == start ? disp : 0;
+    return span > 0 && span % 8 == 0 ? (std::uint32_t)span / 8 : 0;
+}
+inline constexpr std::uint32_t kArrowSlotSize = 8;   // the slot layout the marker code knows
 inline constexpr int kArrowRefresh[] = {
     0x41, 0xB8, 0x45, 0x00, 0x00, 0x00,
 };
@@ -270,7 +303,8 @@ inline constexpr unsigned char kOpEntityScreenHead[] = {
     0x48, 0x8B, 0x8A, 0xB8,
 };
 
-// Sound synth op: the call after it is the play routine.
+// Sound synth op: the call after it is the play routine. The SoundCtx field's low byte is open
+// (0x19A50 on the plugin client).
 inline constexpr unsigned char kSoundSynth[] = {
     0x48, 0x81, 0xEC, 0x88, 0x00, 0x00, 0x00, 0x83, 0x82, 0xA0, 0x10, 0x00, 0x00, 0xFD, 0x8B, 0x82,
     0xA0, 0x10, 0x00, 0x00, 0x48, 0x8B, 0x89, 0x30, 0x9A, 0x01, 0x00, 0x4C, 0x8D, 0x04, 0x82, 0x48,
@@ -285,7 +319,7 @@ inline constexpr unsigned char kSoundSynth[] = {
 };
 inline constexpr unsigned char kSoundSynthMask[] = {
     1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
-    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+    1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1,
     1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1,
     1, 1, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
     1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
@@ -329,14 +363,40 @@ inline constexpr unsigned char kMainAnchor[] = {
 inline constexpr unsigned char kTickInc[] = {
     0xFF, 0x81, 0xF0, 0xDB, 0x00, 0x00,
 };
+// The engine clock (u64 ms) is a global just after the root global: +0x10 on 950-1 Vulkan, +0x8 on
+// 950-1 OpenGL, +0x30 on the plugin client. Three routines read it with mov reg,[rip+disp] (the disp
+// at +3); each matches once, and those found must name one place. Read by the reader's calibration.
+inline constexpr int kClockReadA[] = {   // mov rax,[clock] ; add rax,1Eh ; mov [rdi+48h],rax ; add rsp,20h ; pop rdi ; ret
+    0x48, 0x8B, 0x05, kAny, kAny, kAny, kAny, 0x48, 0x83, 0xC0, 0x1E, 0x48, 0x89, 0x47, 0x48, 0x48,
+    0x83, 0xC4, 0x20, 0x5F, 0xC3,
+};
+inline constexpr int kClockReadB[] = {   // mov r9,[clock] ; lea rcx,[rax+..] ; add rdx,40h ; mov r8d,2EEh ; call
+    0x4C, 0x8B, 0x0D, kAny, kAny, kAny, kAny, 0x48, 0x8D, 0x88, kAny, kAny, 0x00, 0x00, 0x48, 0x83,
+    0xC2, 0x40, 0x41, 0xB8, 0xEE, 0x02, 0x00, 0x00, 0xE8,
+};
+inline constexpr int kClockReadC[] = {   // mov rax,[clock] ; mov [rcx+48h],rax ; add rsp,78h ; pop r12 ; pop rbx ; ret
+    0x48, 0x8B, 0x05, kAny, kAny, kAny, kAny, 0x48, 0x89, 0x41, 0x48, 0x48, 0x83, 0xC4, 0x78, 0x41,
+    0x5C, 0x5B, 0xC3,
+};
+struct ClockRead { const int* pat; std::size_t len; };
+inline constexpr ClockRead kClockReads[] = {
+    { kClockReadA, sizeof(kClockReadA) / sizeof(int) },
+    { kClockReadB, sizeof(kClockReadB) / sizeof(int) },
+    { kClockReadC, sizeof(kClockReadC) / sizeof(int) },
+};
+inline constexpr std::uint32_t kClockDispAt = 3, kClockMax = 0x100;   // the clock lies within this of the root global
 
 // ---- the table the update check walks ----
 // scope: kFirstExec searches the first executable section only (as the scene, menu, sound and chat
 // hooks do), kAllExec every executable section. expect: kOnce exactly one hit; kSameTarget one or
 // more hits whose trailing rel32 all name one routine; kOpenGlOnce one hit on the OpenGL client and
-// none on Vulkan. Names are the ones the companion's boot record uses.
+// none on Vulkan. Names are the ones the companion's boot record uses. hook: where the companion
+// attaches, and what the manifest records: kAtHit the hit (byte forms in the first section hook the
+// function holding it), kHitInFunction the same with the function shown, kInFunction the function
+// holding the hit, kAtCall the routine the call in the hit names.
 enum Scope : std::uint8_t { kFirstExec, kAllExec };
 enum Expect : std::uint8_t { kOnce, kSameTarget, kOpenGlOnce };
+enum Hook : std::uint8_t { kAtHit, kHitInFunction, kInFunction, kAtCall };
 struct Sig {
     const char* name;
     const unsigned char* bytes;   // byte form; mask null = every byte fixed, mask[j] 0 = any
@@ -346,10 +406,14 @@ struct Sig {
     Scope scope;
     Expect expect;
     const char* features;
+    Hook hook = kAtHit;
+    std::uint8_t callAt = 0;      // kAtCall: the E8 byte's offset in the hit
 };
 #define RTX_SIG_B(nm, a, sc, ex, ft)    { nm, a, nullptr, nullptr, sizeof(a), sc, ex, ft }
 #define RTX_SIG_M(nm, a, m, sc, ex, ft) { nm, a, m, nullptr, sizeof(a), sc, ex, ft }
 #define RTX_SIG_I(nm, a, sc, ex, ft)    { nm, nullptr, nullptr, a, sizeof(a) / sizeof(int), sc, ex, ft }
+#define RTX_SIG_MH(nm, a, m, sc, ex, hk, ft)   { nm, a, m, nullptr, sizeof(a), sc, ex, ft, hk }
+#define RTX_SIG_IH(nm, a, sc, ex, hk, at, ft)  { nm, nullptr, nullptr, a, sizeof(a) / sizeof(int), sc, ex, ft, hk, at }
 inline constexpr Sig kTable[] = {
     RTX_SIG_B("main-anchor",     kMainAnchor,     kAllExec,   kOnce,       "Everything that reads the game"),
     RTX_SIG_B("tick-anchor",     kTickInc,        kAllExec,   kOnce,       "Game tick, tick timers"),
@@ -357,7 +421,7 @@ inline constexpr Sig kTable[] = {
     RTX_SIG_B("varc-observer",   kVarcBody,       kFirstExec, kOnce,       "Live variable changes"),
     RTX_SIG_B("ccdrag-observer", kCcDragBody,     kFirstExec, kOnce,       "Interface drag tracking"),
     RTX_SIG_B("npc-display",     kNpcDisBody,     kFirstExec, kOnce,       "Rendering: hide NPCs"),
-    RTX_SIG_B("player-display",  kPlDisBody,      kFirstExec, kOnce,       "Rendering: hide players"),
+    RTX_SIG_MH("player-display", kPlDisBody, kPlDisMask, kFirstExec, kOnce, kHitInFunction, "Rendering: hide players"),
     RTX_SIG_B("scene-blank",     kRenderBody,     kFirstExec, kOpenGlOnce, "Rendering: hide scene"),
     RTX_SIG_M("framer",          kFramerBody, kFramerMask, kFirstExec, kOnce, "Chat capture, event channel, packet feed"),
     RTX_SIG_M("spawn-hook",      kObjSubmitBody, kObjSubmitMask, kFirstExec, kOnce, "Scene objects, specials"),
@@ -365,16 +429,16 @@ inline constexpr Sig kTable[] = {
     RTX_SIG_B("t4-display",      kT4DisplayBody,  kFirstExec, kOnce,       "Specials: graphic highlights, clue scan ring"),
     RTX_SIG_B("t13-display",     kT13DisplayBody, kFirstExec, kOnce,       "Specials: walk and scan markers"),
     RTX_SIG_M("menu-init",       kMenuInit,  kMenuInitMask,  kFirstExec, kOnce, "Menu swaps"),
-    RTX_SIG_M("menu-clear",      kMenuClear, kMenuClearMask, kFirstExec, kOnce, "Menu swaps"),
+    RTX_SIG_MH("menu-clear",     kMenuClear, kMenuClearMask, kFirstExec, kOnce, kInFunction, "Menu swaps"),
     RTX_SIG_M("menu-build",      kMenuBuild, kMenuBuildMask, kFirstExec, kOnce, "Menu swaps: reordering"),
-    RTX_SIG_M("menu-snap",       kMenuSnap,  kMenuSnapMask,  kFirstExec, kOnce, "Menu swaps: left-click option"),
-    RTX_SIG_M("menu-exec",       kMenuExec,  kMenuExecMask,  kFirstExec, kOnce, "Menu swaps: action log"),
+    RTX_SIG_MH("menu-snap",      kMenuSnap,  kMenuSnapMask,  kFirstExec, kOnce, kInFunction, "Menu swaps: left-click option"),
+    RTX_SIG_MH("menu-exec",      kMenuExec,  kMenuExecMask,  kFirstExec, kOnce, kInFunction, "Menu swaps: action log"),
     RTX_SIG_I("tooltip-stub",    kTooltipStub,    kAllExec,   kSameTarget, "Tooltip text (item prices, levels)"),
     RTX_SIG_I("outline-switch",  kOutlineSwitch,  kAllExec,   kOnce,       "Native outlines"),
     RTX_SIG_I("outline-table",   kOutlineTable,   kAllExec,   kOnce,       "Native outlines: colours and modes"),
-    RTX_SIG_I("arrow-message",   kArrowMessage,   kAllExec,   kOnce,       "Engine markers: hint arrows"),
+    RTX_SIG_IH("arrow-message",  kArrowMessage,   kAllExec,   kOnce, kInFunction, 0, "Engine markers: hint arrows"),
     RTX_SIG_I("trail-message",   kTrailMessage,   kAllExec,   kOnce,       "Engine markers: tile trail"),
-    RTX_SIG_I("arrow-frame",     kArrowFrame,     kAllExec,   kOnce,       "Engine markers|In-frame panels and text|Sounds, camera zoom and FOV|In-frame label anchors|Asks: achievements and quests"),
+    RTX_SIG_IH("arrow-frame",    kArrowFrame,     kAllExec,   kOnce, kAtCall, kArrowFrameCall, "Engine markers|In-frame panels and text|Sounds, camera zoom and FOV|In-frame label anchors|Asks: achievements and quests"),
     RTX_SIG_I("tile-draw",       kTileDraw,       kAllExec,   kOnce,       "Engine markers: tile outline"),
     RTX_SIG_M("sound-synth",     kSoundSynth, kSoundSynthMask, kFirstExec, kOnce, "Sounds panel, sound mute"),
     RTX_SIG_B("chat-notify",     kChatNotify,     kFirstExec, kOnce,       "Chat mute"),
@@ -382,6 +446,8 @@ inline constexpr Sig kTable[] = {
 #undef RTX_SIG_B
 #undef RTX_SIG_M
 #undef RTX_SIG_I
+#undef RTX_SIG_MH
+#undef RTX_SIG_IH
 
 // Engine ops called by their fixed number; the head must be that handler's first bytes.
 struct OpHead { const char* name; std::uint32_t op; const unsigned char* head; std::size_t len; const char* features; };
@@ -407,7 +473,7 @@ inline constexpr CcOp kCcOps[] = {
     { "cc_settrans",      nullptr,      "F6 D1 88 8A 8C 00 00 00",                nullptr },   // one int, inverted, as a byte at +0x8C
     { "cc_sethide",       nullptr,      "41 0F 94 C1 E8",                         nullptr },   // one int, compared with 1, handed on
     { "cc_find",          nullptr,      "B8 C0 BF 00 00 45 8B 82 00 01 00 00 48 83 C2 38", nullptr },   // (component, slot) -> the slot made active
-    { "cc_settext",       nullptr,      "41 FF 89 A8 8D 00 00 49 81 C1 A8 10 00 00", nullptr },   // one string, from the string stack
+    { "cc_settext",       nullptr,      "41 FF 89 A8 8D 00 00 49 81 C1 A8 10 00 00", "3C 0C 75" },   // one string, from the string stack; cmp al,0Ch ; jne (a component kind test) tells it from the plugin client's second string setter
     { "cc_settextfont",   nullptr,      "89 70 20 41 B9 FF FF 00 00",             nullptr },   // one int into the text object at +0x20
     { "cc_settextshadow", nullptr,      "41 FF 89 A0 10 00 00 33 D2 41 8B 81 A0 10 00 00 41 8B 9C 81 00 01 00 00", "0F BA E9 01 88 48 28" },   // sets bit 1 of the text object at +0x28
 };

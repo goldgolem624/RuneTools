@@ -35,6 +35,26 @@
   }
   const cxBuild = () => (typeof lastSnap !== 'undefined' && lastSnap && lastSnap.client_version) || '';
   const cxCacheable = k => k !== 'varp' && k !== 'varc';
+  // Jagex's own name beside each id, fetched once per kind from the launcher.
+  const CX_NAME_KIND = { enum: 'enum', struct: 'struct', dbtable: 'dbtable', item: 'obj', varbit: 'varbit', varp: 'varp', varc: 'varc', ach: 'achievement' };
+  const cxNames = {};               // kind -> { id: name }, or 'busy' while asked
+  function cxName(k, id) {
+    const kind = CX_NAME_KIND[k];
+    if (!kind) return '';
+    const m = cxNames[kind];
+    if (m === undefined) {
+      cxNames[kind] = 'busy';
+      rtxData.call('host.officialNames', kind).then(d => {
+        if (!d) return;                                  // launcher without the table
+        if (!d.ready) { setTimeout(() => { delete cxNames[kind]; const l = $('cxList'); if (l) l._sig = ''; cxPaint(); }, 3000); return; }
+        cxNames[kind] = d[kind] || {};
+        const l = $('cxList'); if (l) l._sig = '';
+        cxPaint();
+      }).catch(() => {});
+      return '';
+    }
+    return (m !== 'busy' && m[id]) || '';
+  }
   async function cxSave(k) {
     if (!cxCacheable(k) || !bridge() || !bridge().cacheStoreSave) return;
     const st = cxSt(k);
@@ -319,7 +339,7 @@
     return st.rows.filter(r => {
       if (String(r.id) === f || String(r.id).indexOf(f) === 0) return true;
       if (r._l === undefined) r._l = ((r.sum || '') + ' ' + (r.txt || '')).toLowerCase();
-      return r._l.indexOf(f) >= 0;
+      return r._l.indexOf(f) >= 0 || cxName(k, r.id).toLowerCase().indexOf(f) >= 0;
     });
   }
 
@@ -375,7 +395,10 @@
         }
       }
       sum.textContent = label;
-      row.appendChild(idEl); row.appendChild(sum);
+      row.appendChild(idEl);
+      const nmTxt = cxName(cxTab, r.id);
+      if (nmTxt) { const nm = document.createElement('span'); nm.className = 'cx-nm'; nm.textContent = nmTxt; row.appendChild(nm); }
+      row.appendChild(sum);
       const key = cxTab + ':' + r.id;
       if (r.data) {
         row.classList.add('cx-click');
@@ -445,6 +468,8 @@
       .cx-click { cursor: pointer; }
       .cx-click:hover { background: rgba(255,255,255,0.04); }
       .cx-id { flex: 0 0 auto; min-width: 58px; color: var(--accent-hi); font-variant-numeric: tabular-nums; font-weight: 600; }
+      .cx-nm { flex: 0 1 auto; min-width: 0; max-width: 45%; color: var(--text); font-family: Consolas, monospace; font-size: 11px;
+          overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
       .cx-sum { flex: 1; min-width: 0; color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
       .cx-det { margin: 0; padding: 8px 12px 10px 18px; background: rgba(0,0,0,0.28); color: var(--text);
           font-family: Consolas, monospace; font-size: 11px; line-height: 1.5;

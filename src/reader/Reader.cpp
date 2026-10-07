@@ -23,6 +23,7 @@
 #include "CodeScan.h"
 #include "Pins.h"
 #include "BootLog.h"
+#include "Cs2Fresh.h"
 
 #include <Windows.h>
 #include <TlHelp32.h>
@@ -83,6 +84,7 @@ std::uint32_t kOffStats   = 0x19920;   // root + this -> stats container
 std::uint32_t kStatsInner = 0x7618;    // stats container + this -> skill block
 std::uint32_t kOffGE      = 0x19990;   // root + this -> ptr -> +0x10 = ge slot array
 std::uint32_t kOffAccount = 0x19FA8;   // root + this -> account / user-detail object
+std::uint32_t kEngineClock = 0x10;     // root global + this = engine clock (u64 ms), found from code
 constexpr std::uint32_t kGEArrayPad = 0x10;      // bytes from slot-container start to slot 0
 constexpr std::uint32_t kGESlotSize = 0x28;      // bytes per slot
 constexpr int           kGESlotCount = 8;        // members get 8, non-members 3 (rest read as empty)
@@ -693,6 +695,7 @@ const CalibratedOffset kCalibrated[] = {
     { "kOffGE",          &kOffGE,          kOffGE },
     { "kOffVarcStore",   &kOffVarcStore,   kOffVarcStore },
     { "kOffAccount",     &kOffAccount,     kOffAccount },
+    { "kEngineClock",    &kEngineClock,    kEngineClock },
 };
 
 // Ask the client itself for the offsets, once per attach. The exe on disk is read, not the process.
@@ -7572,7 +7575,7 @@ std::string ActionBarJson(std::uint32_t pid) {
     std::uint64_t gs, ge; iface_groups_range(h, *rootv, gs, ge);
     if (!gs) return kEmpty;
     // Engine wall-clock ms: the counter beside the MainData global (the 949 module RVA is a constant on 950-1).
-    long long clock = (long long)rpm<std::uint64_t>(h, ps.mgva + 0x10).value_or(0);
+    long long clock = (long long)rpm<std::uint64_t>(h, ps.mgva + kEngineClock).value_or(0);
     long long cycles = (long long)rpm<std::uint32_t>(h, *rootv + kOffClientClock).value_or(0);
     const int bars[5] = { 1430, 1670, 1671, 1672, 1673 };
     std::string out = "{\"clock\":" + std::to_string(clock) +
@@ -7618,7 +7621,7 @@ std::string AbilityCooldownsJson(std::uint32_t pid) {
     auto rootv = rpm<std::uint64_t>(h, ps.mgva);
     if (!rootv || *rootv <= 0x10000) return kEmpty;
     std::uint64_t mgr     = *rootv + 0x19fb8;   // 0x19f78 through 949-5 (+0x40 on 950-1)
-    std::uint64_t clock   = rpm<std::uint64_t>(h, ps.mgva + 0x10).value_or(0);
+    std::uint64_t clock   = rpm<std::uint64_t>(h, ps.mgva + kEngineClock).value_or(0);
     std::uint64_t buckets = rpm<std::uint64_t>(h, mgr + 0x38178).value_or(0);
     std::uint32_t cap     = rpm<std::uint32_t>(h, mgr + 0x38180).value_or(0);
     if (buckets <= 0x10000 || cap == 0 || cap > 100000) return kEmpty;
@@ -9202,6 +9205,15 @@ void health_build(HCtx& c, rtx::health::Run& run) {
                     det += "; the cache's " + newestName + " were packed after the export: export again";
                 }
             }
+            // exact: the cache's script count, and the indexes the export reads written after it started
+            const auto fr = rtx::cs2fresh::Check(date);
+            const std::string stale = rtx::cs2fresh::Why(fr, std::atoi(mv.str("total").c_str()));
+            run.Fact("cs2.cacheScripts", std::to_string(fr.cacheScripts));
+            run.Fact("cs2.newerIndexes", fr.newer);
+            if (!stale.empty()) {
+                if (k == kPass) k = kWarn;
+                det += "; " + stale + (det.find("export again") == std::string::npos ? ": export again" : "");
+            }
         }
         std::string lab = label;
         while (!lab.empty() && (lab.back() == '\n' || lab.back() == '\r' || lab.back() == ' ')) lab.pop_back();
@@ -9316,6 +9328,22 @@ void health_calibration(HCtx& c, rtx::health::Run& run) {
         run.Fact(std::string("calib.") + f.name, hx(f.found ? f.found : f.compiled));
         run.Add(G, id, key, ok, d, "Game data reads", hx(f.compiled), f.found ? hx(f.found) : std::string("none"), "calib.table");
     }
+    // offsets the compiled tables carry, found the same way: what a game update asks to change
+    if (const auto refs = rtx::calib::References(); !refs.empty()) {
+        using O = rtx::calib::Outcome;
+        int at = 0; std::string moved, lost;
+        for (const auto& f : refs) {
+            run.Fact(std::string("calib.ref.") + f.name, f.found ? hx(f.found) : std::string("none"));
+            if (f.status == O::Found) ++at;
+            else if (f.status == O::Moved) moved += std::string(moved.empty() ? "" : ", ") + f.name + " " + hx(f.compiled) + " -> " + hx(f.found);
+            else lost += std::string(lost.empty() ? "" : ", ") + f.name;
+        }
+        std::string d = std::to_string(at) + "/" + std::to_string(refs.size()) + " at their compiled values";
+        if (!moved.empty()) d += "; moved, update the constants: " + moved;
+        if (!lost.empty()) d += "; not found: " + lost;
+        run.Add(G, "calib.refs", "Compiled offsets", moved.empty() && lost.empty() ? kPass : kWarn, d,
+                "Companion and reader offsets", std::to_string(refs.size()), std::to_string(at), "calib.table");
+    }
     // compiled copies the companion and the scene code still carry
     {
         std::string bad;
@@ -9336,13 +9364,13 @@ void health_data(HCtx& c, rtx::health::Run& run) {
     // A/B window for every rate check
     const ULONGLONG tA = GetTickCount64();
     const std::uint32_t ccA = rpm<std::uint32_t>(h, root + kOffClientClock).value_or(0);
-    const std::uint64_t ecA = rpm<std::uint64_t>(h, c.mgva + 0x10).value_or(0);
+    const std::uint64_t ecA = rpm<std::uint64_t>(h, c.mgva + kEngineClock).value_or(0);
     const int worldA = c.world;
     std::uint32_t tickA = 0; double ageA = 0; const bool haveTick = TickState(c.pid, tickA, ageA);
     Sleep(300);
     const ULONGLONG tB = GetTickCount64();
     const std::uint32_t ccB = rpm<std::uint32_t>(h, root + kOffClientClock).value_or(0);
-    const std::uint64_t ecB = rpm<std::uint64_t>(h, c.mgva + 0x10).value_or(0);
+    const std::uint64_t ecB = rpm<std::uint64_t>(h, c.mgva + kEngineClock).value_or(0);
     int worldB = -1;
     if (auto p1 = rpm<std::uint64_t>(h, root + kOffWorld); p1 && *p1 > 0x10000)
         if (auto p2 = rpm<std::uint64_t>(h, *p1 + 0x20); p2 && *p2 > 0x10000) worldB = rpm<std::int32_t>(h, *p2 + 8).value_or(-1);
@@ -9373,7 +9401,7 @@ void health_data(HCtx& c, rtx::health::Run& run) {
         const long long drift = (long long)ecB - (long long)tB;
         const bool eok = ecRate >= 800 && ecRate <= 1200 && std::llabs(drift) < 2000;
         run.Add(G, "data.clock.engine", "Engine clock", eok ? kPass : kFail,
-                "root global + 0x10 advances " + std::to_string((int)std::lround(ecRate)) + "/s, " + std::to_string(drift) + " ms from the system clock",
+                "root global + " + hx(kEngineClock) + " advances " + std::to_string((int)std::lround(ecRate)) + "/s, " + std::to_string(drift) + " ms from the system clock",
                 "Ability cooldowns|Action bar clock|Input idle", "1000/s", std::to_string((int)std::lround(ecRate)), "code.sig.main-anchor");
         std::uint32_t tickB = 0; double ageB = 0; TickState(c.pid, tickB, ageB);
         const bool tok = haveTick && ageB >= 0 && ageB < 5000;

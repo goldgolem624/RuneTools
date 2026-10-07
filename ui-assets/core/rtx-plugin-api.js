@@ -448,6 +448,8 @@ try{parent.postMessage({__rtxPlugin:P,kind:'hello'},'*');}catch(e){}})();`;
     'host.soundStatus':       { scope: 'host',        json: true,  run: (a) => bridge().soundStatus(...pArgs(a)) },
     'host.chatMuteStatus':    { scope: 'host',        json: true,  run: (a, pid) => bridge().chatMuteStatus(pid) },
     'host.varPinsLoad':       { scope: 'host',        json: true,  run: (a) => bridge().varPinsLoad(...pArgs(a)) },
+    'host.officialNames':     { scope: 'host',        json: true,  run: (a) => bridge().officialNames(...pArgs(a)) },
+    'host.officialName':      { scope: 'host',        json: false, run: (a) => bridge().officialName(...pArgs(a)) },
     'host.varsDump':          { scope: 'host',        json: true,  run: (a, pid) => bridge().varsDump(pid, ...pArgs(a)) },
     'host.vosCached':         { scope: 'host',        json: true,  run: (a) => bridge().vosCached(...pArgs(a)) },
     'host.obeliskCached':     { scope: 'host',        json: false, run: (a) => bridge().obeliskCached(...pArgs(a)) },

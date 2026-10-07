@@ -1,4 +1,7 @@
 #include "Calibrate.h"
+#include "../../companion/MainDataOffsets.h"
+#include "../../companion/SceneOffsets.h"
+#include "../../companion/Signatures.h"
 
 #include <windows.h>
 #include <algorithm>
@@ -17,8 +20,11 @@ namespace {
 // A rule: in the handler of `op`, the first instruction of the given shape whose displacement is
 // in [lo, hi) is the offset, as long as no later one reads a different displacement. `head` is the
 // instruction's bytes up to the displacement (opcode and ModRM with the root register as base and a
-// 32-bit displacement); `nth` picks a later match when the first is a different field.
-struct Rule { const char* name; const char* op; const char* head; std::uint32_t lo, hi; int nth; };
+// 32-bit displacement); `nth` picks a later match when the first is a different field. `compiled`
+// is set for a reference rule: an offset a compiled table carries, reported against that value and
+// never applied (the reader's own offsets take theirs through Use()).
+struct Rule { const char* name; const char* op; const char* head; std::uint32_t lo, hi; int nth; std::uint32_t compiled = 0; };
+constexpr std::uint32_t kMdLo = 0x18000, kMdHi = 0x60000, kInLo = 0x1000, kInHi = 0x10000;
 
 // Root register rcx is the first argument of every handler; rax after `mov rax,[rcx+disp]` holds
 // the object the offset points at, which the inner rules read through.
@@ -32,6 +38,34 @@ const Rule kRules[] = {
     { "kOffGE",            "STOCKMARKET_GETOFFERITEM","49 8B 82", 0x18000, 0x60000, 0 },   // mov rax,[r10+disp]
     { "kOffAccount",       "PLAYERMEMBER",            "48 8B 81", 0x18000, 0x60000, 0 },
     { "kOffVarcStore",     "GET_MOUSEX",              "48 8B 81", 0x18000, 0x60000, 0 },   // the store the varcs and the mouse share
+    // references: MainDataOffsets.h
+    { "md::kTracker",      "TELEMETRY_GET_GRID_VALUE",         "48 8B 81", kMdLo, kMdHi, 0, rtx::md::kTracker },
+    { "md::kChatStore",    "CHAT_LASTUID",                     "48 8B 81", kMdLo, kMdHi, 0, rtx::md::kChatStore },
+    { "md::kClanSettings", "ACTIVECLANSETTINGS_FIND_LISTENED", "48 8B 91", kMdLo, kMdHi, 0, rtx::md::kClanSettings },
+    { "md::kMapMgr",       "MAP_LOADEDPERCENT",                "48 8B 81", kMdLo, kMdHi, 0, rtx::md::kMapMgr },
+    { "md::kInputReport",  "AUTOSETUP_SETCUSTOM",              "48 8B 83", kMdLo, kMdHi, 0, rtx::md::kInputReport },   // mov rax,[rbx+disp]
+    { "md::kIfaceOwner",   "IF_CLOSE",                         "48 8B 89", kMdLo, kMdHi, 0, rtx::md::kIfaceOwner },
+    { "md::kInputProc",    "MINIMENUOPEN",                     "48 8B 89", kMdLo, kMdHi, 0, rtx::md::kInputProc },
+    { "md::kPlayerGroup",  "PLAYER_GROUP_MEMBER_COUNT",        "48 8B 81", kMdLo, kMdHi, 0, rtx::md::kPlayerGroup },
+    { "md::kPlayers",      "COORD",                            "48 8B 88", kMdLo, kMdHi, 0, rtx::md::kPlayers },        // mov rcx,[rax+disp]
+    { "md::kFriends",      "FRIEND_COUNT",                     "4C 8B 89", kMdLo, kMdHi, 0, rtx::md::kFriends },
+    { "md::kContainers",   "INV_TOTALCAT",                     "48 8B 89", kMdLo, kMdHi, 0, rtx::md::kContainers },
+    { "md::kSceneViews",   "UNKNOWN_COMMAND_500",              "48 8B 81", kMdLo, kMdHi, 0, rtx::md::kSceneViews },
+    { "md::kCutscene",     "CUTSCENE2D_STOP",                  "48 8B 89", kMdLo, kMdHi, 0, rtx::md::kCutscene },
+    { "md::kSoundCtx",     "SOUND_SYNTH",                      "48 8B 89", kMdLo, kMdHi, 0, rtx::md::kSoundCtx },
+    { "md::kLanguage",     "MAP_LANG",                         "48 8B 81", kMdLo, kMdHi, 0, rtx::md::kLanguage },
+    { "md::kVarpMgr",      "QUEST_FINISHED",                   "48 8D 97", kMdLo, kMdHi, 0, rtx::md::kVarpMgr },        // lea rdx,[rdi+disp]
+    { "md::kOptions",      "CLIENTOPTION_GET",                 "48 8B 81", kMdLo, kMdHi, 0, rtx::md::kOptions },
+    // references: offsets written out in the reader and the companion
+    { "dbMgr",             "DB_FIND_GET",                      "48 8B B1", kMdLo, kMdHi, 0, 0x19980 },
+    { "dbOther",           "DB_LISTALL",                       "48 8B 89", kMdLo, kMdHi, 0, 0x198C0 },
+    { "varcMouseX",        "GET_MOUSEX",                       "44 0F 2C 80", kInLo, kInHi, 0, 0x46D8 },   // cvttss2si r8d,[rax+disp], in the store
+    { "varcMouseY",        "GET_MOUSEY",                       "44 0F 2C 80", kInLo, kInHi, 0, 0x46DC },
+    { "varcButtons",       "GET_MOUSEBUTTONS",                 "44 38 80", kInLo, kInHi, 0, 0x46E8 },
+    { "varcClan",          "CLANPROFILE_FIND",                 "48 39 90", kInLo, kInHi, 0, 0x77B0 },
+    { "stateEntityRef",    "GET_ENTITY_BOUNDING_BOX",          "48 8B 9A", kInLo, kInHi, 0, 0xC3B0 },      // the script state (rdx)
+    { "stateEntityObj",    "GET_ENTITY_OVERLAY_HEIGHT",        "48 8B 8A", kInLo, kInHi, 0, 0xC3B8 },
+    { "scn::kCombat",      "COMLEVEL_ACTIVE",                  "8B 91",    kInLo, kInHi, 0, (std::uint32_t)rtx::scn::kCombat },   // in the player's actor
 };
 
 // Handlers that name themselves in their error text: the string, and the table name whose number
@@ -144,6 +178,64 @@ std::uint32_t FindDisp(const Pe& pe, std::uint32_t handlerRva, std::uint32_t end
         if (disp != got) { ambiguous = true; return 0; }   // the same field read again is fine
     }
     return have ? got : 0;
+}
+
+// Every hit of a pattern (-1 = any byte) in the executable sections, at most `cap`.
+std::vector<std::uint32_t> ScanCode(const Pe& pe, const int* pat, std::size_t n, std::size_t cap) {
+    std::vector<std::uint32_t> hits;
+    for (const auto& s : pe.sections) {
+        if (!(s.flags & 0x20000000u)) continue;
+        const std::uint8_t* b = pe.base + s.raw;
+        const std::size_t len = std::min<std::size_t>(s.rawSize, s.vsize ? s.vsize : s.rawSize);
+        for (std::size_t i = 0; i + n <= len; ++i) {
+            if (b[i] != (std::uint8_t)pat[0]) continue;
+            std::size_t k = 1;
+            while (k < n && (pat[k] < 0 || b[i + k] == (std::uint8_t)pat[k])) ++k;
+            if (k < n) continue;
+            hits.push_back(s.rva + (std::uint32_t)i);
+            if (hits.size() >= cap) return hits;
+        }
+    }
+    return hits;
+}
+
+// The root global: the MainData constructor (32 bytes before the anchor) publishes it with its
+// first mov [rip+disp],rax.
+std::uint32_t RootGlobal(const Pe& pe) {
+    int anchor[sizeof(rtx::sig::kMainAnchor)];
+    for (std::size_t i = 0; i < sizeof(anchor) / sizeof(int); ++i) anchor[i] = rtx::sig::kMainAnchor[i];
+    const auto hits = ScanCode(pe, anchor, sizeof(anchor) / sizeof(int), 2);
+    if (hits.size() != 1 || hits[0] < 32) return 0;
+    const std::uint32_t f0 = hits[0] - 32;
+    const std::uint8_t* p = At(pe, f0, 0x200 + 7);
+    if (!p) return 0;
+    for (std::uint32_t i = 0; i < 0x200; ++i) {
+        if (p[i] != 0x48 || p[i + 1] != 0x89 || p[i + 2] != 0x05) continue;
+        std::int32_t rel; std::memcpy(&rel, p + i + 3, 4);
+        return (std::uint32_t)((std::int64_t)f0 + i + 7 + rel);
+    }
+    return 0;
+}
+
+// Where the engine clock sits after the root global, from the routines that read it; 0 when none
+// is found or two disagree (`why` says which).
+std::uint32_t EngineClock(const Pe& pe, std::string& why) {
+    const std::uint32_t g = RootGlobal(pe);
+    if (!g) { why = "root global not found"; return 0; }
+    std::uint32_t off = 0;
+    for (const auto& r : rtx::sig::kClockReads) {
+        const auto hits = ScanCode(pe, r.pat, r.len, 2);
+        if (hits.size() != 1) continue;
+        const std::uint8_t* p = At(pe, hits[0] + rtx::sig::kClockDispAt, 4);
+        if (!p) continue;
+        std::int32_t rel; std::memcpy(&rel, p, 4);
+        const std::int64_t d = (std::int64_t)hits[0] + rtx::sig::kClockDispAt + 4 + rel - g;
+        if (d <= 0 || d >= rtx::sig::kClockMax) continue;
+        if (off && off != (std::uint32_t)d) { why = "the clock reads name two places"; return 0; }
+        off = (std::uint32_t)d;
+    }
+    if (!off) why = "no clock read of a known shape";
+    return off;
 }
 
 }  // namespace
@@ -296,30 +388,40 @@ std::vector<std::uint32_t> HandlersNaming(const Pe& pe, const std::map<std::uint
     return out;
 }
 
-const std::vector<Found>& Run(const std::wstring& exePath, const std::wstring& opcodesJson) {
-    std::lock_guard<std::mutex> lk(g_mu);
+static const std::vector<Found>& RunLocked(const std::wstring& exePath, const std::wstring& opcodesJson, bool needLabel) {
     // the build label the launcher keeps beside the table
     const std::size_t slash = opcodesJson.find_last_of(L"\\/");
     const std::wstring buildTxt = (slash == std::wstring::npos ? std::wstring() : opcodesJson.substr(0, slash + 1)) + L"client_version.txt";
-    const std::wstring key = FileKey(exePath) + L"#" + FileKey(opcodesJson) + L"#" + FileKey(buildTxt);
+    const std::wstring key = FileKey(exePath) + L"#" + FileKey(opcodesJson) + L"#" + FileKey(buildTxt) + (needLabel ? L"" : L"#nolabel");
     if (!g_cache.key.empty() && g_cache.key == key) return g_cache.found;
     g_cache = Cache{}; g_cache.key = key;
     std::ostringstream rep;
     std::vector<std::uint8_t> f; Pe pe{};
     std::map<std::uint32_t, std::uint32_t> handlers; std::map<std::string, std::uint32_t> ops;
+    std::string clockLine;
     auto give_up = [&](const std::string& why) -> const std::vector<Found>& {
         g_cache.why = why;
-        g_cache.report = "calibrate: " + why + "\n";
+        g_cache.report = "calibrate: " + why + "\n" + clockLine;
         return g_cache.found;
     };
     if (!ReadFile(exePath, f) || !ParsePe(f, pe)) return give_up("client exe not readable");
     g_cache.table.exeStamp = pe.stamp;
+    {   // the engine clock comes from code, not from the operation table
+        std::string why;
+        Found fd{ "kEngineClock", 0, EngineClock(pe, why), "engine clock reads", Outcome::NotFound };
+        fd.status = fd.found ? Outcome::Found : Outcome::NotFound;
+        char line[160];
+        if (fd.found) std::snprintf(line, sizeof(line), "  kEngineClock: root global + 0x%X (from engine clock reads)\n", fd.found);
+        else std::snprintf(line, sizeof(line), "  kEngineClock: not found (%s)\n", why.c_str());
+        clockLine = line;
+        g_cache.found.push_back(fd);
+    }
     if (!Handlers(pe, handlers)) return give_up("operation registrar not recognised");
     g_cache.table.handlers = (int)handlers.size();
     if (!OpTable(opcodesJson, ops)) return give_up("operation table (cs2\\opcodes.json) not readable");
     g_cache.table.names = (int)ops.size();
     const std::string mismatch = TableBuildMismatch(exePath, opcodesJson, buildTxt, g_cache.table);
-    if (!mismatch.empty()) return give_up(mismatch);
+    if (needLabel && !mismatch.empty()) return give_up(mismatch);
     std::string spotFail;
     for (const Spot& sp : kSpots) {
         SpotCheck sc; sc.text = sp.text; sc.op = sp.op;
@@ -336,13 +438,14 @@ const std::vector<Found>& Run(const std::wstring& exePath, const std::wstring& o
     }
     if (!spotFail.empty()) return give_up(spotFail);
     g_cache.table.usable = true;
-    rep << "calibrate: " << handlers.size() << " handlers, " << ops.size() << " named operations\n";
+    rep << "calibrate: " << handlers.size() << " handlers, " << ops.size() << " named operations" << (mismatch.empty() ? "" : " (" + mismatch + ")") << "\n" << clockLine;
     // handler entry points in address order: a handler's scan stops where the next one begins
     std::vector<std::uint32_t> starts;
     for (const auto& kv : handlers) starts.push_back(kv.second);
     std::sort(starts.begin(), starts.end());
     for (const Rule& r : kRules) {
-        Found fd{ r.name, 0, 0, r.op, Outcome::NotFound };
+        Found fd{ r.name, r.compiled, 0, r.op, Outcome::NotFound };
+        fd.ref = r.compiled != 0;
         auto o = ops.find(r.op);
         if (o == ops.end()) { fd.status = Outcome::NoOp; rep << "  " << r.name << ": operation " << r.op << " not in the table\n"; g_cache.found.push_back(fd); continue; }
         auto h = handlers.find(o->second);
@@ -352,14 +455,21 @@ const std::vector<Found>& Run(const std::wstring& exePath, const std::wstring& o
         bool ambiguous = false;
         fd.found = FindDisp(pe, h->second, end, r, ambiguous);
         fd.status = ambiguous ? Outcome::Ambiguous : fd.found ? Outcome::Found : Outcome::NotFound;
-        char line[160];
+        if (fd.ref && fd.status == Outcome::Found && fd.found != fd.compiled) fd.status = Outcome::Moved;
+        char line[200];
         if (ambiguous) std::snprintf(line, sizeof(line), "  %s: not found, more than one candidate (from %s)\n", r.name, r.op);
+        else if (fd.ref) std::snprintf(line, sizeof(line), "  %s: %s0x%X (from %s; compiled 0x%X)\n", r.name, fd.found ? "" : "not found ", fd.found, r.op, fd.compiled);
         else std::snprintf(line, sizeof(line), "  %s: %s0x%X (from %s)\n", r.name, fd.found ? "" : "not found, wanted ", fd.found, r.op);
         rep << line;
         g_cache.found.push_back(fd);
     }
     g_cache.report = rep.str();
     return g_cache.found;
+}
+
+const std::vector<Found>& Run(const std::wstring& exePath, const std::wstring& opcodesJson) {
+    std::lock_guard<std::mutex> lk(g_mu);
+    return RunLocked(exePath, opcodesJson, true);
 }
 
 std::uint32_t Use(const char* name, std::uint32_t compiled) {
@@ -379,7 +489,8 @@ std::string Report() {
     for (const auto& fd : g_cache.found)
         if (fd.found && fd.compiled && fd.found != fd.compiled) {
             char line[160];
-            std::snprintf(line, sizeof(line), "  %s MOVED: compiled 0x%X, client 0x%X, using the client's\n", fd.name, fd.compiled, fd.found);
+            std::snprintf(line, sizeof(line), "  %s MOVED: compiled 0x%X, client 0x%X, %s\n", fd.name, fd.compiled, fd.found,
+                          fd.ref ? "the compiled copy still reads the old one" : "using the client's");
             r += line;
         }
     return r;
@@ -387,7 +498,39 @@ std::string Report() {
 
 std::vector<Found> Results() {
     std::lock_guard<std::mutex> lk(g_mu);
-    return g_cache.found;
+    std::vector<Found> out;
+    for (const auto& fd : g_cache.found) if (!fd.ref) out.push_back(fd);
+    return out;
+}
+
+std::vector<Found> References() {
+    std::lock_guard<std::mutex> lk(g_mu);
+    std::vector<Found> out;
+    for (const auto& fd : g_cache.found) if (fd.ref) out.push_back(fd);
+    return out;
+}
+
+std::string CheckText(const std::wstring& exePath, const std::wstring& opcodesJson) {
+    std::lock_guard<std::mutex> lk(g_mu);
+    g_cache = Cache{};
+    RunLocked(exePath, opcodesJson, false);
+    std::ostringstream o;
+    o << "exe stamp " << std::hex << g_cache.table.exeStamp << std::dec << ", version " << g_cache.table.exeVersion
+      << ", table label " << (g_cache.table.label.empty() ? "(none)" : g_cache.table.label) << "\n";
+    o << "table " << (g_cache.table.usable ? "usable" : "NOT usable: " + g_cache.why) << ", " << g_cache.table.handlers
+      << " handlers, " << g_cache.table.names << " named operations\n";
+    for (const auto& s : g_cache.spots)
+        o << "spot " << s.op << " = " << s.number << ", handlers naming " << s.text << ": " << s.owners
+          << (s.ok == 1 ? " (agrees)" : s.ok == 0 ? " (DISAGREES)" : " (not checkable)") << "\n";
+    static const char* kStatus[] = { "found", "MOVED", "not found", "ambiguous", "no op", "no handler" };
+    for (const auto& fd : g_cache.found) {
+        char line[220];
+        std::snprintf(line, sizeof(line), "%-18s %-34s %-10s found 0x%X", fd.name, fd.op, kStatus[(int)fd.status], fd.found);
+        o << line;
+        if (fd.ref) { std::snprintf(line, sizeof(line), " compiled 0x%X", fd.compiled); o << line; }
+        o << "\n";
+    }
+    return o.str();
 }
 
 std::string Why() {

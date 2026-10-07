@@ -8,6 +8,7 @@
 
 #include <windows.h>
 #include <detours.h>
+#include "CodeFind.h"
 
 #include <cstdarg>
 #include <intrin.h>
@@ -77,7 +78,7 @@ constexpr const auto& kInit = rtx::sig::kMenuInit;
 constexpr const auto& kInitMask = rtx::sig::kMenuInitMask;
 static_assert(sizeof(kInit) == sizeof(kInitMask), "init pattern/mask length mismatch");
 
-// clear(): self-validating, contains [rcx+0x1388] end, [rcx+0x1380] begin, add 0x2E8 stride.
+// clear(): found by its [rcx+0x1388] end / [rcx+0x1380] begin loads; the hook is the function holding them.
 constexpr const auto& kClear = rtx::sig::kMenuClear;
 constexpr const auto& kClearMask = rtx::sig::kMenuClearMask;
 static_assert(sizeof(kClear) == sizeof(kClearMask), "clear pattern/mask length mismatch");
@@ -87,13 +88,15 @@ constexpr const auto& kBuild = rtx::sig::kMenuBuild;
 constexpr const auto& kBuildMask = rtx::sig::kMenuBuildMask;
 static_assert(sizeof(kBuild) == sizeof(kBuildMask), "build pattern/mask length mismatch");
 
-// Snapshot FUN_14012d660 (rva 0x12d660, rcx = manager): copies the last +0x90 record into mgr+0x13f0, second-from-top into 0x13e0.
+// Snapshot (rcx = manager): copies the last +0x90 record into mgr+0x13f0, second-from-top into 0x13e0.
+// Found inside its body; the hook is the function holding the match.
 constexpr const auto& kSnap = rtx::sig::kMenuSnap;
 constexpr const auto& kSnapMask = rtx::sig::kMenuSnapMask;
 static_assert(sizeof(kSnap) == sizeof(kSnapMask), "snapshot pattern/mask length mismatch");
 
 // Menu action executor (950-1 rva 0x167c80): rcx = manager, rdx = 16-byte record {base, display}, r8 = click pos.
 // Every way of running a menu row (left-click, right-click select, script select) ends here.
+// Found inside its body; the hook is the function holding the match.
 constexpr const auto& kExec = rtx::sig::kMenuExec;
 constexpr const auto& kExecMask = rtx::sig::kMenuExecMask;
 static_assert(sizeof(kExec) == sizeof(kExecMask), "executor pattern/mask length mismatch");
@@ -890,41 +893,26 @@ void DumpHoverSlots(std::uint64_t mgr) {
 typedef void(__fastcall* Assign_t)(std::uint64_t slot, std::uint64_t src);
 Assign_t g_assign = nullptr;
 
-// Call site of the 13e0 assign inside the snapshot: `lea rcx,[rdi+0x13e0]; call rel32`.
+// Call site of the left-click slot assign inside the snapshot: `lea rcx,[reg+slot]; call rel32`,
+// slot 0x13e0 (0x13e8 on the plugin client).
 std::uint64_t g_siteCall = 0;          // address of the E8 byte
+std::uint32_t g_siteSlot = 0x13E0;     // the slot that call assigns, from its lea
 std::int32_t  g_siteRel  = 0;          // original rel32, restored on uninstall
 void*         g_siteTramp = nullptr;   // near trampoline: mov rax, imm64; jmp rax
 bool          g_sitePatched = false;
 
-std::uint64_t CallSiteAfter(const unsigned char* body, std::size_t n, const unsigned char* lea) {
-    for (std::size_t i = 0; i + 12 <= n; ++i)
-        if (std::memcmp(body + i, lea, 7) == 0 && body[i + 7] == 0xE8)
-            return (std::uint64_t)(std::uintptr_t)(body + i + 7);
-    return 0;
-}
-
-std::uint64_t CallTarget(std::uint64_t site) {
-    std::int32_t rel = 0;
-    std::memcpy(&rel, (void*)(site + 1), 4);
-    return (std::uint64_t)((std::int64_t)site + 5 + rel);
-}
-
 void ResolveAssign(std::uint64_t snap) {
     if (!snap) return;
     const unsigned char* body = (const unsigned char*)snap;
-    constexpr const auto& kLea13f0 = rtx::sig::kMenuLea13f0;   // lea rcx,[rdi+0x13f0]
-    constexpr const auto& kLea13e0 = rtx::sig::kMenuLea13e0;   // lea rcx,[rdi+0x13e0]
-    std::uint64_t sa = 0, sb = 0, a = 0, b = 0;
+    rtx::sig::MenuAssign m;
     __try {
-        sa = CallSiteAfter(body, 0x1400, kLea13f0);
-        sb = CallSiteAfter(body, 0x1400, kLea13e0);
-        if (sa) a = CallTarget(sa);
-        if (sb) b = CallTarget(sb);
-    } __except (EXCEPTION_EXECUTE_HANDLER) { a = b = 0; }
-    if (a && a == b && a > g_base && a < g_modEnd && sb < sa) { g_assign = (Assign_t)a; g_siteCall = sb; }
+        m = rtx::sig::FindMenuAssign(body, rtx::sig::kMenuSnapSpan);
+    } __except (EXCEPTION_EXECUTE_HANDLER) { m = rtx::sig::MenuAssign{}; }
+    const std::uint64_t a = m.ok ? (std::uint64_t)((std::int64_t)snap + m.target) : 0;
+    if (a && a > g_base && a < g_modEnd) { g_assign = (Assign_t)a; g_siteCall = snap + m.site; g_siteSlot = m.slot; }
     Log("slot assign helper: %s", g_assign ? "found" : "NOT FOUND (left-click lift unavailable)");
-    if (g_assign) Log("  assign rva 0x%llx, left-click site rva 0x%llx", (unsigned long long)(a - g_base),
-                      (unsigned long long)(sb - g_base));
+    if (g_assign) Log("  assign rva 0x%llx, left-click site rva 0x%llx, slot 0x%x", (unsigned long long)(a - g_base),
+                      (unsigned long long)(g_siteCall - g_base), g_siteSlot);
 }
 
 // Moves the rule's top-ranked row to the top of +0x90 (a permutation of whole records, refcount
@@ -973,7 +961,7 @@ bool RotateRuleTop(std::uint64_t mgr) {
 // rule's row into every slot and run it on click. src is an address inside +0x90 and the rotation
 // keeps addresses, so passing it through unchanged picks the same position.
 void __fastcall Hook_Assign13e0(std::uint64_t slot, std::uint64_t src) {
-    const std::uint64_t mgr = slot - 0x13E0;
+    const std::uint64_t mgr = slot - g_siteSlot;
     std::uint64_t begin = 0, e = 0;
     if (g_share && g_share->enable && Rd(mgr + 0x90, &begin, 8) && Rd(mgr + 0x98, &e, 8) &&
         src >= begin && src < e)
@@ -1127,10 +1115,11 @@ bool Install() {
     }
 
     const std::uint64_t init  = Scan(kInit,  kInitMask,  sizeof(kInit));
-    const std::uint64_t clear = Scan(kClear, kClearMask, sizeof(kClear));
+    // clear, snapshot and executor are matched inside their bodies: hook the functions holding them
+    const std::uint64_t clear = rtx::codefind::FunctionStart(g_base, Scan(kClear, kClearMask, sizeof(kClear)));
     const std::uint64_t build = Scan(kBuild, kBuildMask, sizeof(kBuild));
-    const std::uint64_t snap  = Scan(kSnap,  kSnapMask,  sizeof(kSnap));
-    const std::uint64_t exec  = Scan(kExec,  kExecMask,  sizeof(kExec));
+    const std::uint64_t snap  = rtx::codefind::FunctionStart(g_base, Scan(kSnap,  kSnapMask,  sizeof(kSnap)));
+    const std::uint64_t exec  = rtx::codefind::FunctionStart(g_base, Scan(kExec,  kExecMask,  sizeof(kExec)));
     Log("=== RuneToolsX menu probe ===");
     Log("string-init: %s", init  ? "found" : "NOT FOUND");
     Log("clear()    : %s", clear ? "found" : "NOT FOUND");

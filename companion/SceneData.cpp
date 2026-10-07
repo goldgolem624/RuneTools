@@ -990,13 +990,15 @@ void ResolveRenderHooks() {
         g_renderShare->installed = 0;
     }
     // npc-display: mov rax,[rcx]; mov rdi,r9; mov rsi,r8; mov rbp,rdx; mov rbx,rcx; call [rax+0x110]
-    // player-vis : mov rax,[rcx+0x1078]; mov rbp,r9
+    // player-vis : mov rax,[rcx+0x1078]; mov rbp,r9 (the field's low byte open)
     // render-thr : mov rax,[rcx+8]; mov r15,rcx; mov r14,[rip+..]
     using rtx::sig::kNpcDisBody;
     using rtx::sig::kPlDisBody;
+    using rtx::sig::kPlDisMask;
     using rtx::sig::kRenderBody;
+    static_assert(sizeof(kPlDisBody) == sizeof(kPlDisMask), "player-display pattern/mask length mismatch");
     std::uint64_t pNpc = FindVarOp(kNpcDisBody, sizeof(kNpcDisBody));
-    std::uint64_t pDis = FindVarOp(kPlDisBody,  sizeof(kPlDisBody));
+    std::uint64_t pDis = FindVarOpWild(kPlDisBody, kPlDisMask, sizeof(kPlDisBody));
     bool renderCommitted = false;
     if (pNpc || pDis) {
         DetourTransactionBegin();

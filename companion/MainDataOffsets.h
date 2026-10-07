@@ -2,7 +2,8 @@
 // Every MainData (client root) offset the reader and the companion use, in one table. 950-1 grew
 // MainData by 0x40 between +0x550 and +0x18D18, so every entry from +0x18D18 up moved +0x40; the
 // update check aligns the client's own handler displacements with this table to name what moved.
-// `rule` is the calibration rule that re-derives the offset from the client, or null.
+// `rule` is the calibration rule that re-derives the offset from the client, or null; the md:: ones
+// are reported against these values (calib.refs), the others are applied in the reader.
 #include <cstdint>
 
 namespace rtx::md {
@@ -42,34 +43,34 @@ struct Entry { const char* name; std::uint32_t off; const char* rule; const char
 inline constexpr Entry kTable[] = {
     { "ClientClock",  kClientClock,  "kOffClientClock", "Tick timers, buff timers" },
     { "Fps",          kFps,          nullptr,           "Player State FPS" },
-    { "Tracker",      kTracker,      nullptr,           "Trackers (unsurfaced)" },
-    { "ChatStore",    kChatStore,    nullptr,           "Chat log" },
-    { "ClanSettings", kClanSettings, nullptr,           "Clan vars" },
+    { "Tracker",      kTracker,      "md::kTracker",      "Trackers (unsurfaced)" },
+    { "ChatStore",    kChatStore,    "md::kChatStore",    "Chat log" },
+    { "ClanSettings", kClanSettings, "md::kClanSettings", "Clan vars" },
     { "MiniMap",      kMiniMap,      nullptr,           "Walk destination" },
-    { "MapMgr",       kMapMgr,       nullptr,           "Map base, loading, zone events" },
-    { "InputReport",  kInputReport,  nullptr,           "Idle timer" },
+    { "MapMgr",       kMapMgr,       "md::kMapMgr",       "Map base, loading, zone events" },
+    { "InputReport",  kInputReport,  "md::kInputReport",  "Idle timer" },
     { "WalkMgr",      kWalkMgr,      nullptr,           "Walk marker" },
     { "ArrowMgr",     kArrowMgr,     nullptr,           "Engine markers, clue scan" },
     { "TrailMgr",     kTrailMgr,     nullptr,           "Engine markers" },
-    { "IfaceOwner",   kIfaceOwner,   nullptr,           "Interfaces, panel positions" },
+    { "IfaceOwner",   kIfaceOwner,   "md::kIfaceOwner",   "Interfaces, panel positions" },
     { "VarcStore",    kVarcStore,    "kOffVarcStore",   "Varcs, skills, mouse, keys" },
-    { "InputProc",    kInputProc,    nullptr,           "Hover" },
-    { "PlayerGroup",  kPlayerGroup,  nullptr,           "Group vars" },
-    { "Players",      kPlayers,      nullptr,           "Local player, in-frame labels" },
+    { "InputProc",    kInputProc,    "md::kInputProc",    "Hover" },
+    { "PlayerGroup",  kPlayerGroup,  "md::kPlayerGroup",  "Group vars" },
+    { "Players",      kPlayers,      "md::kPlayers",      "Local player, in-frame labels" },
     { "Projectiles",  kProjectiles,  nullptr,           "Projectiles" },
-    { "Friends",      kFriends,      nullptr,           "Friends" },
+    { "Friends",      kFriends,      "md::kFriends",      "Friends" },
     { "GrandExchange", kGrandExchange, "kOffGE",        "Grand Exchange" },
     { "World",        kWorld,        "kOffWorld",       "World number" },
-    { "Containers",   kContainers,   nullptr,           "Backpack, bank, equipment" },
-    { "SceneViews",   kSceneViews,   nullptr,           "Scene, overlays, camera" },
-    { "Cutscene",     kCutscene,     nullptr,           "Cutscene state" },
-    { "SoundCtx",     kSoundCtx,     nullptr,           "Sounds" },
-    { "Language",     kLanguage,     nullptr,           "Menu swaps" },
+    { "Containers",   kContainers,   "md::kContainers",   "Backpack, bank, equipment" },
+    { "SceneViews",   kSceneViews,   "md::kSceneViews",   "Scene, overlays, camera" },
+    { "Cutscene",     kCutscene,     "md::kCutscene",     "Cutscene state" },
+    { "SoundCtx",     kSoundCtx,     "md::kSoundCtx",     "Sounds" },
+    { "Language",     kLanguage,     "md::kLanguage",     "Menu swaps" },
     { "Status",       kStatus,       "kOffStatus",      "Login state" },
     { "Account",      kAccount,      "kOffAccount",     "Account, local player id" },
-    { "VarpMgr",      kVarpMgr,      nullptr,           "Ability cooldowns" },
+    { "VarpMgr",      kVarpMgr,      "md::kVarpMgr",      "Ability cooldowns" },
     { "VarpHash",     kVarpHash,     nullptr,           "Player variables" },
-    { "Options",      kOptions,      nullptr,           "Client options" },
+    { "Options",      kOptions,      "md::kOptions",      "Client options" },
 };
 
 }  // namespace rtx::md

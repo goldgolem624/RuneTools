@@ -18,6 +18,7 @@
 #include "../reader/HealthRun.h"
 #include "../reader/Pins.h"
 #include "../cache/CacheReader.h"
+#include "../cache/Names.h"
 #include "WinNotify.h"
 #include "../shared/Log.h"
 
@@ -445,6 +446,8 @@ int APIENTRY wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
         // launcher compares it with (last clean, previous build or previous run).
         // --sigs-check <exe>: the client code group alone for any exe on disk, to sigs-check.txt.
         // --sigs-record <exe>: that exe's per-build pins file lines, to sigs-record.txt.
+        // --calib-check <exe> <opcodes.json>: every calibration rule against that exe and operation
+        // table (its build label not required), to calib-check.txt.
         // --pins-check [pins file]: the cache content and format groups, no game, to pins-check.txt.
         // --pins-record <ids.tsv> <out.tsv>: a pins file recorded from the cache now; log to pins-record.txt.
         // All read only. They end the process directly: the reader's sampler threads are still
@@ -501,6 +504,11 @@ int APIENTRY wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
             rtx::calib::Run(argv[2], opcodes_json());
             const std::string out = record ? rtx::codescan::Record(argv[2]) : rtx::codescan::CheckText(argv[2]);
             { std::ofstream f(record ? "sigs-record.txt" : "sigs-check.txt", std::ios::binary | std::ios::trunc); f << out; }
+            return headless_exit(0);
+        }
+        if (argv && argc >= 4 && std::wstring(argv[1]) == L"--calib-check") {
+            const std::string out = rtx::calib::CheckText(argv[2], argv[3]);
+            { std::ofstream f("calib-check.txt", std::ios::binary | std::ios::trunc); f << out; }
             return headless_exit(0);
         }
         if (argv && argc >= 2 && std::wstring(argv[1]) == L"--pins-check") {
@@ -560,6 +568,14 @@ int APIENTRY wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
             std::string out = rtx::reader::OverheadClassJson(pid) + "\n" + rtx::reader::LiveLocsJson(pid) + "\n" + rtx::reader::OverheadBarsJson(pid);
             { std::ofstream f("overhead.txt", std::ios::binary | std::ios::trunc); f << out; }
             return headless_exit(0);
+        }
+        // --names-dump <outdir> [rebuild]: Jagex's names for the game's ids, one JSON per kind plus stats.json,
+        // log to names-dump.txt. `rebuild` ignores the kept file.
+        if (argv && argc >= 3 && std::wstring(argv[1]) == L"--names-dump") {
+            std::string log;
+            const int n = rtx::names::Dump(argv[2], log, argc >= 4 && std::wstring(argv[3]) == L"rebuild");
+            { std::ofstream f("names-dump.txt", std::ios::binary | std::ios::trunc); f << log; }
+            return headless_exit(n >= 0 ? 0 : 1);
         }
         // --loc-dump <out.tsv>: every loc definition (name, footprint, actions, models, morphs) for offline tooling.
         if (argv && argc >= 3 && std::wstring(argv[1]) == L"--loc-dump") {

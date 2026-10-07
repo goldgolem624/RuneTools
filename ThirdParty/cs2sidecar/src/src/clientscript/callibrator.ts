@@ -41,8 +41,10 @@ export type StackDiffEquation = {
 let varInfoParser = new FileParser<{ type: number }>({
     "0x03": { "name": "type", "read": "ubyte" },
     "0x04": { "name": "0x04", "read": "ubyte" },
+    "0x05": { "name": "0x05", "read": "ubyte" },//read by the client, in no var config yet
     "0x07": { "name": "0x07", "read": true },
     "0x08": { "name": "0x08", "read": true },// build ~948+ flag, 0 bytes (verified: all var configs parse clean)
+    "0x09": { "name": "0x09", "read": true },//plugin client flag, 0 bytes (player var 13511)
     "0x6e": { "name": "0x6e", "read": "ushort" },
 });
 

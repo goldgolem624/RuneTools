@@ -55,9 +55,30 @@
       for (const k in varNamesData.varbit) varNamesLower.varbit[k] = varNamesData.varbit[k].toLowerCase();
       for (const k in varNamesData.varp) varNamesLower.varp[k] = varNamesData.varp[k].toLowerCase();
       for (const k in varNamesData.varc) varNamesLower.varc[k] = varNamesData.varc[k].toLowerCase();
+      varOffMerge(false);
       varRowEls.forEach(el => { el._sig = ''; });
       paneRun('vars', paintVars);
     } catch (e) { varNamesData = null; }
+  }
+  // Jagex's own names, read by the launcher from the cache. They win over the extraction's guesses.
+  let varOff = null, varOffTries = 0, varOffBusy = false;
+  async function varOffLoad() {
+    if (varOff || varOffBusy) return;
+    varOffBusy = true;
+    let d = null;
+    try { d = await rtxData.call('host.officialNames', 'varp,varbit,varc'); } catch (e) {}
+    varOffBusy = false;
+    if (!d) return;                                  // launcher without the table
+    if (!d.ready) { if (++varOffTries < 40) setTimeout(varOffLoad, 3000); return; }
+    varOff = { varbit: d.varbit || {}, varp: d.varp || {}, varc: d.varc || {} };
+    varOffMerge(true);
+  }
+  function varOffMerge(repaint) {
+    if (!varOff) return;
+    if (!varNamesData) { varNamesData = { varbit: {}, varp: {}, varc: {} }; varNamesLower = { varbit: {}, varp: {}, varc: {} }; }
+    for (const t of ['varbit', 'varp', 'varc'])
+      for (const k in varOff[t]) { varNamesData[t][k] = varOff[t][k]; varNamesLower[t][k] = varOff[t][k].toLowerCase(); }
+    if (repaint) { varRowEls.forEach(el => { el._sig = ''; }); paneRun('vars', paintVars); }
   }
   // Names worked out in game for vars the extraction leaves unnamed. A trailing '?' marks a guess.
   const VAR_KNOWN_NAMES = {
@@ -161,7 +182,7 @@
   function varsWatchSet(on) {
     if (varWatchOn === on) return; varWatchOn = on;
     try { if (bridge() && bridge().varsWatch) rtxData.sync('act.varsWatch', on); } catch (e) {}
-    if (on) { varNamesLoad(); varAchLoad(); varPinsSync(); varDomLoad(); }
+    if (on) { varNamesLoad(); varOffLoad(); varAchLoad(); varPinsSync(); varDomLoad(); }
     if (on && !varbitMapData && bridge() && bridge().varbitMap) {     // for the varp -> varbit hover decode
       try { Promise.resolve(rtxData.sync('cache.varbitMap')).then(j => {
         try { varbitMapData = JSON.parse(j); varRowEls.forEach(el => { el._sig = ''; }); paneRun('vars', paintVars); } catch (e) {}

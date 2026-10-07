@@ -1,6 +1,8 @@
 #include "Pins.h"
 #include "Calibrate.h"
 #include "../cache/CacheReader.h"
+#include "../cache/Names.h"
+#include "../cache/IdSplit.h"
 
 #include <windows.h>
 #include <algorithm>
@@ -369,14 +371,21 @@ void CheckCacheFormat(rtx::health::Run& run) {
             std::string why; int ok = kPass;
             if (f.protocol < 5 || f.protocol > 7) { ok = kFail; why += "protocol " + std::to_string(f.protocol) + "; "; }
             if (wantA > 0 && (f.archives * 10 < wantA * 8 || f.archives * 10 > wantA * 12)) { ok = kFail; why += "archives " + std::to_string(f.archives) + " (was " + std::to_string(wantA) + "); "; }
-            if (!Field(l.expect, "maxfile").empty() && f.maxFile != wantF) { ok = kFail; why += "largest file id " + std::to_string(f.maxFile) + " (was " + std::to_string(wantF) + ", the readers split ids by it); "; }
+            // only a split index breaks on file ids: past its capacity, or a full archive no longer full (width changed)
+            const int bits = rtx::cache::IdSplitBits(id), cap = bits > 0 ? 1 << bits : 0;
+            std::string note;
+            if (cap && f.maxFile >= cap) { ok = kFail; why += "largest file id " + std::to_string(f.maxFile) + ", the readers split ids by " + std::to_string(cap) + "; "; }
+            else if (!Field(l.expect, "maxfile").empty() && f.maxFile != wantF) {
+                if (cap && wantF == cap - 1) { ok = kFail; why += "largest file id " + std::to_string(f.maxFile) + " (was " + std::to_string(wantF) + "): the split width changed; "; }
+                else note = "; largest file id " + std::to_string(wantF) + " -> " + std::to_string(f.maxFile) + (cap ? ", within the split" : f.maxFile > wantF ? ", new content" : ", ids removed");
+            }
             if (f.failed > 0) { if (ok == kPass) ok = kWarn; why += std::to_string(f.failed) + " archives failed to read; "; }
             run.Fact("cache.rev." + l.key, std::to_string(f.revision));
             run.Fact("cache.archives." + l.key, std::to_string(f.archives));
             char got[160];
             std::snprintf(got, sizeof(got), "archives=%d;maxfile=%d;proto=%d", f.archives, f.maxFile, f.protocol);
             run.Add(G, rid, "Index " + l.key + " (" + nameOf(id) + ")", ok,
-                    ok == kPass ? std::string(got) : why.substr(0, why.size() >= 2 ? why.size() - 2 : 0), l.features, l.expect, got);
+                    ok == kPass ? std::string(got) + note : why.substr(0, why.size() >= 2 ? why.size() - 2 : 0), l.features, l.expect, got);
         } else if (l.kind == "ceiling") {
             const int cap = std::atoi(Field(l.expect, "cap").c_str());
             const int mx = rtx::cache::MaxId(l.key);
@@ -388,6 +397,25 @@ void CheckCacheFormat(rtx::health::Run& run) {
                     "largest " + std::to_string(mx) + ", code handles up to " + std::to_string(cap) + (ok == kPass ? "" : ok == kWarn ? " (within 10 %)" : " (past it)"),
                     l.features, "<= " + std::to_string(cap), std::to_string(mx));
         }
+    }
+    {   // Jagex's own names for the game's ids; waits a little for a build in flight
+        const rtx::names::State s = rtx::names::Status(15000);
+        const std::string src = s.source.empty() ? std::string("none") : s.source;
+        int ok = kPass;
+        std::string d;
+        if (!s.ready) { ok = kUnchecked; d = s.building ? "still building" : (s.error.empty() ? "not built" : s.error); }
+        else if (s.source.empty()) { ok = kUnchecked; d = "no index 67 in the game cache or a second cache"; }
+        else {
+            d = (s.source == "live" ? std::string("game cache") : "matched against " + s.root) + ", " + std::to_string(s.total) + " names";
+            for (const auto& k : s.kinds)
+                if (k.kind == "varp" || k.kind == "varbit" || k.kind == "varc" || k.kind == "npc" || k.kind == "obj" || k.kind == "loc" || k.kind == "interface")
+                    d += "; " + k.kind + " " + std::to_string(k.named);
+            if (s.total == 0) ok = kWarn;
+            if (!s.error.empty()) { ok = kWarn; d += "; " + s.error; }
+        }
+        run.Fact("names.source", src);
+        run.Fact("names.total", std::to_string(s.total));
+        run.Add(G, "cache.names", "Official names", ok, d, "Vars watcher|Cache Explorer", {}, "source=" + src + ";names=" + std::to_string(s.total));
     }
 }
 

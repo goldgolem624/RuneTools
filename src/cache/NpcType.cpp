@@ -14,6 +14,8 @@ bool ReadOne(InputStream& s, NpcDef& d, int op) {
         }
         case 2: d.name = s.ReadString();            return true;
         case 12: d.size = s.ReadUnsignedByte();     return true;   // size (tile footprint)
+        case 26: d.wander_range = s.ReadUnsignedShort(); return true;   // plugin client: wander range
+        case 27: d.max_range = s.ReadUnsignedShort();    return true;   // plugin client: max range
         case 40: case 41: {                          // recolour / retexture
             int n = s.ReadUnsignedByte();
             for (int i = 0; i < n; ++i) { s.ReadShort(); s.ReadShort(); }

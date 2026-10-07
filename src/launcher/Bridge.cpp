@@ -17,6 +17,7 @@
 #include "../../companion/CaptureShare.h"
 #include "../cache/CacheReader.h"
 #include "../cache/Constants.h"
+#include "../cache/Names.h"
 #include "Audio.h"
 #include "SoundFilter.h"
 #include "ChatFilter.h"
@@ -4284,6 +4285,19 @@ JSValueRef Cs2Names(JSContextRef ctx, JSObjectRef, JSObjectRef,
     return utf8_to_js(ctx, cs2browser::NamesJson());
 }
 
+// Jagex's own names for the game's ids: the status, plus the kinds asked for (comma separated).
+// "ready":false and no kinds until the background build is done.
+JSValueRef OfficialNames(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                         size_t argc, const JSValueRef argv[], JSValueRef*) {
+    return utf8_to_js(ctx, rtx::names::Json(get_string_arg(ctx, argc, argv, 0)));
+}
+
+JSValueRef OfficialName(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                        size_t argc, const JSValueRef argv[], JSValueRef*) {
+    if (argc < 2) return utf8_to_js(ctx, std::string());
+    return utf8_to_js(ctx, rtx::names::Name(get_string_arg(ctx, argc, argv, 0), js_int(ctx, argv[1])));
+}
+
 JSValueRef Cs2Switches(JSContextRef ctx, JSObjectRef, JSObjectRef,
                        size_t, const JSValueRef[], JSValueRef*) {
     return utf8_to_js(ctx, cs2browser::SwitchesJson());
@@ -6318,6 +6332,8 @@ void AttachBridge(ultralight::View* view) {
     install_fn(ctx, ns, "cs2Search",         Cs2Search);
     install_fn(ctx, ns, "cs2Script",         Cs2Script);
     install_fn(ctx, ns, "cs2Names",          Cs2Names);
+    install_fn(ctx, ns, "officialNames",     OfficialNames);
+    install_fn(ctx, ns, "officialName",      OfficialName);
     install_fn(ctx, ns, "cs2Switches",       Cs2Switches);
     install_fn(ctx, ns, "sidebarLoad",       SidebarLoad);
     install_fn(ctx, ns, "sidebarSave",       SidebarSave);

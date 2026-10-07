@@ -67,6 +67,7 @@ struct Image {
     std::map<std::uint32_t, std::uint32_t> handlers;   // op -> rva
     std::vector<std::uint32_t> starts;                // handler rvas, sorted
     std::vector<std::pair<std::uint32_t, std::uint32_t>> funcs;
+    std::map<std::uint32_t, std::uint32_t> unwindOf;  // function start -> unwind info rva
     std::vector<std::string> imports;                 // "dll!name", lower-case dll
     bool vulkan = false, opengl = false;
     std::string version;
@@ -129,8 +130,8 @@ std::shared_ptr<Image> Load(const std::wstring& exe) {
     for (std::uint32_t o = 0; o + 12 <= im->pe.pdataSize; o += 12) {
         const std::uint8_t* e = rtx::calib::At(im->pe, im->pe.pdataRva + o, 12);
         if (!e) break;
-        std::uint32_t b, en; std::memcpy(&b, e, 4); std::memcpy(&en, e + 4, 4);
-        if (b) im->funcs.emplace_back(b, en);
+        std::uint32_t b, en, u; std::memcpy(&b, e, 4); std::memcpy(&en, e + 4, 4); std::memcpy(&u, e + 8, 4);
+        if (b) { im->funcs.emplace_back(b, en); im->unwindOf[b] = u; }
     }
     std::sort(im->funcs.begin(), im->funcs.end());
     LoadImports(*im);
@@ -143,6 +144,31 @@ std::uint32_t FuncOf(const Image& im, std::uint32_t rva) {
     if (it == im.funcs.begin()) return rva;
     --it;
     return (rva >= it->first && rva < it->second) ? it->first : rva;
+}
+
+// The function holding rva, followed through chained unwind entries to its own start, as the
+// companion resolves a kInFunction signature; 0 when no entry holds it.
+std::uint32_t FunctionOf(const Image& im, std::uint32_t rva) {
+    auto it = std::upper_bound(im.funcs.begin(), im.funcs.end(), std::make_pair(rva, 0xFFFFFFFFu));
+    if (it == im.funcs.begin()) return 0;
+    --it;
+    if (rva < it->first || rva >= it->second) return 0;
+    std::uint32_t b = it->first;
+    auto u = im.unwindOf.find(b);
+    std::uint32_t info = u == im.unwindOf.end() ? 0 : u->second;
+    for (int guard = 0; guard < 8 && info; ++guard) {
+        const std::uint8_t* chained = nullptr;
+        if (info & 1) chained = rtx::calib::At(im.pe, info & ~1u, 12);
+        else {
+            const std::uint8_t* x = rtx::calib::At(im.pe, info, 4);
+            if (!x) return 0;
+            if (!((x[0] >> 3) & 4)) break;                 // not chained
+            chained = rtx::calib::At(im.pe, info + 4 + ((x[2] + 1u) & ~1u) * 2, 12);
+        }
+        if (!chained) return 0;
+        std::memcpy(&b, chained, 4); std::memcpy(&info, chained + 8, 4);
+    }
+    return b;
 }
 
 bool InWritableData(const Image& im, std::uint32_t rva) {
@@ -337,6 +363,35 @@ std::vector<int> ParseFp(const char* s) {
 
 struct SigOut { int ok = kFail; std::string detail, got, exp; std::uint32_t rva = 0; };
 
+// Where the companion attaches for a signature with its one hit, which is also what the manifest
+// records: the hit, the function holding it, or the routine its call names. 0 when that is not there.
+std::uint32_t HookPoint(const Image& im, const rtx::sig::Sig& s, std::uint32_t hit) {
+    switch (s.hook) {
+        case rtx::sig::kInFunction: return FunctionOf(im, hit);
+        case rtx::sig::kAtCall: {
+            const std::uint8_t* b = Bytes(im, hit + s.callAt, 5);
+            if (!b || b[0] != 0xE8) return 0;
+            return (std::uint32_t)((std::int64_t)hit + s.callAt + 5 + I32(im, hit + s.callAt + 1));
+        }
+        default: return hit;
+    }
+}
+
+// The arrow manager's frame call site: both managers and the size of their slots.
+struct ArrowSite { bool ok = false; std::uint32_t at = 0, arrow = 0, trail = 0, slot = 0; };
+ArrowSite FindArrowSite(const Image& im) {
+    ArrowSite a;
+    const auto hits = FindAll(im, PatternOf(rtx::sig::kArrowFrame, sizeof(rtx::sig::kArrowFrame) / sizeof(int)), false);
+    if (hits.size() != 1) return a;
+    const std::uint8_t* b = Bytes(im, hits[0], 48);
+    if (!b) return a;
+    a.ok = true; a.at = hits[0];
+    a.arrow = U32(im, hits[0] + (std::uint32_t)rtx::sig::kArrowFrameArrow);
+    a.trail = U32(im, hits[0] + (std::uint32_t)rtx::sig::kArrowFrameTrail);
+    a.slot = rtx::sig::ArrowSlotSize(b);
+    return a;
+}
+
 }  // namespace
 
 ExeFacts Facts(const std::wstring& exePath) {
@@ -379,6 +434,7 @@ void Check(const std::wstring& exePath, rtx::health::Run& run) {
 
     // signatures, anchors first
     std::uint32_t framerRva = 0, synthRva = 0;
+    const ArrowSite arrowSite = FindArrowSite(I);   // the message routines must name its managers
     for (const auto& s : rtx::sig::kTable) {
         const std::vector<int> pat = PatternOf(s);
         const auto hits = FindAll(I, pat, s.scope == rtx::sig::kFirstExec);
@@ -396,7 +452,9 @@ void Check(const std::wstring& exePath, rtx::health::Run& run) {
         const std::string id = std::string("code.sig.") + s.name;
         const std::string key = std::string("Signature ") + s.name;
         run.Fact(std::string("sig.") + s.name + ".hits", std::to_string(hits.size()));
-        if (!hits.empty()) run.Fact(std::string("sig.") + s.name + ".rva", Hex(hits[0]));
+        const std::uint32_t hook0 = hits.size() == 1 ? HookPoint(I, s, hits[0]) : hits.empty() ? 0 : hits[0];
+        if (!hits.empty()) run.Fact(std::string("sig.") + s.name + ".rva", Hex(hook0 ? hook0 : hits[0]));
+        if (hits.size() == 1 && hook0 != hits[0]) run.Fact(std::string("sig.") + s.name + ".hit", Hex(hits[0]));
         int ok = kPass; std::string d, exp = "1 hit", got = std::to_string(hits.size()) + (hits.size() == 1 ? " hit" : " hits");
         const bool openGlOnly = s.expect == rtx::sig::kOpenGlOnce;
         if (openGlOnly && vulkan) {
@@ -426,8 +484,17 @@ void Check(const std::wstring& exePath, rtx::health::Run& run) {
             continue;
         }
         const std::uint32_t at = hits[0];
-        const std::uint32_t fn = (s.scope == rtx::sig::kFirstExec && s.bytes && !s.mask) ? FuncOf(I, at) : at;
-        d = "1 hit at " + Hex(at) + (fn != at ? " (function " + Hex(fn) + ")" : "");
+        const std::uint32_t where = hook0;   // the hook point
+        const std::uint32_t fn = s.hook == rtx::sig::kInFunction ? where :
+            (s.scope == rtx::sig::kFirstExec && s.bytes && (!s.mask || s.hook == rtx::sig::kHitInFunction)) ? FuncOf(I, at) : at;
+        d = "1 hit at " + Hex(at) + (fn != at ? " (function " + Hex(fn) + ")" : "") + (s.hook == rtx::sig::kAtCall ? " (calls " + Hex(where) + ")" : "");
+        if (!where) {
+            ok = kFail;
+            d += s.hook == rtx::sig::kAtCall ? "; no call where the routine should be named" : "; no function holds it";
+            recorded(ok, exp, d);
+            run.Add(G, id, key, ok, d, s.features, exp, got, "code.exe");
+            continue;
+        }
         // the values the hook takes out of the code around the hit
         const std::string nm = s.name;
         if (nm == "main-anchor") {
@@ -452,15 +519,13 @@ void Check(const std::wstring& exePath, rtx::health::Run& run) {
             run.Fact("sig.scene-blank.jcc", Hex((std::uint32_t)op));
             if (op != 0x74 && op != 0x75) { ok = kFail; d += "; byte at +0x266 is " + Hex((std::uint32_t)op) + ", not a Jcc"; }
         } else if (nm == "menu-snap") {
-            auto site = [&](const unsigned char* lea) -> std::uint32_t {
-                const std::uint32_t p = FindNear(I, at, 0x1400, [&] { auto v = PatternOf(lea, 7); v.push_back(0xE8); return v; }());
-                return p ? p + 7 : 0;
-            };
-            const std::uint32_t sa = site(rtx::sig::kMenuLea13f0), sb = site(rtx::sig::kMenuLea13e0);
-            const std::uint32_t ta = sa ? (std::uint32_t)((std::int64_t)sa + 5 + I32(I, sa + 1)) : 0;
-            const std::uint32_t tb = sb ? (std::uint32_t)((std::int64_t)sb + 5 + I32(I, sb + 1)) : 0;
+            // the left-click slot assigns in the snapshot body, found as the companion finds them
+            const std::uint8_t* body = Bytes(I, where, rtx::sig::kMenuSnapSpan + 12);
+            const rtx::sig::MenuAssign m = body ? rtx::sig::FindMenuAssign(body, rtx::sig::kMenuSnapSpan) : rtx::sig::MenuAssign{};
+            const std::uint32_t ta = m.ok ? (std::uint32_t)((std::int64_t)where + m.target) : 0;
             run.Fact("menu.assign", Hex(ta));
-            if (!ta || ta != tb || !(sb < sa)) { ok = kFail; d += "; the 0x13E0/0x13F0 assign calls do not name one routine (left-click option off)"; }
+            if (m.ok) run.Fact("menu.slot", Hex(m.slot));
+            if (!ta) { ok = kFail; d += "; the left-click slot assign calls do not name one routine (left-click option off)"; }
             else d += ", assign routine " + Hex(ta);
         } else if (nm == "outline-switch" || nm == "outline-table") {
             const bool sw = nm == "outline-switch";
@@ -470,20 +535,25 @@ void Check(const std::wstring& exePath, rtx::health::Run& run) {
             if (!(sw ? InWritableData(I, t) : InData(I, t))) { ok = kFail; d += "; target " + Hex(t) + " is not data"; }
             else d += ", target " + Hex(t);
         } else if (nm == "arrow-message") {
-            const std::uint32_t disp = U32(I, at + (std::uint32_t)s.len - 4);
+            const std::uint8_t* after = Bytes(I, at + (std::uint32_t)s.len, rtx::sig::kArrowLoadSpan);
+            const std::uint32_t disp = after ? rtx::sig::RootFieldLoad(after, rtx::sig::kArrowLoadSpan) : 0;
             run.Fact("markers.arrowMgr", Hex(disp));
             exp = "manager " + Hex(rtx::md::kArrowMgr);
-            if (disp != rtx::md::kArrowMgr) { ok = kWarn; d += "; arrow manager at MainData+" + Hex(disp) + ", compiled " + Hex(rtx::md::kArrowMgr); }
+            if (!disp) { ok = kFail; d += "; the arrow manager load is not there"; }
+            else if (arrowSite.ok && disp != arrowSite.arrow) { ok = kFail; d += "; arrow manager at MainData+" + Hex(disp) + ", the frame call site names " + Hex(arrowSite.arrow); }
+            else if (disp != rtx::md::kArrowMgr) { ok = kWarn; d += "; arrow manager at MainData+" + Hex(disp) + ", compiled " + Hex(rtx::md::kArrowMgr); }
             else d += ", manager MainData+" + Hex(disp);
         } else if (nm == "trail-message") {
             auto mgr = FindNear(I, at + (std::uint32_t)s.len, 0xA0 - s.len, PatternOf(rtx::sig::kTrailManager, sizeof(rtx::sig::kTrailManager) / sizeof(int)));
             const std::uint32_t disp = mgr ? U32(I, mgr + 3) : 0;
             run.Fact("markers.trailMgr", Hex(disp));
             if (!mgr) { ok = kFail; d += "; the trail manager load is not there"; }
-            else if (disp != rtx::md::kArrowMgr + 8) { ok = kFail; d += "; trail manager at MainData+" + Hex(disp) + ", the hook needs arrow + 8"; }
+            else if (arrowSite.ok && disp != arrowSite.trail) { ok = kFail; d += "; trail manager at MainData+" + Hex(disp) + ", the frame call site names " + Hex(arrowSite.trail); }
             else d += ", manager MainData+" + Hex(disp);
         } else if (nm == "arrow-frame") {
-            auto r = FindNear(I, at + (std::uint32_t)s.len, 0x200 - s.len, PatternOf(rtx::sig::kArrowRefresh, sizeof(rtx::sig::kArrowRefresh) / sizeof(int)));
+            run.Fact("markers.slotSize", std::to_string(arrowSite.slot));
+            if (arrowSite.slot != rtx::sig::kArrowSlotSize) { ok = kWarn; d += "; manager slots are " + std::to_string(arrowSite.slot) + " bytes, the markers know " + std::to_string(rtx::sig::kArrowSlotSize) + " (markers off, the frame hook stays)"; }
+            auto r = FindNear(I, where, 0x200, PatternOf(rtx::sig::kArrowRefresh, sizeof(rtx::sig::kArrowRefresh) / sizeof(int)));
             std::uint32_t t = 0;
             if (r) {
                 const std::uint8_t* b = Bytes(I, r + 6, 0x20);
@@ -510,7 +580,7 @@ void Check(const std::wstring& exePath, rtx::health::Run& run) {
         if (!was0.empty()) {
             const std::size_t atp = was0.find('@');
             const std::uint32_t wasRva = atp == std::string::npos ? 0 : (std::uint32_t)std::strtoul(was0.c_str() + atp + 1, nullptr, 0);
-            if (wasRva && wasRva != at) { run.Fact(std::string("sig.") + nm + ".moved", Hex(wasRva) + " -> " + Hex(at)); d += "; moved from " + Hex(wasRva); }
+            if (wasRva && wasRva != where) { run.Fact(std::string("sig.") + nm + ".moved", Hex(wasRva) + " -> " + Hex(where)); d += "; moved from " + Hex(wasRva); }
         }
         recorded(ok, exp, d);
         run.Add(G, id, key, ok, d, s.features, exp, got, "code.exe");
@@ -794,7 +864,8 @@ std::string Record(const std::wstring& exePath) {
     for (const auto& s : rtx::sig::kTable) {
         const auto hits = FindAll(I, PatternOf(s), s.scope == rtx::sig::kFirstExec);
         o << "sig\t" << s.name << "\t" << st << "=" << hits.size();
-        if (!hits.empty()) o << "@" << Hex(hits[0]);
+        const std::uint32_t where = hits.size() == 1 ? HookPoint(I, s, hits[0]) : hits.empty() ? 0 : hits[0];
+        if (!hits.empty()) o << "@" << Hex(where ? where : hits[0]);
         o << "\t" << s.features << "\n";
     }
     const ExeFacts f = Facts(exePath);
