@@ -2207,7 +2207,7 @@
   .tsp-row .tsp-cat { margin-left: auto; flex: none; padding-left: 10px;
     color: var(--text-mute); font-size: 10.5px; white-space: nowrap; }
   .tsp-empty { padding: 8px; font-size: 11.5px; color: var(--text-mute); text-align: center; }
-  .vw-pop { position: fixed; z-index: 9999; display: none; min-width: 170px; max-width: 300px; max-height: 60vh;
+  .vw-pop { position: fixed; z-index: 9999; display: none; min-width: 170px; max-width: min(460px, 92vw); max-height: 60vh;
     overflow-y: auto; padding: 6px; background: var(--bg-elev); border: 1px solid var(--border-hi);
     border-radius: 8px; box-shadow: 0 8px 24px rgba(0,0,0,0.45); pointer-events: auto; }
   .vw-pop-h { font-size: 10px; font-weight: 700; color: var(--accent-hi); padding: 1px 3px 5px; }

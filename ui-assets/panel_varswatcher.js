@@ -511,6 +511,15 @@
       '<button class="vw-pin' + (pinned ? ' on' : '') + '" data-pin="' + r.key + '" title="' + (pinned ? 'Unpin' : 'Pin to top (survives filters; never reorders)') + '">' + (pinned ? '✦' : '✧') + '</button>' +
       '<button class="vw-ig" data-blk="' + r.key + '" title="Hide this var">×</button>';
   }
+  // A varbit named after its var (QUEST_X_MAIN inside QUEST_X, or QUEST_X_BASEVAR1) shows only the rest;
+  // the full name stays in the tooltip.
+  function vbShortName(vn, pn) {
+    if (!vn || !pn || vn === pn) return vn;
+    const a = vn.split('_'), b = pn.split('_');
+    let n = 0;
+    while (n < a.length - 1 && n < b.length && a[n] === b[n]) n++;
+    return n >= 2 ? a.slice(n).join('_') : vn;
+  }
   function fillVarbitPop(pop, key) {
     if (!varDump) return false;
     const p = key.split(':'); const scope = +p[0], id = +p[1];
@@ -540,7 +549,7 @@
         const vn = varbitName(v.id), wasV = was[v.id];
         let h = '<div class="vw-pl' + (wasV !== undefined && wasV !== v.val ? ' chg' : '') + '">' +
           '<span class="vw-pl-id">vb ' + v.id + '</span><span class="vw-pl-b">[' + v.lsb + (v.msb !== v.lsb ? '-' + v.msb : '') + ']</span>' +
-          (vn ? '<span class="vw-pl-nm" title="' + vwEscHtml(vn) + '">' + vwEscHtml(vn) + '</span>' : '') + '<b>' + v.val + '</b></div>';
+          (vn ? '<span class="vw-pl-nm" title="' + vwEscHtml(vn) + '">' + vwEscHtml(vbShortName(vn, pn)) + '</span>' : '') + '<b>' + v.val + '</b></div>';
         const ab = varAchData && varAchData.bits[v.id];
         if (ab) for (const b of ab) {
           const bv = achBitFromVbVal(v.id, v.val, b.bit), wv = achBitFromVbVal(v.id, wasV === undefined ? v.val : wasV, b.bit);
