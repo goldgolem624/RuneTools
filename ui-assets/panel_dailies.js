@@ -139,7 +139,7 @@
       etree:  v('20745') === 1,
       dmob:   v('28370') === 0,
       sink:   v('20747') < 15 && v('17933') < 2,
-      chin:   v('20742') < 20 && v('4882') < 2,
+      chin:   v('20742') < 20 && v('4882') === 0,
       ff:     v('20744') <= 5 && !v('20740'),
       goebie: rem >= 700 && v('28796') !== 10,
       famil:  v('20738') === 1 && !(v('39271') > 0),
@@ -592,7 +592,7 @@
     if (v('17933') >= 2)       dwSetSub('sink', 'Done for today');
     else if (v('20747') < 15)  dwSetSub('sink', 'Open now, collapses in ' + (15 - v('20747')) + 'm');
     else                       dwSetSub('sink', 'Next sinkhole in ' + (60 - v('20747')) + 'm');
-    dwSetBar('chin', v('4882'), 2);
+    dwSetBar('chin', v('4882') ? 2 : 0, 2);   // vb 4882 is a flag: the second game today has been entered
     if (v('20742') < 20) dwSetSub('chin', 'Open now, ends in ' + (20 - v('20742')) + 'm');
     else                 dwSetSub('chin', 'Next opens in ' + (60 - v('20742')) + 'm');
     if (v('20740'))            dwSetPill('ff', 'Played today', 'ok');

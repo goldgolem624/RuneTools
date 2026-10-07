@@ -34,7 +34,7 @@
     ] },
   ] };
 
-  // Progress varbit 10848 (varp 2337 bits 0-6, quest config js5-2 archive 35 file 140): start 5, complete 65.
+  // Progress varbit 10848 DEATH_QUEST (varp 2337 bits 0-6, quest config js5-2 archive 35 file 140): start 5, complete 65.
   // Accounts that finished the pre-rework quest carry varp 2339 >= 80 instead.
   const DP_PROG = 10848, DP_START = 5, DP_DONE = 65;
   const DP_SIDE = [10849, 10850, 10851, 10852, 10853, 10854, 10855, 10856, 10857];   // the other varbits on varp 2337
@@ -54,7 +54,7 @@
   const DP_SURVEY = 23084;           // from Freda at v=35
   // v=40, in the cave: Rock Wall loc 67562 at 2265,4758 (Mine).
   const DP_WALL = 67562, DP_WALL_X = 2265, DP_WALL_Y = 4758;
-  const DP_WALL_VB = 10849;   // 1 = wall ready, 2 = being mined (v=45), 3 = mined through
+  const DP_WALL_VB = 10849;   // DEATH_WALL_STATE: 1 = wall ready, 2 = being mined (v=45), 3 = mined through
   // The cavern behind the wall (around 3405,4283): obstacles in route order.
   const DP_CAVERN_X = 3405, DP_CAVERN_Y = 4283;
   const DP_CLIFF1 = 67674, DP_CLIFF1_X = 3406, DP_CLIFF1_Y = 4281;   // Cliffside (Jump-down), plane 2

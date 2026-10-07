@@ -14,7 +14,9 @@
 
 namespace rtx::pins {
 
-struct Line { std::string kind, key, expect, features; int no = 0; };
+// `official`: Jagex's name for a content pin's id when the manifest records one (its official= field,
+// taken out of `expect`).
+struct Line { std::string kind, key, expect, features; int no = 0; std::string official; };
 
 // The manifest, reloaded when the file changes. Looked for beside the exe, then in the source
 // tree's ui-assets when running from a build folder.
@@ -37,8 +39,9 @@ Line Find(const std::string& kind, const std::string& key);   // kind empty when
 
 // Content: every cache pin compared with the cache now, one row per feature. `runtimeJson` is the
 // panels' own declaration ({"Feature":{"varbit":[..],..},..}): ids it names that the manifest does
-// not record get an existence check.
-void CheckContent(rtx::health::Run& run, const std::string& runtimeJson);
+// not record get an existence check. A pinned official name must still name its id; `namesWaitMs`
+// bounds the wait for a names build in flight (0 never waits, for the launcher).
+void CheckContent(rtx::health::Run& run, const std::string& runtimeJson, int namesWaitMs = 0);
 // Cache format: index lines (archive counts, file split, protocol) and id ceilings.
 void CheckCacheFormat(rtx::health::Run& run);
 

@@ -1,6 +1,6 @@
 const dgEsc = s => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 // Sources: interface group 945 (floor HUD) and 942 (floor map). Keys held = varc 1812-1875 via enum 5734,
-// floor timer = varc 4190 (seconds), speedrun = varc 1233/2381, gatestone flags = varc 6569/6570 (spr 13165/13166).
+// floor timer = varc 4190 (seconds), room progress bar = varc 1233/2381, skip flags = varc 6569/6570 (spr 13165/13166).
 (function () {
 
 let dungData = null; let dungFetching = false; dungSig = '';

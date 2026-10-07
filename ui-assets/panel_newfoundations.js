@@ -1,11 +1,11 @@
 // RuneToolsX panel: New Foundations quest guide (quest 489).
 (function () {
 
-  // Progress varbit 52592 (quest config js5-2 archive 35 file 489): starts at 5, complete at 65.
+  // Progress varbit 52592 QUEST_FORT_INTRO (quest config js5-2 archive 35 file 489): starts at 5, complete at 65.
   const NF_PROG = 52592, NF_DONE = 65;
-  const NF_TITLE = 52593;   // chosen quest-reward title: 1 Duke / 2 Duchess / 3 Dux (0 = not chosen yet)
+  const NF_TITLE = 52593;   // QUEST_FORT_INTRO_TITLE: chosen quest-reward title: 1 Duke / 2 Duchess / 3 Dux (0 = not chosen yet)
   const NF_FORT = 52527, NF_PERFECT = 52528;   // 52527 = fortifications-phase tracker (= 4 at v=55); 52528 = Perfect Build % (0-100): rises when building at the OPTIMAL hotspot, drops at a non-optimal one; +1% Fort construction XP per 5%
-  const NF_SPIKES = Array.from({ length: 40 }, (_, i) => 52558 + i);   // per-spot spike varbits 52558-52597: 0 = not in progress, 2 = OPTIMAL spot, 1 = non-optimal
+  const NF_SPIKES = Array.from({ length: 28 }, (_, i) => 52559 + i);   // per-spot spike varbits 52559-52586 (wall and gate hotspots): 0 = not in progress, 2 = OPTIMAL spot, 1 = non-optimal
   // Fortification build-spot map (spike varbit -> tile); optimal spot = varbit 2, readable out of scan range.
   const NF_FORT_SPOTS = [
     { vb: 52563, x: 3292, y: 3575 },

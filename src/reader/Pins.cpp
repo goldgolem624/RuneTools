@@ -59,6 +59,24 @@ std::vector<std::string> Split(const std::string& s, char sep) {
     return out;
 }
 
+bool IsContentKind(const std::string& k);
+
+// Removes one "k=v" field from an expectation and returns its value, empty when absent.
+std::string TakeField(std::string& expect, const std::string& name) {
+    std::string rest, val;
+    bool found = false;
+    for (const auto& part : Split(expect, ';')) {
+        if (!found && part.size() > name.size() && part.compare(0, name.size(), name) == 0 && part[name.size()] == '=') {
+            val = part.substr(name.size() + 1);
+            found = true;
+            continue;
+        }
+        rest += (rest.empty() ? "" : ";") + part;
+    }
+    if (found) expect = rest;
+    return val;
+}
+
 void LoadLocked() {
     const std::wstring path = Locate();
     const std::wstring key = path.empty() ? std::wstring() : rtx::calib::FileKey(path);
@@ -82,6 +100,7 @@ void LoadLocked() {
         auto c = Split(line, '\t');
         if (c.size() < 3) continue;
         Line l; l.kind = c[0]; l.key = c[1]; l.expect = c[2]; l.features = c.size() > 3 ? c[3] : std::string(); l.no = no;
+        if (IsContentKind(l.kind)) l.official = TakeField(l.expect, "official");
         lines->push_back(std::move(l));
     }
     if (!header) g_error = "not a pins file";
@@ -156,10 +175,14 @@ std::string Sub(const std::string& features) {
     return c == std::string::npos ? std::string() : first.substr(c + 2);
 }
 
+std::string Label(const Line& l) {
+    const std::string sub = Sub(l.features);
+    return l.kind + " " + l.key + (sub.empty() ? "" : " (" + sub + ")");
+}
+
 PinResult Compare(const Line& l, const std::string& now) {
     PinResult r{ &l, rtx::health::kPass, now, {} };
-    const std::string sub = Sub(l.features);
-    const std::string label = l.kind + " " + l.key + (sub.empty() ? "" : " (" + sub + ")");
+    const std::string label = Label(l);
     if (now == "?") { r.ok = rtx::health::kUnchecked; r.text = label + ": cache not readable"; return r; }
     if (now.empty()) { r.ok = rtx::health::kFail; r.text = label + " is gone (was " + Readable(l.kind, l.expect) + ")"; return r; }
     if (l.expect == "exists") return r;
@@ -183,6 +206,65 @@ PinResult Compare(const Line& l, const std::string& now) {
     else if (l.kind == "script" || l.kind == "archive") r.text = label + " changed: regenerate the table built from it";
     else r.text = label + " was " + was + ", now " + is;
     return r;
+}
+
+// ---- official names ----
+// The names kind and id of a content pin; false for kinds that carry no name.
+bool NameKey(const std::string& kind, const std::string& key, std::string& nk, int& id) {
+    static const char* const kSame[] = { "varbit", "varp", "varc", "enum", "struct", "param", "dbtable", "inv", "sprite", "model", "npc", "loc" };
+    id = std::atoi(key.c_str());
+    if (kind == "enumhash") { nk = "enum"; return true; }
+    if (kind == "item") { nk = "obj"; return true; }
+    if (kind == "iface") {   // "group" or "group:comp"
+        const std::size_t c = key.find(':');
+        if (c == std::string::npos) nk = "interface";
+        else { nk = "component"; id = (id << 16) | std::atoi(key.c_str() + c + 1); }
+        return true;
+    }
+    if (kind == "var") {     // "archive:id"
+        static const struct { int archive; const char* kind; } kVars[] = {
+            { 60, "varp" }, { 61, "varnpc" }, { 62, "varc" }, { 65, "varobj" }, { 66, "varclan" }, { 67, "varclansetting" }, { 75, "vargroup" } };
+        const std::size_t c = key.find(':');
+        if (c == std::string::npos) return false;
+        for (const auto& v : kVars) if (v.archive == id) { nk = v.kind; id = std::atoi(key.c_str() + c + 1); return true; }
+        return false;
+    }
+    for (const char* s : kSame) if (kind == s) { nk = s; return true; }
+    return false;
+}
+
+struct NameSource { bool on = false, live = false; std::string source; std::set<std::string> kinds; };
+
+// Off when there is no names source or it is not ready within the wait.
+NameSource NameSourceNow(int waitMs) {
+    NameSource ns;
+    const rtx::names::State s = rtx::names::Status(waitMs);
+    ns.source = !s.ready ? std::string("not ready") : s.source.empty() ? std::string("none") : s.source;
+    if (!s.ready || s.source.empty()) return ns;
+    ns.on = true;
+    ns.live = s.source == "live" && s.error.empty();   // only the game's own full table says an id lost its name
+    for (const auto& k : s.kinds) if (k.named > 0) ns.kinds.insert(k.kind);
+    return ns;
+}
+
+enum NameCheck { kNameNone, kNameOk, kNameBad, kNameWithheld };
+
+// The pinned official name against the one the id carries now. Another name fails the pin; no name
+// warns when the game's own table says so, and passes when a second cache withholds it (the
+// definition differs there, which the pin's other fields check).
+NameCheck CheckName(const Line& l, const std::string& now, const NameSource& ns, PinResult& r, std::string& cur) {
+    if (!ns.on || l.official.empty() || now.empty() || now == "?") return kNameNone;
+    std::string nk; int id = 0;
+    if (!NameKey(l.kind, l.key, nk, id) || !ns.kinds.count(nk)) return kNameNone;
+    cur = rtx::names::Name(nk, id);
+    if (cur == l.official) return kNameOk;
+    if (cur.empty() && !ns.live) return kNameWithheld;
+    const int ok = cur.empty() ? rtx::health::kWarn : rtx::health::kFail;
+    const std::string what = cur.empty() ? "no longer named (was " + l.official + ")" : "is now " + cur + " (was " + l.official + ")";
+    if (r.ok == rtx::health::kPass) r.text = Label(l) + " " + what;
+    else r.text += "; name " + what;
+    if (ok == rtx::health::kFail || r.ok == rtx::health::kPass) r.ok = ok;
+    return kNameBad;
 }
 
 struct Memo { std::uint64_t gen = 0; std::wstring key; std::map<std::string, std::string> fp; };
@@ -270,7 +352,7 @@ std::string BuildLine(std::uint32_t stamp) {
     return l.expect;
 }
 
-void CheckContent(rtx::health::Run& run, const std::string& runtimeJson) {
+void CheckContent(rtx::health::Run& run, const std::string& runtimeJson, int namesWaitMs) {
     using namespace rtx::health;
     const char* G = "Content";
     {
@@ -279,24 +361,31 @@ void CheckContent(rtx::health::Run& run, const std::string& runtimeJson) {
     }
     const auto linesPtr = Lines();
     const auto& lines = *linesPtr;
-    struct Feat { int total = 0, pass = 0, worst = kPass, unchecked = 0, unrecorded = 0; std::vector<std::string> bad; };
+    struct Feat { int total = 0, pass = 0, worst = kPass, unchecked = 0, unrecorded = 0, names = 0, namesOk = 0, withheld = 0; std::vector<std::string> bad; };
     std::map<std::string, Feat> feats;
     std::set<std::string> recorded;
-    int total = 0, failed = 0;
+    int total = 0, failed = 0, namesPinned = 0, namesOk = 0, namesWithheld = 0;
+    const NameSource ns = NameSourceNow(namesWaitMs);
     for (const auto& l : lines) {
         if (!IsContentKind(l.kind)) continue;
         recorded.insert(l.kind + "\t" + l.key);
         const std::string now = FingerprintMemo(l.kind, l.key, WantOf(l.kind, l.expect));
-        const PinResult r = Compare(l, now);
+        PinResult r = Compare(l, now);
+        const int fieldsOk = r.ok;
+        std::string curName;
+        const NameCheck nc = CheckName(l, now, ns, r, curName);
+        if (nc != kNameNone) { ++namesPinned; if (nc == kNameOk) ++namesOk; else if (nc == kNameWithheld) ++namesWithheld; }
+        if (nc == kNameBad) run.Fact("pin." + l.kind + "." + l.key + ".official", l.official + " -> " + (curName.empty() ? std::string("(none)") : curName));
         ++total;
         if (r.ok == kFail) ++failed;
-        if (r.ok != kPass && r.ok != kUnchecked) run.Fact("pin." + l.kind + "." + l.key, l.expect + " -> " + (now.empty() ? std::string("(gone)") : now));
+        if (fieldsOk != kPass && fieldsOk != kUnchecked) run.Fact("pin." + l.kind + "." + l.key, l.expect + " -> " + (now.empty() ? std::string("(gone)") : now));
         std::set<std::string> panels;
         for (const auto& f : Split(l.features.empty() ? std::string("Unlabelled") : l.features, '|'))
             if (!f.empty()) panels.insert(Panel(f));
         for (const auto& p : panels) {
             Feat& ft = feats[p];
             ++ft.total;
+            if (nc != kNameNone) { ++ft.names; if (nc == kNameOk) ++ft.namesOk; else if (nc == kNameWithheld) ++ft.withheld; }
             if (r.ok == kPass) ++ft.pass;
             else if (r.ok == kUnchecked) ++ft.unchecked;
             else {
@@ -328,14 +417,20 @@ void CheckContent(rtx::health::Run& run, const std::string& runtimeJson) {
     }
     run.Fact("pins.content", std::to_string(total));
     run.Fact("pins.content.failed", std::to_string(failed));
+    run.Fact("pins.names.source", ns.source);
+    if (ns.on) run.Fact("pins.names", std::to_string(namesOk) + "/" + std::to_string(namesPinned) + (namesWithheld ? ", " + std::to_string(namesWithheld) + " withheld" : std::string()));
     for (const auto& kv : feats) {
         const Feat& ft = kv.second;
         int ok = ft.worst;
-        std::string d;
+        std::string d, nm;
+        if (ft.names) {
+            nm = "; " + std::to_string(ft.namesOk) + "/" + std::to_string(ft.names) + " names match";
+            if (ft.withheld) nm += ", " + std::to_string(ft.withheld) + " withheld by the second cache";
+        }
         if (ft.unchecked == ft.total) { ok = kUnchecked; d = "cache not readable"; }
-        else if (ft.bad.empty()) d = std::to_string(ft.pass) + "/" + std::to_string(ft.total) + " pins match";
+        else if (ft.bad.empty()) d = std::to_string(ft.pass) + "/" + std::to_string(ft.total) + " pins match" + nm;
         else {
-            d = std::to_string(ft.pass) + "/" + std::to_string(ft.total) + " match; ";
+            d = std::to_string(ft.pass) + "/" + std::to_string(ft.total) + " match" + nm + "; ";
             for (std::size_t i = 0; i < ft.bad.size() && i < 6; ++i) d += (i ? "; " : "") + ft.bad[i];
             if (ft.bad.size() > 6) d += "; +" + std::to_string(ft.bad.size() - 6) + " more";
         }
@@ -475,7 +570,7 @@ std::string CheckText(const std::wstring& manifest) {
     if (!manifest.empty()) UseFile(manifest);
     rtx::health::Run run;
     CheckCacheFormat(run);
-    CheckContent(run, {});
+    CheckContent(run, {}, 15000);
     return rtx::health::SummaryText(run.Json("", 0));
 }
 

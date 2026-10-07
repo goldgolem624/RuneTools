@@ -28,9 +28,9 @@
     332:  { vp: [2330], test: (V, P) => P(2330) >= 8, req: 'Holy Grail: Fisher Realm reached [varp 2330 >= 8]' },
     333:  { vb: [12078], test: (V) => V(12078) !== 0, req: 'Ring repaired with bittercap mushrooms in the Ancient Cavern (Barbarian Training) [object morph vb 12078 != 0]' },
     110:  { vb: [52651], test: (V) => V(52651) >= 35, req: 'Secrets of Amberfell: Amberfell reached [vb 52651 >= 35]' },
-    13:   { vb: [9663], test: (V) => V(9663) !== 0, req: 'Morytania ring log flag [vb 9663 != 0, named ach_if_it_bleeds in the script dump]' },
-    322:  { vb: [9663], test: (V) => V(9663) !== 0, req: 'Morytania ring log flag [vb 9663 != 0, named ach_if_it_bleeds in the script dump]' },
-    221:  { vb: [9663], test: (V) => V(9663) !== 0, req: 'Morytania ring log flag [vb 9663 != 0, named ach_if_it_bleeds in the script dump]' },
+    13:   { vb: [9663], test: (V) => V(9663) !== 0, req: 'Morytania access [vb 9663 != 0]' },
+    322:  { vb: [9663], test: (V) => V(9663) !== 0, req: 'Morytania access [vb 9663 != 0]' },
+    221:  { vb: [9663], test: (V) => V(9663) !== 0, req: 'Morytania access [vb 9663 != 0]' },
     1000: { vb: [12056, 9929, 12068, 12066], test: (V, P, x) => V(12056) >= 40 && !(x.staff === 0 && V(9929) < 2) && (V(12068) + V(12066)) === 5, req: 'A Fairy Tale II reached the Fairy Resistance stage, and a fairy staff in your backpack (or Fairy Very Wise met twice) [vb 12056 >= 40; item 9025 in backpack or vb 9929 >= 2; vb 12068 + vb 12066 = 5]' },
     20:   { vb: [61256], test: (V) => V(61256) !== 0, req: 'Fairy ring built in your house [vb 61256 != 0]' },
   };

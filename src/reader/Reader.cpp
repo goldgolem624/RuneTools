@@ -5317,7 +5317,7 @@ static const PanelOriginSpec kPanelOrigins[] = {
     { 1189, 3082, 3083, 0, 0, 0, true },   // Clue continue
     { 1186, 3082, 3083, 0, 0, 0, true },   // Server message dialog
     { 1552, 3096, 3097, 0, 0, 0, true },   // Serenity posts pose-select; the Agility plugin adds its own (2,16) on top
-    { 1603, 9102, 9103, 0, 0 },   // Input text
+    { 1603, 0, 0, 0, 0 },   // Input text -- no position var known yet
     { 1370, 3089, 3090, 0, 0, 0, true },   // Item Production content, always inside the 1371 frame (varcs 3089/3090)
     { 13,   3089, 3090, 0, 40, 0, true },  // Bank pin -- window varcs 3089/3090; off_top 40 keeps the earlier frame-based placement (not yet seen live)
     { 1466, 3166, 3167, 0, 0, 0, true },   // Skills; varc 3165 == 1 while open (draw gate for the XP bars)
@@ -5330,14 +5330,14 @@ static const PanelOriginSpec kPanelOrigins[] = {
     { 923,  3096, 3097, 0, 0, 0, true },   // Fish Flingers competition results -- position varcs 3096/3097
     { 919,  3047, 3048, 0, 0, 0, true },   // Fish Flingers live scoreboard -- varcs 3047/3048
     { 1222, 6463, 6464, 0, 0, 0, true },   // Well of Souls talent tree (Necromancy!) -- varcs 6463/6464 (central-overlay family)
-    { 660,  9121, 9122, 0, -9 },  // Material storage -- UNVERIFIED varp path (flip to its varcs once live-checked)
+    { 660,  0, 0, 0, -9 },  // Material storage -- no position var known yet
     { 656,  6310, 6311, 0, 0, 728, true }, // Museum / Training Weapons donation -- varcs 6310/6311, mount 1477:728 fallback
     { 691,  6463, 6464, 0, 0, 0, true },   // Relic power -- varcs 6463/6464 (central-overlay family)
     { 1594, 6463, 6464, 0, 0, 0, true },   // Shop (e.g. Ezreal's) -- varcs 6463/6464
     { 517,  5632, 5633, 0, 0, 0, true },   // Bank -- varcs 5632/5633
     { 190,  5846, 5847, 0, 0, 0, true },   // Quest -- varcs 5846/5847
     { 1092, 6463, 6464, 0, 0, 0, true },   // Lodestone network -- varcs 6463/6464
-    { 584,  10071, 10072, 0, 0 }, // DXP timer -- UNVERIFIED varp path (flip to its varcs once live-checked)
+    { 584,  0, 0, 0, 0 }, // DXP timer -- no position var known yet
     { 1473, 3040, 3041, 0, 0, 0, true },   // Inventory (backpack) -- varcs 3040/3041, read fresh from the hashmap each frame
     // Celtic-knot puzzle layouts: varcs 6310/6311; 1477 mount slot 728 as last-ditch fallback.
     { 394, 6310, 6311, 0, 0, 728, true }, { 519, 6310, 6311, 0, 0, 728, true }, { 525, 6310, 6311, 0, 0, 728, true },
@@ -10753,7 +10753,7 @@ std::string ReaderHealthJson(std::uint32_t pid, const std::string& runtimePinsJs
     {
         run.Add("Content", "content.cache", "Cache open", rtx::cache::IndexInfo(2).open ? kPass : kFail,
                 rtx::cache::IndexInfo(2).open ? rtx::cache::CacheRoot() : "config index not readable", "Every cache read");
-        rtx::pins::CheckContent(run, c.runtimePins);
+        rtx::pins::CheckContent(run, c.runtimePins, c.cli ? 15000 : 0);
         if (c.root > 0x10000) health_dailies(c, run);
     }
     if (c.root > 0x10000) health_live(c, run);

@@ -1,7 +1,7 @@
 // RuneToolsX panel: Murder on the Border quest guide (quest 490, Fort Forinthry).
 (function () {
 
-  // Progress varbit 52689 (cache quest config js5-2 archive 35 file 490): start value 5,
+  // Progress varbit 52689 QUEST_FORT_MAIN (cache quest config js5-2 archive 35 file 490): start value 5,
   // complete at 195. Requires quest 489 (New Foundations); 1 QP.
   const MOTB_PROG = 52689, MOTB_DONE = 195;
   // Quest start: Aster in the Fort Forinthry townhall -- npc 29809 at 3302,3571.
@@ -20,10 +20,10 @@
   const MOTB_MAKEX_CONTENT = 1370, MOTB_MAKEX_TITLE = 13, MOTB_MAKEX_START = 29;
   // Kitchen construction hotspots (3): per-spot 2-bit loc-morph varbits, 0 = no blueprint, 1 = plain, 2 = OPTIMAL
   // (loc 125242 'Optimal Construction hotspot'); one varbit unknown, so picked by ELIMINATION when neither known varbit reads 2.
-  const MOTB_HOT1 = 51675, MOTB_HOT1_TILE = [3315, 3564];   // vb 51675 [30:31]
-  const MOTB_HOT2 = 51674, MOTB_HOT2_TILE = [3313, 3565];   // vb 51674 [28:29]
-  const MOTB_HOT3 = 51677, MOTB_HOT3_TILE = [3319, 3567];   // vb 51677 [0:1] (the third locmorph, by elimination)
-  const MOTB_KITCHEN_VB = 33400;    // kitchen tier (vp 10762 [14:17]): 1 = Tier 1 built (flips with quest -> 20)
+  const MOTB_HOT1 = 51675, MOTB_HOT1_TILE = [3315, 3564];   // vb 51675 [30:31] PLAYER_FORT_BUILDING_KITCHEN_HOTSPOT_2
+  const MOTB_HOT2 = 51674, MOTB_HOT2_TILE = [3313, 3565];   // vb 51674 [28:29] PLAYER_FORT_BUILDING_KITCHEN_HOTSPOT_1
+  const MOTB_HOT3 = 51677, MOTB_HOT3_TILE = [3319, 3567];   // vb 51677 [0:1] PLAYER_FORT_BUILDING_KITCHEN_HOTSPOT_3
+  const MOTB_KITCHEN_VB = 33400;    // PLAYER_FORT_BUILDING_KITCHEN, kitchen tier (vp 10762 [14:17]): 1 = Tier 1 built (flips with quest -> 20)
   // The banquet portal (light blue, south of the well): loc 125244 "Murder on the Border", action
   const MOTB_PORTAL = 125244, MOTB_PORTAL_X = 3303, MOTB_PORTAL_Y = 3541;
   const MOTB_WELCOME1 = ['welcome to fort forinthry', 'very perceptive', 'say nothing'];
