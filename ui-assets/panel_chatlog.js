@@ -14,9 +14,10 @@
     if (!chatLogs[p]) chatLogs[p] = { seen: new Set(), pseq: 0, gid: 0, pkPlain: new Map(), ifPlain: new Map(), gmPlain: new Map(), lines: [] };
     return chatLogs[p];
   }
-  // Lines are matched across the sources by body and sender. The packet carries the bare name and
-  // the store the display name with its title ("Xajek" and "Xajek the Druid"), so one sender name
-  // containing the other counts as the same sender.
+  // Lines are matched across the sources by body and sender. The packet and the store carry the
+  // plain name (the store has the title only in its tagged form), the chatbox the display name with
+  // its title ("Xajek" and "Xajek the Druid"), so one sender name containing the other counts as the
+  // same sender.
   const chatSameName = (a, b) => { a = (a || '').toLowerCase(); b = (b || '').toLowerCase(); return !a || !b || a === b || a.indexOf(b) >= 0 || b.indexOf(a) >= 0; };
   function chatMark(map, body, name) {
     const list = map.get(body) || []; list.push({ name: name || '', t: Date.now() }); map.set(body, list);
@@ -31,7 +32,10 @@
     return true;
   }
   // Channel from the wire type id. Verified live: 109 = game/spam, 138 = broadcast news,
-  const CHAT_PKT_TYPES = { 0:'Game', 96:'Game', 98:'Game', 99:'Game', 109:'Game', 138:'Game', 2:'Public', 3:'Private', 6:'Private' };
+  // 100 trade and 132 duel requests carry a sender and no clan.
+  const CHAT_PKT_TYPES = { 0:'Game', 5:'Game', 96:'Game', 98:'Game', 99:'Game', 100:'Game', 103:'Game', 109:'Game', 122:'Game', 132:'Game', 137:'Game', 138:'Game', 144:'Game', 2:'Public', 3:'Private', 6:'Private' };
+  // Trade and duel requests read as one sentence with the sender: "NAME wishes to trade with you."
+  const chatNameSep = (type, body, nm) => (type === 100 || type === 132) && !body.startsWith(nm) ? ' ' : ': ';
   function chatClassifyPkt(type, name, chan) {
     if (CHAT_PKT_TYPES[type]) return CHAT_PKT_TYPES[type];
     if (chan) return 'Clan';
@@ -216,11 +220,12 @@
         const nm = chatNormSpace(String(m.name || '').replace(/<[^>]*>/g, '')).trim();
         const gbody = pr.plain;
         if (nm) {
-          pr.tokens.unshift({ text: nm + ': ', color: null });
-          pr.plain = nm + ': ' + pr.plain;
+          const sep = chatNameSep(m.type, pr.plain, nm);
+          pr.tokens.unshift({ text: nm + sep, color: null });
+          pr.plain = nm + sep + pr.plain;
         }
         if (bootPk) bootPk.add(gbody);
-        if (chatConsume(store.pkPlain, gbody, nm)) {          // the packet capture already had it: this one has the title and the colours
+        if (chatConsume(store.pkPlain, gbody, nm)) {          // the packet capture already had it: this one has the colours
           const hit = fresh.concat(store.lines.slice(0, 300)).find(l => l.src === 'pk' && l.body === gbody && chatSameName(l.pkname, nm) && !l.gmDone);
           if (hit) { hit.tokens = pr.tokens; hit.plain = pr.plain; hit.gmDone = true; hit.baseDone = true; chatSig = ''; }
           continue;
@@ -240,8 +245,9 @@
         const name = chatNormSpace(String(pk.name || '').replace(/<[^>]*>/g, '')).trim();
         const pbody = p.plain;
         if (name) {
-          p.tokens.unshift({ text: name + ': ', color: null });
-          p.plain = name + ': ' + p.plain;
+          const sep = chatNameSep(pk.type, p.plain, name);
+          p.tokens.unshift({ text: name + sep, color: null });
+          p.plain = name + sep + p.plain;
         }
         if (bootPk) bootPk.add(pbody);
         if (chatConsume(store.gmPlain, pbody, name)) continue;  // the game's own log already delivered it

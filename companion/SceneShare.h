@@ -16,8 +16,9 @@ inline void MakeSectionName(std::uint32_t pid, wchar_t (&out)[N]) {
     rtx::ipc::BuildName(out, kSectionPrefix, pid);
 }
 
-inline constexpr std::int16_t kHiddenBit = 0x100;   // Object::kind flag: loc hidden (sub+0xF8 bit 16),
-                                                     // how a depleted tree or a stump is switched off
+inline constexpr std::int16_t kHiddenBit = 0x100;   // Object::kind flag: loc hidden (sub+0xF8 bit 16,
+                                                     // how a depleted tree or a stump is switched off),
+                                                     // or a type-0 loc whose current LocType is NULL
 
 struct Object {
     std::int32_t config_id;   // loc config id (resolve name/actions from the cache)

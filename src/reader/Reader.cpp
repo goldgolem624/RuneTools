@@ -449,11 +449,15 @@ std::string read_target_env(HANDLE h, const wchar_t* var) {
 
 const char* status_label(int s) {
     switch (s) {
-        case 10: return "Logging in";
+        case 1:  return "Starting";
+        case 10: return "Login screen";
         case 20: return "Lobby";
+        case 23: return "Creating account";
         case 30: return "In-game";
+        case 35:
+        case 36: return "Reconnecting";
         case 37: return "Changing worlds";
-        case 40: return "Logging out";
+        case 40: return "Returning to lobby";
         default: return "";
     }
 }
@@ -2095,10 +2099,12 @@ constexpr std::uint32_t kOffRepKeyboard   = 0x2858;   // u64 ms, last key batch 
 // Client state that lives outside the var stores, from the engine op handlers (950-1):
 // CUTSCENE ops read [MainData+0x19A18]: +0x150 = current cutscene id, -1 when none.
 // CLIENTOPTION_GET (0x1401BE8F0): option objects at [[MainData+0x535D0]+0x2DA8 + id*8], value i32 at
-// +0x18 (option 39 is a byte), 44 options; the op adds 1 to option 28. Option names are not in the
-// client; the ids are what the settings scripts pass to CLIENTOPTION_GET/SET. (The op the export
-// calls TEXTINPUT_ISFOCUSED reads [[MainData+0x19FA8]+0x14], which client script 14944 feeds to
-// DATE_RUNEDAY_TODATE for an age check: that field is the account's date of birth, not a focus flag.)
+// +0x18 (option 39 is a byte), 44 options; the op adds 1 to option 28. Each object also holds its name
+// (char* +0x10, a literal in the client image) and range (i32 +0x1C min, +0x20 max; not on 39). Ids 16
+// and 17 share the name RemoveRoof: key by id, as the settings scripts do with CLIENTOPTION_GET/SET.
+// (The op the export calls TEXTINPUT_ISFOCUSED reads [[MainData+0x19FA8]+0x14], which client script
+// 14944 feeds to DATE_RUNEDAY_TODATE for an age check: that field is the account's date of birth, not
+// a focus flag.)
 std::string ClientStateJson(std::uint32_t pid) {
     auto ps = snap_proc(pid);
     if (!ps) return "{}";
@@ -3213,7 +3219,7 @@ namespace {
 
 struct RuntimeObj {
     int config_id, x, y, plane, kind;
-    bool hidden;              // the game has switched the loc off (depleted tree, dormant stump)
+    bool hidden;              // the game draws nothing for the loc (depleted tree, dormant stump, multiloc with no child)
     float bmin[3], bmax[3];   // live model world AABB (east,north,up); bmax.x==bmin.x = none
 };
 
@@ -4641,19 +4647,27 @@ std::string SceneJson(std::uint32_t pid, int obj_range) {
                     }
                     if (nc) npcs.push_back(',');
                     int reportId = (meta.id >= 0) ? meta.id : cfg;
-                    // Facing in degrees (-1 unreadable) from the yaw quaternion sec+0x1E0 = w, sec+0x1E8 = y:
-                    // heading = 2 * atan2(-y, w). Not 0x1D0/0x1D8, which lags by one step.
+                    // Facing in degrees, 0 = north, 90 = east, -1 unreadable. While a turn runs (f32 sec+0x1EC >
+                    // i32 sec+0x1F0) report its target, the yaw quaternion y sec+0x1E0 / w sec+0x1E8: 2*atan2(-w, y).
+                    // Otherwise report the drawn heading of the entity node (y ep+0xE4, w ep+0xEC): 2*atan2(y, w)
+                    // + 180. NPCs that face a direction without turning keep identity values in the sec
+                    // quaternions; only the node has them.
                     int face = -1;
                     {
-                        auto qw = rpm<float>(h, *sec + 0x1E0);
-                        auto qy = rpm<float>(h, *sec + 0x1E8);
-                        if (qw && qy && (*qw != 0.0f || *qy != 0.0f)) {
-                            double deg = 2.0 * std::atan2(-static_cast<double>(*qy),
-                                                          static_cast<double>(*qw))
-                                         * 180.0 / 3.14159265358979323846;
-                            deg = std::fmod(deg, 360.0);
-                            if (deg < 0) deg += 360.0;
-                            face = static_cast<int>(deg + 0.5) % 360;
+                        auto toDeg = [](double r) { double d = std::fmod(r * 180.0 / 3.14159265358979323846, 360.0);
+                                                    if (d < 0) d += 360.0; return static_cast<int>(d + 0.5) % 360; };
+                        const float tl = rpm<float>(h, *sec + rtx::scn::kTurnLen).value_or(0.f);
+                        const int   td = rpm<std::int32_t>(h, *sec + rtx::scn::kTurnDone).value_or(0);
+                        if (!(tl > (float)td)) {
+                            float q[4] = {};
+                            if (rpm_bytes(h, *ep + rtx::scn::kNodeYaw, q, sizeof(q))) {
+                                const double n = (double)q[1] * q[1] + (double)q[3] * q[3];
+                                if (n > 0.9 && n < 1.1) face = toDeg(2.0 * std::atan2((double)q[1], (double)q[3]) + 3.14159265358979323846);
+                            }
+                        }
+                        if (face < 0) {
+                            auto y = rpm<float>(h, *sec + rtx::scn::kFaceTargetY), w = rpm<float>(h, *sec + rtx::scn::kFaceTargetW);
+                            if (y && w && (*y != 0.0f || *w != 0.0f)) face = toDeg(2.0 * std::atan2(-(double)*w, (double)*y));
                         }
                     }
                     int npcPlane = rpm<std::int32_t>(h, *sec + rtx::scn::kPlane).value_or(0);   // shared actor plane
@@ -6167,7 +6181,7 @@ std::string HoverEntityJson(std::uint32_t pid) {
         constexpr std::uint64_t kContainer = rtx::scn::kContainer, kActiveIdx = 0x70, kEntryArr = 0x58,
                                 kEntryWv = 0x8, kVecBegin = 0x138, kVecEnd = 0x140,
                                 kSecPtr = rtx::scn::kSecPtr, kType = rtx::scn::kType, kUid = rtx::scn::kUid,
-                                kPosX = 0x270, kPosY = 0x278, kNpcCfg = 0x1080;
+                                kPosX = 0x270, kPosY = 0x278;
         auto cont = rpm<std::uint64_t>(h, *root + kContainer);
         auto idx  = (cont && *cont > 0x10000) ? rpm<std::int32_t>(h, *cont + kActiveIdx) : std::nullopt;
         auto arr  = (cont && *cont > 0x10000) ? rpm<std::uint64_t>(h, *cont + kEntryArr) : std::nullopt;
@@ -6191,7 +6205,7 @@ std::string HoverEntityJson(std::uint32_t pid) {
                     float fy = rpm<float>(h, *sec + kPosY).value_or(0);
                     int plane = rpm<std::int32_t>(h, *sec + rtx::scn::kPlane).value_or(0);
                     if (plane < 0 || plane > 3) plane = 0;
-                    int cfg = (t == 1) ? rpm<std::int32_t>(h, *sec + kNpcCfg).value_or(-1) : -1;
+                    int cfg = (t == 1) ? rpm<std::int32_t>(h, *sec + rtx::scn::kNpcCur).value_or(-1) : -1;
                     char enm[40] = {0};
                     rpm_bytes(h, *sec + 0xB8, enm, sizeof(enm) - 1);
                     std::string sname;
@@ -6950,9 +6964,10 @@ IfaceHit InterfaceLocate(std::uint32_t pid, int x, int y, int w, int h) {
 }
 
 // The game's own message store, which every chat line goes through whether or not the chat window
-// shows it. The store keeps its messages in a hash map keyed by (id - 1); each record carries the
-// ids either side of it, the client clock and the wall clock, the type and channel, the sender in
-// three forms (with tags, with tags again, and plain), the clan or group name, and the text.
+// shows it. The store keeps its messages in a hash map keyed by id (node +0x00 == +0x10); +0x08/+0x0C
+// next/previous id; +0x14 client clock, +0x18 wall clock; +0x20 type; +0x24 news sub-kind, not a
+// channel; sender as displayed with icon and title markup +0x28, with icon only +0x40, plain +0x58;
+// clan or group name +0x70; +0x88 probably a quickchat phrase id, else -1; text +0x90.
 // Layout read from the routine that writes it, and checked against the running game.
 std::string chat_store_json(HANDLE h, std::uint64_t root, int want) {
     auto r64 = [&](std::uint64_t a){ return rpm<std::uint64_t>(h, a).value_or(0); };
@@ -7923,8 +7938,8 @@ bool BuildOverlayFrame(std::uint32_t pid, bool want_players, bool want_npcs,
             bool want = (type == 2) ? want_players : want_npcs;
             if (!want) continue;
             if (interactable && type == 1) {
-                int cfg = rpm<std::int32_t>(h, *sec + kConfig).value_or(-1);
-                if (rtx::cache::GetNpc(cfg).actions.empty()) continue;
+                int cur = rpm<std::int32_t>(h, *sec + rtx::scn::kNpcCur).value_or(-1);
+                if (cur < 0 || rtx::cache::GetNpc(cur).actions.empty()) continue;
             }
             OverlayPoint p;
             p.wx = *fx; p.wy = *fy; p.wz = fz.value_or(0);
@@ -8628,7 +8643,7 @@ std::string PlayerInfoJson(std::uint32_t pid) {
                 }
                 int ecfg = -1;
                 if (ety == 1) {                                   // NPC: prefer cache name
-                    ecfg = rpm<std::int32_t>(h, *sec + 0x1080).value_or(-1);
+                    ecfg = rpm<std::int32_t>(h, *sec + rtx::scn::kNpcCur).value_or(-1);
                     auto m = rtx::cache::GetNpc(ecfg);
                     if (!m.name.empty()) name2 = m.name;
                 }
@@ -9377,17 +9392,18 @@ void health_data(HCtx& c, rtx::health::Run& run) {
     const double secs = (double)(tB - tA) / 1000.0;
     // root and status
     {
-        static const int kStates[] = { 10, 20, 30, 37, 40 };
+        static const int kStates[] = { 0, 1, 10, 20, 23, 30, 35, 36, 37, 40 };
         const bool known = std::find(std::begin(kStates), std::end(kStates), c.status) != std::end(kStates);
         int ok = known ? kPass : kFail;
         std::string d = "status " + std::to_string(c.status) + (known ? "" : " (not a known login state: status offset moved?)");
+        if (c.status == 0) { ok = kWarn; d += " (boot state; a moved offset also reads 0)"; }
         if (c.status == 30) {
             if (worldA < 1 || worldA > 300 || worldA != worldB) { ok = kFail; d += ", world " + std::to_string(worldA) + "/" + std::to_string(worldB) + " (world chain moved?)"; }
             else d += ", world " + std::to_string(worldA);
         }
         if (kOffAccount != kOffStatus + 8) { ok = kWarn; d += "; account no longer sits at status + 8"; }
-        if (c.status != 30 && c.localSec) { ok = kFail; d += "; the local player is in the scene while the status says otherwise (status offset moved?)"; }
-        run.Add(G, "data.root", "Root and status", ok, d, "Everything", "status in 10/20/30/37/40", std::to_string(c.status), "code.sig.main-anchor");
+        if (c.status != 30 && c.status != 35 && c.status != 36 && c.status != 37 && c.localSec) { ok = kFail; d += "; the local player is in the scene while the status says otherwise (status offset moved?)"; }
+        run.Add(G, "data.root", "Root and status", ok, d, "Everything", "status in 0/1/10/20/23/30/35/36/37/40", std::to_string(c.status), "code.sig.main-anchor");
         run.Fact("data.status", std::to_string(c.status));
     }
     // clocks
@@ -9599,12 +9615,12 @@ void health_data(HCtx& c, rtx::health::Run& run) {
         if (st <= 0x10000) { ok = kFail; d = "store not readable"; }
         else {
             const float mx = rpm<float>(h, st + 0x46D8).value_or(-9), my = rpm<float>(h, st + 0x46DC).value_or(-9);
-            const int mods = rpm<std::uint8_t>(h, st + 0x4F0).value_or(0xFF);
+            const std::uint32_t mods = rpm<std::uint32_t>(h, st + 0x4F0).value_or(0xFFFFFFFFu);
             int lw = 0, lh = 0, gx = 0, gy = 0, gw = 0, gh = 0;
             read_gameview_rect(h, root, gx, gy, gw, gh, &lw, &lh);
             d = "mouse " + std::to_string((int)mx) + "," + std::to_string((int)my) + ", modifiers " + std::to_string(mods);
             if (!(mx >= -1.f && my >= -1.f && mx < 32768.f && my < 32768.f) || (lw > 0 && (mx > lw + 4 || my > lh + 4))) { ok = kFail; d += " (outside the window)"; }
-            if (mods >= 8) { ok = kFail; d += " (modifier byte)"; }
+            if (mods > 0xF) { ok = kFail; d += " (modifier word)"; }
         }
         const std::uint64_t mm = rpm<std::uint64_t>(h, root + rtx::md::kMapMgr).value_or(0);
         if (mm > 0x10000) {
@@ -9822,6 +9838,7 @@ void health_scene(HCtx& c, rtx::health::Run& run) {
     std::map<int, int> types;
     int npcs = 0, npcNamed = 0, players = 0, playersOk = 0, motionOk = 0, motionN = 0, combatN = 0, combatOk = 0, ovN = 0, ovOk = 0;
     int fxN = 0, fxOk = 0; std::string npcBad, fxBad;
+    int curOk = 0, curMorphed = 0, curBadN = 0; std::string curBad;
     const float px = c.localSec ? rpm<float>(h, c.localSec + rtx::scn::kPosX).value_or(0) : 0.f;
     const float py = c.localSec ? rpm<float>(h, c.localSec + rtx::scn::kPosY).value_or(0) : 0.f;
     const int seqMax = rtx::cache::IndexInfo(20).maxArchive;
@@ -9831,10 +9848,12 @@ void health_scene(HCtx& c, rtx::health::Run& run) {
         ++types[t];
         if (t == 1 || t == 2) {
             const int anim = rpm<std::int32_t>(h, sec + 0xA90).value_or(-2);
-            const float qw = rpm<float>(h, sec + 0x1E0).value_or(0), qx = rpm<float>(h, sec + 0x1E4).value_or(0), qy = rpm<float>(h, sec + 0x1E8).value_or(0);
-            const float norm = qw * qw + qx * qx + qy * qy;
+            const float qy = rpm<float>(h, sec + rtx::scn::kFaceTargetY).value_or(0), qz = rpm<float>(h, sec + 0x1E4).value_or(0), qw = rpm<float>(h, sec + rtx::scn::kFaceTargetW).value_or(0);
+            const float norm = qy * qy + qz * qz + qw * qw;
+            float nq[4] = {};
+            const float nnorm = rpm_bytes(h, es.first + rtx::scn::kNodeYaw, nq, sizeof(nq)) ? nq[0] * nq[0] + nq[1] * nq[1] + nq[2] * nq[2] + nq[3] * nq[3] : 0.f;
             ++motionN;
-            if ((anim == -1 || (anim >= 0 && (seqMax < 0 || anim <= (seqMax + 1) * 128))) && norm > 0.96f && norm < 1.04f) ++motionOk;
+            if ((anim == -1 || (anim >= 0 && (seqMax < 0 || anim <= (seqMax + 1) * 128))) && norm > 0.96f && norm < 1.04f && nnorm > 0.96f && nnorm < 1.04f) ++motionOk;
             const std::uint64_t ov = rpm<std::uint64_t>(h, sec + rtx::scn::kOverhead).value_or(0);
             if (ov > 0x10000) {
                 ++ovN;
@@ -9856,6 +9875,14 @@ void health_scene(HCtx& c, rtx::health::Run& run) {
             }
             if (match || live.empty()) ++npcNamed;
             else if (npcBad.size() < 80) npcBad += " " + std::to_string(cfg) + "='" + sec_name(h, sec) + "'";
+            {   // the current type id against the morph evaluation of the base id
+                const int cur = rpm<std::int32_t>(h, sec + rtx::scn::kNpcCur).value_or(-2);
+                bool hid = false;
+                const rtx::cache::NpcMeta rm = resolve_npc(h, c.root, cfg, &hid);
+                if (cur != cfg) ++curMorphed;
+                if (hid ? cur == -1 : cur == (rm.id >= 0 ? rm.id : cfg)) ++curOk;
+                else if (curBadN < 4) { curBad += " " + std::to_string(cfg) + "->" + std::to_string(cur); ++curBadN; }
+            }
             const int lp = rpm<std::int32_t>(h, sec + rtx::scn::kLpCur).value_or(-1), lpMax = rpm<std::int32_t>(h, sec + rtx::scn::kLpMax).value_or(-1);
             const int target = rpm<std::int32_t>(h, sec + rtx::scn::kNpcTarget).value_or(-2);
             std::string sp; int bar = -1; actor_overhead_json(h, sec, sp, bar);
@@ -9903,10 +9930,19 @@ void health_scene(HCtx& c, rtx::health::Run& run) {
     run.Add(G, "scene.npcs", "NPC names", npcs == 0 ? kUnchecked : (npcNamed * 10 >= npcs * 9 ? kPass : kFail),
             npcs == 0 ? "no NPCs nearby" : std::to_string(npcNamed) + "/" + std::to_string(npcs) + " config ids name the live NPC" + (npcBad.empty() ? "" : "; e.g." + npcBad),
             "NPC labels|Boss info|Slayer|Plugins", "90 %", "", "scene.types");
+    {
+        const bool curPass = curOk * 10 >= npcs * 9;
+        run.Add(G, "scene.npctype", "NPC current type", npcs == 0 ? kUnchecked : (curPass ? kPass : kWarn),
+                npcs == 0 ? std::string("no NPCs nearby") :
+                std::to_string(curOk) + "/" + std::to_string(npcs) + " current type ids at sec+" + hx(rtx::scn::kNpcCur) + " agree with the morph evaluation, " +
+                std::to_string(curMorphed) + " differ from the base id" + (curPass ? "" : " (sec+" + hx(rtx::scn::kNpcCur) + " disagrees with the morph evaluation)") +
+                (curBad.empty() ? "" : "; e.g." + curBad),
+                "NPC hover ids|Interactable NPCs|Interaction target", "90 %", std::to_string(curOk) + "/" + std::to_string(npcs), "scene.types");
+    }
     run.Add(G, "scene.players", "Players", players == 0 ? kUnchecked : (playersOk == players ? kPass : kFail),
             std::to_string(playersOk) + "/" + std::to_string(players) + " with a clean name, combat level and plane", "Player labels|Nameplates", "", "", "scene.types");
     run.Add(G, "scene.motion", "Animation and facing", motionN == 0 ? kUnchecked : (motionOk * 10 >= motionN * 9 ? kPass : kFail),
-            std::to_string(motionOk) + "/" + std::to_string(motionN) + " actors with a valid animation and a unit facing", "Tick timers by animation|Facing arrows", "", "", "scene.types");
+            std::to_string(motionOk) + "/" + std::to_string(motionN) + " actors with a valid animation and a unit facing (turn target and entity node)", "Tick timers by animation|Facing arrows", "", "", "scene.types");
     run.Add(G, "scene.npccombat", "NPC life points", combatN == 0 ? kUnchecked : (combatOk * 10 >= combatN * 9 ? kPass : kFail),
             combatN == 0 ? "no NPC with a health bar" : std::to_string(combatOk) + "/" + std::to_string(combatN) + " health bars agree with life points",
             "Boss HP|Combat log|NPC HP labels", "", "", "scene.types");
@@ -9919,8 +9955,9 @@ void health_scene(HCtx& c, rtx::health::Run& run) {
     // actor's newest entry (its true tile) sits near where it is drawn. A runner covers 2 tiles a tick
     // and is drawn up to 2 ticks behind, so 4 tiles; a moved layout reads tiles far off or none. Fewer
     // than 3 moving actors are too few to hold to 90 %: one runner at the edge would fail the row.
+    // Steps leave from the front, so the read cursor stays at begin and the count is (write - read) / stride.
     {
-        int total = 0, routes = 0, moving = 0, close = 0;
+        int total = 0, routes = 0, queueOk = 0, moving = 0, close = 0;
         for (const auto& es : secs) {
             if (total >= 300) break;
             const std::uint64_t sec = es.second;
@@ -9935,6 +9972,9 @@ void health_scene(HCtx& c, rtx::health::Run& run) {
             const std::uint64_t wr = rpm<std::uint64_t>(h, mm + rtx::scn::kRouteWrite).value_or(0);
             if (beg <= 0x10000 || end < beg || end - beg != 21 * rtx::scn::kRouteStride || wr < beg || wr > end) continue;
             ++routes;
+            const std::uint64_t rd = rpm<std::uint64_t>(h, mm + rtx::scn::kRouteRead).value_or(0);
+            const int cnt = rpm<std::int32_t>(h, mm + rtx::scn::kRouteCount).value_or(-1);
+            if (rd == beg && cnt >= 0 && cnt <= 21 && (std::uint64_t)cnt == (wr - rd) / rtx::scn::kRouteStride) ++queueOk;
             const int tx = (int)(fx / 512.f), ty = (int)(fy / 512.f);
             int ttx = tx, tty = ty;
             if (!actor_true_tile(h, sec, ttx, tty)) continue;
@@ -9942,16 +9982,21 @@ void health_scene(HCtx& c, rtx::health::Run& run) {
             if (std::abs(ttx - tx) <= 4 && std::abs(tty - ty) <= 4) ++close;
         }
         const bool routesOk = routes * 10 >= total * 9;
+        const bool queuesOk = queueOk * 10 >= routes * 9;
         const bool few = moving > 0 && moving < 3 && close < moving;
-        const bool ok = routesOk && (moving == 0 || few || close * 10 >= moving * 9);
+        const bool moveOk = routesOk && (moving == 0 || few || close * 10 >= moving * 9);
+        const bool ok = moveOk && queuesOk;
         const int st = total == 0 ? kUnchecked : !ok ? kFail : (routesOk && few) ? kUnchecked : kPass;
         run.Add(G, "scene.route", "Actor true tile", st,
                 total == 0 ? std::string("no players or NPCs in the scene") :
                 std::to_string(routes) + "/" + std::to_string(total) + " actors carry a movement route at sec+" + hx(rtx::scn::kMoveMgr) + ", " +
+                std::to_string(queueOk) + "/" + std::to_string(routes) + " queues consistent, " +
                 std::to_string(close) + "/" + std::to_string(moving) + " moving within 4 tiles of where they are drawn" +
-                (few ? " (too few moving to judge)" : ok ? "" : " (route object or entry layout moved?)"),
+                (few ? " (too few moving to judge)" : moveOk ? "" : " (route object or entry layout moved?)") +
+                (queuesOk ? "" : " (read cursor or count moved?)"),
                 "True tile overlay|Plugins scene API", "90 %",
-                std::to_string(routes) + "/" + std::to_string(total) + " routes, " + std::to_string(close) + "/" + std::to_string(moving) + " near", "scene.types");
+                std::to_string(routes) + "/" + std::to_string(total) + " routes, " + std::to_string(queueOk) + "/" + std::to_string(routes) + " queues, " +
+                std::to_string(close) + "/" + std::to_string(moving) + " near", "scene.types");
     }
     // projection: the local player lands near the middle of the view
     {
@@ -9993,6 +10038,52 @@ void health_scene(HCtx& c, rtx::health::Run& run) {
             } else { ok = kFail; d = "terrain snapshot failed"; }
         }
         run.Add(G, "scene.terrain", "Terrain heights", ok, d, "Tile markers|Ground overlays|In-frame markers", "within 1 unit", "", "player.registry");
+    }
+    // world grid: the worldView owns it on the static map, which spans the whole world, and the
+    // player's region object points back at its worldView and its own mapsquare
+    {
+        int ok = kUnchecked; std::string d = "no local player", got;
+        const std::uint64_t wv = c.wv;
+        if (wv > 0x10000 && c.localSec) {
+            const std::uint64_t mgr = rpm<std::uint64_t>(h, wv + rtx::scn::kWvGrid).value_or(0);
+            if (rpm<std::uint64_t>(h, wv + rtx::scn::kMapDef).value_or(0) != 0) {
+                ok = kUnchecked;
+                d = "instanced worldView, grid owner " + (mgr == wv ? std::string("self") : hx(mgr)) + " (instance layout not verified)";
+            }
+            else if (mgr != wv) { ok = kFail; d = "grid owner [wv+" + hx(rtx::scn::kWvGrid) + "] is " + hx(mgr) + ", not the worldView (grid moved?)"; }
+            else {
+                ok = kPass;
+                std::int32_t b[4] = { -1, -1, -1, -1 };
+                rpm_bytes(h, mgr + rtx::scn::kGridMin, b, sizeof(b));
+                got = std::to_string(b[0]) + "," + std::to_string(b[1]) + ".." + std::to_string(b[2]) + "," + std::to_string(b[3]);
+                d = "self, bounds " + got;
+                const int rx = (int)(rpm<float>(h, c.localSec + rtx::scn::kPosX).value_or(0) / 512.f) >> 6;
+                const int ry = (int)(rpm<float>(h, c.localSec + rtx::scn::kPosY).value_or(0) / 512.f) >> 6;
+                const std::string ms = std::to_string(rx) + "," + std::to_string(ry);
+                if (b[0] != 0 || b[1] != 0 || b[2] != 98 || b[3] != 198) { ok = kFail; d += " (expected 0,0..98,198)"; }
+                else if (rx < b[0] || rx > b[2] || ry < b[1] || ry > b[3]) { ok = kFail; d += ", player mapsquare " + ms + " outside the grid"; }
+                else {
+                    const std::uint64_t rows = rpm<std::uint64_t>(h, mgr + rtx::scn::kGridRows).value_or(0);
+                    const std::uint64_t col = rows > 0x10000 ? rpm<std::uint64_t>(h, rows + (std::uint64_t)(rx - b[0]) * 0x18).value_or(0) : 0;
+                    const std::uint64_t region = col > 0x10000 ? rpm<std::uint64_t>(h, col + (std::uint64_t)(ry - b[1]) * 0x18 + 8).value_or(0) : 0;
+                    if (region <= 0x10000) { ok = kFail; d += ", no region object at mapsquare " + ms; }
+                    else {
+                        const std::uint64_t back = rpm<std::uint64_t>(h, region + rtx::scn::kRegionWv).value_or(0);
+                        const int qx = rpm<std::int32_t>(h, region + rtx::scn::kRegionRx).value_or(-1), qy = rpm<std::int32_t>(h, region + rtx::scn::kRegionRy).value_or(-1);
+                        if (back != wv || qx != rx || qy != ry) {
+                            ok = kFail;
+                            d += ", region at " + ms + " names worldView " + hx(back) + ", mapsquare " + std::to_string(qx) + "," + std::to_string(qy) + " (region layout moved?)";
+                        } else d += ", region back reference";
+                    }
+                }
+                d += "; +" + hx(rtx::scn::kMapDef) + " = 0 (not instanced)";
+                if (rpm<std::uint64_t>(h, wv + rtx::scn::kWvBox).value_or(0) != wv) {
+                    if (ok == kPass) ok = kWarn;
+                    d += "; [wv+" + hx(rtx::scn::kWvBox) + "] is not the worldView (loc menu box moved?)";
+                }
+            }
+        }
+        run.Add(G, "scene.grid", "World grid", ok, d, "Terrain heights|Tile markers", "0,0..98,198", got, "scene.offsets");
     }
     // live scenery against the cache's map placements (reader side, works from the command line)
     {

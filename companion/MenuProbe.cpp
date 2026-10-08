@@ -1,5 +1,5 @@
 // Right-click menu probe rvas: string-init 0x161C10, clear(bool) 0x164880, add 0x160AB0, finalize 0x1661E0, item decoder 0x2DCDF0. Poll() reads on the companion thread while ApplyOrder writes on the game thread, so lane reads can tear.
-// mgr+0x90/+0x98 entries: 16-byte {action object*, target string*}, REVERSE display order. mgr+0x1380/+0x1388 stride 0x2E8 hover-target list; subset lanes +0x0d30 all-but-Cancel, +0x06e0 targeted; hover block +0x000 = entity handle ((x<<16)|y world object, index actor). Action object: +0x08 refcount, +0x0c = 1, +0x20 EASTL target, +0x38 EASTL verb.
+// mgr+0x90/+0x98 entries: 16-byte {control block*, entry*}, entry = control block + 0x20 unless menus merge (see kRecTarget), REVERSE display order. mgr+0x1380/+0x1388 stride 0x2E8 hover-target list; subset lanes +0x0d30 all-but-Cancel, +0x06e0 targeted; hover block +0x000 = entity handle ((x<<16)|y world object, index actor). Control block: +0x08 refcount, +0x0c = 1, +0x20 EASTL target, +0x38 EASTL verb.
 
 #include "SceneOffsets.h"
 #include "MenuProbe.h"
@@ -207,12 +207,12 @@ rtx::menu::Share* g_share = nullptr;
 constexpr std::uint64_t kEntriesBegin = 0x90;
 constexpr std::uint64_t kEntriesEnd   = 0x98;
 constexpr std::uint64_t kRecSize      = 16;
-// Read the record's own target (+8); the action object's copy at +0x20 diverges when menus merge.
+// Read the target through the record's entry (+8); the control block's +0x20 diverges from it when menus merge.
 constexpr std::uint64_t kRecTarget    = 8;
 constexpr std::uint64_t kObjTarget    = 0x20;
 constexpr std::uint64_t kObjVerb      = 0x38;
 
-// Record qword 1 = display object: target +0x00, verb +0x18, op index +0x50, class tag +0x38 (priority at tag+0x40); priority < 1000 rows are re-inserted at top each tick.
+// Record qword 1 = display object: target +0x00, verb +0x18, +0x4C/+0x50 = tile x/z on loc and walk rows (other row kinds not read), class tag +0x38 (priority at tag+0x40); priority < 1000 rows are re-inserted at top each tick.
 constexpr std::uint64_t kDispTag  = 0x38;
 constexpr std::uint64_t kTagPrio  = 0x40;
 constexpr std::int32_t  kPromoted = 1000;
@@ -567,7 +567,9 @@ int RuleOrder(std::uint64_t begin, int n, const int* rank, const bool* fixedSlot
 }
 
 
-// Gated to the interface demoted class (1007); world demoted classes (1002/1003) have no proven
+// Gated to the interface demoted class (1007). Loc classes 1001/1002 have ordinary twins 6/7 with the
+// same click callable, which the game only uses inside the box flagged at wv+0xE8428 (set by server
+// packet 216; the swap has not been observed); 1003 not examined.
 // kDemotedIface is declared with kPromoted above.
 
 struct ClassObs {
@@ -838,15 +840,15 @@ void DumpHoverSlots(std::uint64_t mgr) {
         if (ReadEastl(obj + kObjVerb, verb, sizeof(verb), &hp) <= 0) continue;
         std::uint64_t tag = 0;
         std::int32_t  prio = 0;
-        // Op index lives in the record (display +0x50), separate from the class.
+        // Display +0x50 = tile z on loc and walk rows (other row kinds not read).
         std::uint64_t q1 = 0;
-        std::int32_t  op = -1;
-        if (Rd(rec + kRecTarget, &q1, 8) && q1) Rd(q1 + 0x50, &op, 4);
+        std::int32_t  z = -1;
+        if (Rd(rec + kRecTarget, &q1, 8) && q1) Rd(q1 + 0x50, &z, 4);
         if (EntryTag(rec, tag, prio))
-            std::snprintf(top[t], sizeof(top[t]), "%s(p%d op%d c%llx)", verb, (int)prio, (int)op,
+            std::snprintf(top[t], sizeof(top[t]), "%s(p%d z%d c%llx)", verb, (int)prio, (int)z,
                           (unsigned long long)(tag & 0xFFFFFF));
         else
-            std::snprintf(top[t], sizeof(top[t]), "%s(p? op%d)", verb, (int)op);
+            std::snprintf(top[t], sizeof(top[t]), "%s(p? z%d)", verb, (int)z);
     }
     const std::uint32_t pins = g_share ? g_share->pinCount : 0;
 
@@ -886,10 +888,11 @@ void DumpHoverSlots(std::uint64_t mgr) {
 // of +0x90 and appends them on top, re-sorts, then copies the top rows into the left-click slots
 // (+0x13f0 = top, +0x1400 = second, +0x13e0 = top or second by a setting) through a refcounted
 // assign helper. That is why a demoted rule row ("Deposit all fish", class 1001) never became the
-// default and "Walk here" jumped above it. Changing the class is not an option for world objects
-// (the class selects which option is sent), so instead, after the snapshot, the rule's top row is
-// moved to the top of +0x90 (a permutation of whole records, refcount neutral) and the slots are
-// re-assigned with the game's own helper, found by scanning the snapshot body for its two calls.
+// default and "Walk here" jumped above it. Changing the class is not an option for NPC, player and
+// ground-item rows (the class selects which option is sent), so instead, after the snapshot, the
+// rule's top row is moved to the top of +0x90 (a permutation of whole records, refcount neutral) and
+// the slots are re-assigned with the game's own helper, found by scanning the snapshot body for its
+// two calls.
 typedef void(__fastcall* Assign_t)(std::uint64_t slot, std::uint64_t src);
 Assign_t g_assign = nullptr;
 
@@ -1247,7 +1250,7 @@ void Poll() {
         if (v.stride && span % v.stride == 0)
             Log("        = %llu entries of 0x%llx",
                 (unsigned long long)(span / v.stride), (unsigned long long)v.stride);
-        // 16-byte records = { action object*, line-string* }; both pointers are followed.
+        // 16-byte records = { control block*, entry* (target string first) }; both pointers are followed.
         if (span % 16 == 0 && span <= 16 * 64) {
             Log("        = %llu records of 16", (unsigned long long)(span / 16));
             for (std::uint64_t i = 0; i * 16 < span; ++i) {
