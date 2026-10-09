@@ -40,7 +40,9 @@ struct ItemDef {
     std::vector<int> varobjs;
 };
 
-// Decodes one item def. stop_op receives the opcode that ended the decode early (0 = clean end).
-ItemDef DecodeItem(int id, std::vector<std::uint8_t> file_bytes, int* stop_op = nullptr);
+// Decodes one item def. stop_op receives what ended the decode early: 0 = clean end, 1..255 = that
+// opcode is unknown, kStop* = the record did not end the way a clean one does. last_op receives the
+// last opcode read before the stop (-1 when none).
+ItemDef DecodeItem(int id, std::vector<std::uint8_t> file_bytes, int* stop_op = nullptr, int* last_op = nullptr);
 
 }  // namespace rtx::cache

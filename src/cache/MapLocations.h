@@ -24,7 +24,9 @@ struct LocPlacement {
 };
 
 // Decode a MAPSV2 LOCATIONS file: id-delta loop, per-id position-delta loop, attribute byte,
-// extra block when attribute bit 0x80 is set.
-std::vector<LocPlacement> DecodeMapLocations(std::vector<std::uint8_t> file_bytes);
+// extra block when attribute bit 0x80 is set. `stop` (optional) receives 0 when the file was
+// consumed exactly up to its terminator, else kStopOverrun (ran out before it) or kStopTrailing
+// (bytes left after it), see InputStream.h.
+std::vector<LocPlacement> DecodeMapLocations(std::vector<std::uint8_t> file_bytes, int* stop = nullptr);
 
 }  // namespace rtx::cache

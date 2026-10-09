@@ -6,6 +6,7 @@
 // a copy of the object whose target ends in our text. Nothing of the game's is written to and
 // no game memory is allocated: the script lays the longer string out itself, in its own font.
 
+#include <cstddef>
 #include <cstdint>
 
 namespace rtx::tooltip {
@@ -20,5 +21,8 @@ void Uninstall();
 // so `slot` and `comp` key either. For an NPC both are 0 and `ref`, its index in the scene, says
 // which; ref = -1 leaves it out. on = false appends nothing.
 void Update(bool on, std::int32_t slot, std::uint32_t comp, std::int32_t ref, const char* text);
+
+// One boot record check line about the hover object layout, for the log; false when nothing new.
+bool TakeLog(char* out, std::size_t cap);
 
 }  // namespace rtx::tooltip

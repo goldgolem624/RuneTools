@@ -2,6 +2,7 @@
 #include "Bridge.h"
 #include "Companion.h"
 #include "GameUi.h"             // in-game window UI layer (off-screen view + shares)
+#include "HealthAuto.h"         // the health check's automatic run (new exe, cache update)
 #include "Overlay.h"            // QuiesceMarkers (stop the in-frame layer before teardown)
 #include "WikiBrowser.h"        // in-client wiki pane (docked child window, wiki-locked)
 #include "Markers.h"            // configurable mark/remove-tile keybinds
@@ -1025,6 +1026,7 @@ void EnsureClient(std::uint32_t pid) {
 
     g_docks[pid] = d;
     rtx::launcher::companion::EnsureLoaded(pid);   // scene/var data + in-frame markers + UI compositing
+    rtx::launcher::healthauto::ClientAttached(pid);   // a run queues itself when the exe or cache is new
 
     Embed(d);   // embeds now if the game window is ready; Tick retries otherwise.
 }
@@ -1038,6 +1040,7 @@ void RemoveClient(std::uint32_t pid) {
     for (int which = 0; which <= 4; ++which) rtx::reader::RenderToggle(pid, which, false);
     rtx::reader::VarsWatch(pid, false);
     rtx::launcher::companion::Forget(pid);   // release this client's session slot
+    rtx::launcher::healthauto::ClientGone(pid);
 }
 
 bool IsOpen(std::uint32_t pid) {
@@ -1128,9 +1131,11 @@ void Tick() {
                     }
                     rtx::log::Launcher("cache: " + std::to_string(g_docks.size()) + " ui layer(s) reloaded for the new cache");
                 }
+                rtx::launcher::healthauto::CacheChanged(gen);
             }
         }
     }
+    rtx::launcher::healthauto::Tick();
     if (g_docks.empty()) return;
     gameui::Tick();   // resize handshake + dirty-surface publish + pump pacing
     rtx::launcher::wiki::Tick();   // wiki pane follows the host; reaps closed/dead windows
@@ -1209,6 +1214,7 @@ void Tick() {
         g_docks.erase(it);
         rtx::log::Client(pid, "client process gone -> tearing down its window");
         Detach(d);   // game already gone; just tears down host/panel
+        rtx::launcher::healthauto::ClientGone(pid);
     }
     if (!dead.empty()) QuitIfNoClients("client process exited");
 }

@@ -6,7 +6,11 @@
 
 namespace rtx::scn {
 
-inline constexpr std::uint32_t kKnownBuildStamps[] = { 0x6a998810 /* 950-1 */ };
+// Gate for the scene-blank byte patch alone (an OpenGL render thread Jcc): only the OpenGL
+// 950-1 exe is listed, so on the Vulkan client scene-blank reads REFUSED by design and the
+// Vulkan hide-scene path (VkPresent) serves instead. Every other hook is found by signature or
+// anchor and needs no stamp here.
+inline constexpr std::uint32_t kKnownBuildStamps[] = { 0x6a998810 /* 950-1 OpenGL */ };
 inline bool KnownBuild(std::uint64_t base) {
     auto dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
     auto nt  = reinterpret_cast<const IMAGE_NT_HEADERS*>(base + dos->e_lfanew);

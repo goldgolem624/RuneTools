@@ -55,12 +55,16 @@ enum Sub { kObjAdd = 0x00, kAreaSound2 = 0x01, kSpotAnim2 = 0x02, kSub03 = 0x03,
            kProjectile = 0x05, kObjCount = 0x06, kLocVar1 = 0x07, kLocVar2 = 0x08, kObjAddOwned = 0x09,
            kObjDel = 0x0A, kSpotAnim = 0x0B, kLocDel = 0x0C, kLocAdd = 0x0D, kSub0E = 0x0E,
            kProjectile20 = 0x0F, kProjectile28 = 0x10, kProjectile29 = 0x11 };
+// -1: a var-byte item (subs 7, 8 and 0xE: one length byte, then that many bytes of body).
 inline int subLen(int sub) {
     switch (sub) { case 0x00: return 6; case 0x01: return 11; case 0x02: return 14; case 0x03: return 5; case 0x04: return 10;
-                   case 0x05: return 21; case 0x06: return 8; case 0x09: return 8; case 0x0A: return 4; case 0x0B: return 11; case 0x0C: return 2;
-                   case 0x0D: return 7; case 0x0F: return 20; case 0x10: return 28; case 0x11: return 29;
-                   default: return -1; }
+                   case 0x05: return 21; case 0x06: return 8; case 0x07: return -1; case 0x08: return -1; case 0x09: return 8;
+                   case 0x0A: return 4; case 0x0B: return 11; case 0x0C: return 2; case 0x0D: return 7; case 0x0E: return -1;
+                   case 0x0F: return 20; case 0x10: return 28; case 0x11: return 29;
+                   default: return -2; }
 }
+inline constexpr int kSubCount = 0x12;   // descriptors in the zone table
+inline bool subKnown(int sub) { return sub >= 0 && sub < kSubCount; }
 
 // Decode one zone item body (standalone opcode or 0x31 sub-packet). Emits `"kind":...,fields` without
 // braces. Returns false when the body is unknown or short.
@@ -180,8 +184,9 @@ inline bool topJson(std::string& o, int op, const std::uint8_t* b, std::uint32_t
         std::snprintf(t, sizeof(t), "\"kind\":\"zone_update\",\"x\":%d,\"y\":%d,\"plane\":%d,\"items\":[", g_zone.x, g_zone.y, g_zone.plane); o += t;
         std::uint32_t p = 3; bool first = true, partial = false;
         while (p < n) {
-            const int sub = b[p++]; const int len = subLen(sub);
-            if (len < 0 || p + (std::uint32_t)len > n) { partial = true; break; }   // variable-length loc items end the walk
+            const int sub = b[p++]; int len = subLen(sub);
+            if (len == -1) { if (p >= n) { partial = true; break; } len = b[p++]; }   // var-byte item: its length byte
+            if (len < 0 || p + (std::uint32_t)len > n) { partial = true; break; }     // an unknown sub id or a short body ends the walk
             o += first ? "{" : ",{"; first = false;
             if (!subJson(o, sub, b + p, (std::uint32_t)len)) { std::snprintf(t, sizeof(t), "\"kind\":\"zone_sub\",\"sub\":%d,\"hex\":\"", sub); o += t; for (int i = 0; i < len; ++i) { std::snprintf(t, sizeof(t), "%02x", b[p + i]); o += t; } o += "\""; }
             o += "}"; p += (std::uint32_t)len;

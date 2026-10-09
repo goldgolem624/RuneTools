@@ -29,7 +29,9 @@ struct Found {
     std::uint32_t found;     // what the exe says; 0 = not found
     const char*  op;         // the operation that proved it
     Outcome      status = Outcome::NotFound;
-    bool         ref = false;   // a compiled table's offset nothing reads through Use(): reported, not applied
+    bool         ref = false;   // a compiled table's offset: reported against its compiled value
+    bool         applied = false;   // read through Use() by the reader: the found value is in force
+    const char*  what = nullptr;    // what the client keeps there, when the name alone does not say
 };
 
 // Runs once per exe file and table (path + size + write time); later calls return the same table.
@@ -39,15 +41,17 @@ struct Found {
 // calibrated then and Why() says which.
 const std::vector<Found>& Run(const std::wstring& exePath, const std::wstring& opcodesJson);
 
-// The offset to use for `name`: the found one when there is one, else `compiled`.
+// The offset to use for `name`: the found one when there is one, else `compiled`. A rule read this
+// way counts as applied: Results() lists it and References() no longer does.
 std::uint32_t Use(const char* name, std::uint32_t compiled);
 
 // One line per rule, for the log.
 std::string Report();
 
-// The rules as the last Run left them (compiled values filled in by Use). References() are the
-// rules for offsets the compiled tables (MainDataOffsets.h, SceneOffsets.h, literals in the reader and
-// the companion) still carry: what the client says, against the compiled value, ready for an update.
+// The rules as the last Run left them (compiled values filled in by Use): the reader's own offsets
+// and every table offset read through Use(). References() are the rules for offsets the compiled
+// tables (MainDataOffsets.h, SceneOffsets.h, literals in the companion) still carry unapplied: what
+// the client says, against the compiled value, ready for an update.
 std::vector<Found> Results();
 std::vector<Found> References();
 

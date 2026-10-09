@@ -96,8 +96,9 @@ std::string HostJson();
 
 // The update check for one live client, as JSON (see HealthRun.h). `runtimePinsJson`: the ids the
 // panels declare at run time ({"Feature":{"varbit":[..]}}), checked for existence when the
-// manifest has no record of them. Each run is also kept in the run history.
-std::string ReaderHealthJson(std::uint32_t pid, const std::string& runtimePinsJson = "");
+// manifest has no record of them. `trigger` says why the run started (manual, cli, new exe, cache
+// update) and is recorded with it. Each run is also kept in the run history.
+std::string ReaderHealthJson(std::uint32_t pid, const std::string& runtimePinsJson = "", const std::string& trigger = "");
 // The command line: rows that need the launcher's own channels are reported as not checked.
 void SetHealthHeadless(bool headless);
 

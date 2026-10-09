@@ -1,4 +1,5 @@
 #include "Achievements.h"
+#include "InputStream.h"   // kStop* codes
 #include "Probe.h"
 #include <algorithm>
 
@@ -77,13 +78,13 @@ struct Ach {
     std::vector<int> subreqCount;   // op 30: entries needed, per group
 };
 GroupId group_id(uint32_t v) { return { (int)(v >> 16), (int)(v & 0xFFFF) }; }
-// Stop "opcodes" for a misread record: every record ends with op 0 exactly at its last byte.
-constexpr int kStopOverrun = 256;    // ran off the end before op 0 (a field read wider than it is)
-constexpr int kStopTrailing = 258;   // op 0 with bytes still to come (a field read narrower than it is)
 
-Ach decode_one(int id, const std::vector<uint8_t>& b, int* stop_op = nullptr) {
+// Every record ends with op 0 exactly at its last byte; a misread one stops with a kStop* code
+// (InputStream.h). `last_op` receives the last opcode read before the stop.
+Ach decode_one(int id, const std::vector<uint8_t>& b, int* stop_op = nullptr, int* last_op = nullptr) {
     Ach a; a.id = id;
     if (stop_op) *stop_op = 0;
+    if (last_op) *last_op = -1;
     Reader r{ b.data(), b.size() };
     for (;;) {
         if (r.eof()) { probe::g_stop = (int)r.p; if (stop_op) *stop_op = kStopOverrun; break; }
@@ -93,6 +94,8 @@ Ach decode_one(int id, const std::vector<uint8_t>& b, int* stop_op = nullptr) {
             if (r.p < r.n) { probe::g_stop = (int)r.p; if (stop_op) *stop_op = kStopTrailing; }
             break;
         }
+        probe::note(op);
+        if (last_op) *last_op = op;
         switch (op) {
             case 1: a.name = r.pstr(); a.named = true; break;
             case 2: { int cnt = r.u8(); if (cnt < 0) cnt = 0; if (cnt > 16) cnt = 16;
@@ -349,25 +352,11 @@ void AchievementsProbeUnknown(std::string& log) {
     probe::g_op = -1;
 }
 
-void AchievementsParseHealth(int& ok, int& total, int& stop_op, int& stop_n) {
-    ok = total = stop_n = 0; stop_op = -1;
-    EnsureCacheInit();
-    auto* idx = CacheStore() ? CacheStore()->Get(kIndexAchievements) : nullptr;
-    if (!idx || !idx->ready()) return;
-    std::unordered_map<int, int> stops;
-    const auto& entries = idx->ref().entries();
-    for (int arc = 0; arc < (int)entries.size(); ++arc) {
-        for (int fid : entries[arc].valid_file_ids) {
-            auto b = idx->ReadFile(arc, fid);
-            if (b.empty()) continue;
-            ++total;
-            int st = 0;
-            (void)decode_one((arc << 7) | fid, b, &st);
-            if (st == 0) ++ok; else ++stops[st];
-        }
-    }
-    for (const auto& kv : stops)
-        if (kv.second > stop_n) { stop_op = kv.first; stop_n = kv.second; }
+int AchievementDecodeStop(const std::vector<std::uint8_t>& bytes, int& last) {
+    int st = 0;
+    last = -1;
+    (void)decode_one(0, bytes, &st, &last);
+    return st;
 }
 
 void QuestCapeQuestNames(std::vector<std::string>& out) {

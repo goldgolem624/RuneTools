@@ -299,6 +299,12 @@
   .miss-bar { flex: 1 0 100%; height: 3px; border-radius: 2px; background: rgba(255,255,255,0.10); overflow: hidden; }
   .miss-bar[hidden] { display: none; }
   .miss-bar i { display: block; height: 100%; width: 0; background: var(--brass); transition: width 0.3s ease; }
+  .miss.hc .miss-icon { color: var(--brass); }
+  .miss.hc.bad .miss-icon { color: #f06254; }
+  .miss.hc.ok .miss-icon { color: #4dd28a; }
+  .hc-detail { flex: 1 0 100%; margin: 4px 0 0; max-height: 220px; overflow: auto; font: 11px/1.45 var(--font-mono, monospace);
+               white-space: pre-wrap; color: var(--text-dim); background: rgba(0,0,0,0.25); border-radius: 4px; padding: 8px 10px; }
+  .hc-detail[hidden] { display: none; }
 
   /* Update banner: accent when optional, amber when below minVersion (Launch gated). */
   .upd {
@@ -2325,6 +2331,19 @@
     <div class="miss-bar" id="miss-bar" hidden><i id="miss-bar-fill"></i></div>
   </div>
 
+  <div class="miss hc" id="hc-banner" role="status" hidden>
+    <span class="miss-icon"><svg viewBox="0 0 24 24"><path d="M3 12h4l2-6 4 12 2-6h6"/></svg></span>
+    <div class="miss-text">
+      <div class="miss-title" id="hc-title">Game update detected</div>
+      <div class="miss-sub" id="hc-sub"></div>
+    </div>
+    <div class="miss-actions">
+      <button class="ghost" id="hc-details-btn" type="button">Details</button>
+      <button class="ghost" id="hc-dismiss-btn" type="button">Dismiss</button>
+    </div>
+    <pre class="hc-detail" id="hc-detail" hidden></pre>
+  </div>
+
   <main>
     <div class="home">
       <!-- Left: what is happening in the game. -->
@@ -3335,6 +3354,87 @@
   if (location.hash === '#missing-preview') showMissing(['rtxscene.dll', 'panel_overlay.js']);
   checkMissing();
   setInterval(checkMissing, MISSING_POLL_MS);
+
+  // Game update banner. The health check runs by itself when the game client or its cache is new
+  // to this RuneTools build; this says that a check is coming, then what it found, in features.
+  // Dismiss hides it until the game fingerprint (client build and cache) changes.
+  const HC_POLL_MS = 5000;
+  let hcSeq = -1, hcRun = null, hcKey = '', hcDetailOpen = false;
+  function hcImpactOf(run) {
+    if (!run) return null;
+    if (run.impact && typeof run.impact === 'object') return run.impact;
+    const groups = { broken: {}, moved: {}, format: {}, unverified: {} };
+    for (const r of (Array.isArray(run.checks) ? run.checks : [])) {
+      const kind = String(r.kind || '').toLowerCase();
+      const bucket = r.ok === 0 ? 'broken' : r.ok === 2 ? (kind === 'format' ? 'format' : 'moved') : null;
+      if (!bucket) continue;
+      for (const f of (Array.isArray(r.f) && r.f.length ? r.f : ['Other'])) groups[bucket][String(f).split(': ')[0]] = 1;
+    }
+    const list = o => Object.keys(o).map(k => ({ feature: k }));
+    return { broken: list(groups.broken), moved: list(groups.moved), format: list(groups.format), unverified: [],
+             complete: !!(run.context && (run.context.complete != null ? run.context.complete : run.context.inWorld)) };
+  }
+  function hcNames(list, max) {
+    const n = (list || []).map(e => e.feature);
+    return n.length <= max ? n.join(', ') : n.slice(0, max).join(', ') + ' and ' + (n.length - max) + ' more';
+  }
+  function hcShow(state, title, sub) {
+    const b = $('hc-banner');
+    b.classList.remove('bad', 'ok');
+    if (state) b.classList.add(state);
+    $('hc-title').textContent = title;
+    $('hc-sub').textContent = sub;
+    b.hidden = false;
+  }
+  function hcHide() { $('hc-banner').hidden = true; $('hc-detail').hidden = true; hcDetailOpen = false; }
+  function hcDismissed(key) { try { return localStorage.getItem('hcDismissed') === key; } catch (e) { return false; } }
+  async function hcPoll() {
+    if (!bridge().healthLatest) return;
+    let d = null;
+    try { d = JSON.parse(await bridge().healthLatest(hcSeq)); } catch (e) { return; }
+    if (!d || typeof d !== 'object') return;
+    if (d.run && d.seq !== hcSeq) { hcSeq = d.seq; hcRun = d.run; }
+    const run = hcRun, im = hcImpactOf(run);
+    if (d.pending && !d.running && !(run && (run.summary || {}).fail === 0 && im && !im.moved.length)) {
+      const p = d.pending;
+      hcKey = 'pending|' + p.trigger + '|' + p.version + '|' + p.stamp + '|' + p.why;
+      if (hcDismissed(hcKey)) { hcHide(); return; }
+      hcShow('', p.trigger === 'cache update' ? 'Game content updated' : 'Game update detected',
+             (p.trigger === 'cache update' ? 'The game cache changed' : 'RuneScape ' + (p.version || '') + ' is new to this RuneTools build') + '. The check runs when you log in.');
+      return;
+    }
+    if (d.running) { hcShow('', 'Checking the game', 'RuneTools is checking what still works after the update...'); return; }
+    if (!run || !im) { hcHide(); return; }
+    const b = run.build || {}, cache = run.cache || {};
+    hcKey = 'run|' + (run.version || '') + '|' + (b.stamp || '') + '|' + (cache.gen || '') + '|' + d.seq;
+    if (hcDismissed(hcKey)) { hcHide(); return; }
+    const s = run.summary || {}, total = (s.pass | 0) + (s.fail | 0) + (s.warn | 0) + (s.unchecked | 0);
+    const to = (run.version || '') + (b.stamp ? ' (' + b.stamp + ')' : '');
+    if (im.broken.length) {
+      hcShow('bad', (im.broken.length === 1 ? '1 feature needs' : im.broken.length + ' features need') + ' a RuneTools update',
+             'Game ' + to + ': ' + hcNames(im.broken, 5) + (im.broken.length === 1 ? ' is' : ' are') + ' affected. Everything else works.');
+    } else if (im.complete === false) {
+      hcShow('', 'Health check incomplete', 'Game ' + to + ': log in so RuneTools can finish checking (' + (total - (s.unchecked | 0)) + ' of ' + total + ' done).');
+    } else if (im.moved.length || im.format.length) {
+      hcShow('', 'Game ' + to + ' checked', 'Everything works. ' + (im.moved.length ? im.moved.length + ' feature' + (im.moved.length === 1 ? ' runs' : 's run') + ' with a warning' : '') +
+             (im.moved.length && im.format.length ? ', ' : '') + (im.format.length ? im.format.length + ' format change' + (im.format.length === 1 ? '' : 's') : '') + '.');
+    } else if (d.trigger && d.trigger !== 'manual') {
+      hcShow('ok', 'Game ' + to + ' checked', 'Everything RuneTools reads still works (' + total + ' checks).');
+    } else hcHide();
+  }
+  $('hc-dismiss-btn').addEventListener('click', () => { try { localStorage.setItem('hcDismissed', hcKey); } catch (e) {} hcHide(); });
+  $('hc-details-btn').addEventListener('click', async () => {
+    const pre = $('hc-detail');
+    hcDetailOpen = !hcDetailOpen;
+    if (!hcDetailOpen) { pre.hidden = true; return; }
+    let text = '';
+    try { if (bridge().healthSummary) text = await bridge().healthSummary(''); } catch (e) {}
+    if (!text) text = hcRun ? JSON.stringify(hcRun.summary || {}, null, 1) : 'No health run yet. It runs when you log in after a game update.';
+    pre.textContent = text.split('\n').slice(0, 80).join('\n');
+    pre.hidden = false;
+  });
+  hcPoll();
+  setInterval(hcPoll, HC_POLL_MS);
   $('upd-dismiss-btn').addEventListener('click', dismissUpdate);
   $('upd-notes-btn').addEventListener('click', () => {
     const n = $('upd-notes');

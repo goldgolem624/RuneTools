@@ -46,14 +46,38 @@ int ItemTradeableForm(int item_id);
 // Items whose name contains `needle`, case-insensitive: id and name, at most `cap`.
 int ItemsByName(const char* needle, int* ids, int cap);
 
+// One decoder's verdict over its records. A record is clean when its decoder read it to the end
+// marker exactly; stop_op names the most common way the others ended: 1..255 an opcode the decoder
+// does not know, kStop* (InputStream.h) a record shape that is not what the decoder expects.
 struct CacheParseRow {
     std::string name;              // surface label, e.g. "items"
     int  ok = 0, total = 0;        // clean / attempted
     bool sampled = false;          // total is an every-Nth sample, not the full index
     int  stop_op = -1;
     int  stop_n  = 0;              // records that stopped on stop_op
+    std::string features;          // panels that read this type, '|' separated ("Panel" or "Panel: detail")
+    int  first_id = -1;            // first record that stopped on stop_op (-1 none)
+    std::string first_detail;      // what those records did, e.g. "ran past their end after opcode 102"
+    int  implausible = 0;          // records whose decoded values fall outside the type's rules
+    bool full = false;             // every record was decoded; false while the full sweep still runs
+    int  stop_last = -1;           // the opcode read before the stop on the first stopped record
+    int  implausible_id = -1;      // first record that failed implausible_rule
+    std::string implausible_rule;  // the rule most records failed, e.g. "size 0..8"
 };
+// Rows for every decoder. The first call per cache generation returns an every-Nth sample and
+// starts the full sweep on a background thread; once that finishes (a few seconds) every call
+// returns its rows (full = true) until the cache changes.
 std::vector<CacheParseRow> CacheParseHealth();
+// Starts the full sweep for the current cache generation when none ran yet; returns at once.
+void CacheFullSweepStart();
+bool CacheFullSweepReady();
+bool CacheFullSweepRunning();   // a full sweep is on its thread now
+struct CacheOpCount { std::string type; int op = 0; int count = 0; };
+// Per-type opcode counts from the finished full sweep (empty until it is): an opcode a decoder
+// reads a field from that counts 0 means the field moved.
+std::vector<CacheOpCount> CacheOpHist();
+// Readers that stopped on an opcode they do not know since the cache opened, by type and opcode.
+std::vector<CacheOpCount> CacheUnknownOps();
 
 // Cache updates while running. The game client patches its jcache files (usually as it starts)
 // without telling us; every index read after that through the old reference tables is misaligned.
@@ -71,8 +95,16 @@ std::string CacheProbeUnknownOps();
 // kind reports a selection of: enum keys, struct params, dbtable columns ("1,5"). Kinds: varbit,
 // varp, varc, var ("archive:id"), enum, enumhash, struct, param, dbtable, iface ("group" or
 // "group:comp"), inv, sprite, script, model, spotanim, archive ("index/archive"), item, npc, loc.
+// item/npc/loc: "name=..;ops=<hash of the opcodes the record carries>;f=<hash of the fields the readers use>";
+// struct adds "h=<hash of every param>".
 std::string PinFingerprint(const std::string& kind, const std::string& key, const std::string& want);
-struct IndexFacts { bool open = false; int archives = 0, maxArchive = -1, maxFile = -1, protocol = 0, revision = 0, failed = 0; };
+// flags: the reference table's flags byte (-1 unread); exact: its decode consumed the table to the
+// last byte (false = the table layout is not the one this code expects, leftover says by how much);
+// firstFail: why the first archive that failed to decode did ("container type 4 at archive 12").
+struct IndexFacts {
+    bool open = false; int archives = 0, maxArchive = -1, maxFile = -1, protocol = 0, revision = 0, failed = 0;
+    int flags = -1; bool exact = false; int leftover = 0; std::string firstFail;
+};
 IndexFacts IndexInfo(int index);
 // What the jcache stores for an index now: its reference table's VERSION and CRC, its archive row
 // count, and a hash of the table and of each row's key, VERSION and CRC (SqliteIndexFile::StoredState).
@@ -81,7 +113,7 @@ struct IndexStored { bool ok = false; long long refVersion = 0, refCrc = 0; int 
 IndexStored IndexStoredNow(int index);
 int ArchiveRevision(int index, int archive);   // the archive's reference-table version, -1 when absent
 std::string CacheRoot();
-int MaxId(const std::string& kind);             // largest id in use: item, npc, loc, enum, struct, varbit, param, sprite, iface, achievement, script
+int MaxId(const std::string& kind);             // largest id in use: item, npc, loc, enum, struct, varbit, varp, varc, param, sprite, iface, achievement, script, dbtable
 
 std::string ItemIconCoverageJson(bool (*has)(int item_id));
 

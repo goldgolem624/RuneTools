@@ -14,6 +14,7 @@
 #include "Sprite.h"
 #include "Utils.h"
 #include "Store.h"
+#include "../shared/Log.h"
 
 #include <algorithm>
 #include <atomic>
@@ -242,7 +243,7 @@ void EnsureMapscenesLocked() {
             if (op == 1) sprite = (int)s.ReadBigSmart();   // sprite_id (variable unsigned int)
             else if (op == 2) s.Read24BitInt();            // colour
             else if (op >= 3 && op <= 5) { /* bool flag, no payload */ }
-            else break;                                    // unknown opcode -> stop (alignment lost)
+            else { probe::unknown(probe::kUnkMapscene, op); break; }   // unknown opcode -> stop (alignment lost)
         }
         if (sprite >= 0) g_mapscene_sprite[fid] = sprite;
     }
@@ -288,13 +289,13 @@ int LocMapFunctionLocked(int loc_id) {
     auto it = g_loc_mapfunc.find(loc_id);
     return it != g_loc_mapfunc.end() ? it->second : -1;
 }
-// One map element record. Returns 0 on a clean end, the opcode it could not read, or 256 when the
-// record ran out first.
-int DecodeMaplabel(std::vector<std::uint8_t> bytes, MaplabelDef& def) {
+// One map element record. Returns 0 on a clean end, the opcode it could not read, or a kStop* code
+// (InputStream.h); `last_op` receives the last opcode read.
+int DecodeMaplabel(std::vector<std::uint8_t> bytes, MaplabelDef& def, int* last_op = nullptr) {
     InputStream s(std::move(bytes));
-    while (s.remaining() > 0) {
-        int op = s.ReadUnsignedByte();
-        if (op == 0) return 0;
+    int last = -1;
+    const int st = WalkOps(s, last, [&](int op) {
+        probe::note(op);
         switch (op) {
             case 0x01: def.sprite = s.ReadBigSmart(); break;             // icon sprite
             case 0x02: s.ReadBigSmart(); break;                          // sprite_hover
@@ -325,10 +326,12 @@ int DecodeMaplabel(std::vector<std::uint8_t> bytes, MaplabelDef& def) {
                 break;
             }
             case 0xF9: { int n = s.ReadUnsignedByte(); for (int i = 0; i < n; ++i) { bool str = s.ReadUnsignedByte() == 1; int k = s.Read24BitInt(); if (str) def.ps[k] = s.ReadString(); else def.pi[k] = s.ReadInt(); } break; }
-            default: return op;                                          // unknown -> stop (alignment lost)
+            default: return false;                                       // unknown -> stop (alignment lost)
         }
-    }
-    return 256;                                                      // ran out before the end marker
+        return true;
+    });
+    if (last_op) *last_op = last;
+    return st;
 }
 
 void EnsureMaplabelsLocked() {
@@ -1057,7 +1060,7 @@ void LoadPerkNamesLocked() {
             int op = s.ReadUnsignedByte();
             if (op == 0) break;
             if (op == 4) { tableId = s.ReadUnsignedSmart(); continue; }
-            if (op != 3) break;                    // unknown opcode -> stop this row
+            if (op != 3) { probe::unknown(probe::kUnkDbrow, op); break; }   // unknown opcode -> stop this row
             s.ReadUnsignedByte();                  // totalCols (unused)
             while (s.remaining() > 0) {
                 int b = s.ReadUnsignedByte();
@@ -1125,7 +1128,7 @@ void LoadMystPagesLocked() {
                 row.master = t >= 256 ? (t >> 8) : t;
                 continue;
             }
-            if (op != 3) break;
+            if (op != 3) { probe::unknown(probe::kUnkDbrow, op); break; }
             s.ReadUnsignedByte();                // totalCols (unused)
             while (s.remaining() > 0) {
                 int b = s.ReadUnsignedByte();
@@ -1246,7 +1249,7 @@ void LoadArchResearchLocked() {
                 master = t >= 256 ? (t >> 8) : t;
                 continue;
             }
-            if (op != 3) break;
+            if (op != 3) { probe::unknown(probe::kUnkDbrow, op); break; }
             s.ReadUnsignedByte();               // total column count (unused)
             while (s.remaining() > 0) {
                 int b = s.ReadUnsignedByte();
@@ -1329,18 +1332,18 @@ constexpr int kDbTablesArchive = 40;
 std::unordered_map<int, std::map<int, std::vector<int>>> g_dbtable_cols;  // file -> col -> sub types
 bool g_dbtables_loaded = false;
 
-// Decode one table file (cols = null validates only). Returns 0 on a clean end, else the breaking opcode (256 = overrun).
+// Decode one table file (cols = null validates only). Returns 0 on a clean end, else the breaking opcode or a
+// kStop* code (InputStream.h); `last_op` receives the last opcode read.
 int DecodeDbTableFile(std::vector<std::uint8_t> bytes,
-                      std::map<int, std::vector<int>>* cols) {
+                      std::map<int, std::vector<int>>* cols, int* last_op = nullptr) {
     InputStream s(std::move(bytes));
-    while (s.remaining() > 0) {
-        int op = s.ReadUnsignedByte();
-        if (op == 0) break;
-        if (op != 1 && op != 2) return op;
+    int last = -1;
+    const int st = WalkOps(s, last, [&](int op) {
+        probe::note(op);
+        if (op != 1 && op != 2) return false;
         if (op == 2) s.ReadInt();                     // unknown u32 (op 2 only)
         s.ReadUnsignedByte();                         // total column count
-        while (true) {
-            if (s.remaining() <= 0) return 256;
+        while (!s.overran()) {
             int cb = s.ReadUnsignedByte();
             if (cb == 0xFF) break;
             int colid = cb & 0x3F;
@@ -1351,8 +1354,7 @@ int DecodeDbTableFile(std::vector<std::uint8_t> bytes,
             bool defs = (op == 2) ? (s.ReadUnsignedByte() & 0x02) != 0
                                   : (cb & 0x80) != 0;
             if (defs) {
-                for (int i = 0; i < subn; ++i) {
-                    if (s.remaining() <= 0) return 256;
+                for (int i = 0; i < subn && !s.overran(); ++i) {
                     if (i == 0) s.ReadUnsignedByte();
                     if (types[i] == 0x24) s.ReadString(); else s.ReadInt();
                     if (i == 0 && op == 2) s.ReadUnsignedByte();
@@ -1360,8 +1362,10 @@ int DecodeDbTableFile(std::vector<std::uint8_t> bytes,
             }
             if (cols) (*cols)[colid] = std::move(types);
         }
-    }
-    return 0;
+        return true;
+    });
+    if (last_op) *last_op = last;
+    return st;
 }
 
 void LoadDbTablesLocked() {
@@ -1373,23 +1377,22 @@ void LoadDbTablesLocked() {
     if ((int)entries.size() <= kDbTablesArchive) return;
     for (int fid : entries[kDbTablesArchive].valid_file_ids) {
         std::map<int, std::vector<int>> cols;
-        if (DecodeDbTableFile(index->ReadFile(kDbTablesArchive, fid), &cols) == 0)
-            g_dbtable_cols[fid] = std::move(cols);
+        const int st = DecodeDbTableFile(index->ReadFile(kDbTablesArchive, fid), &cols);
+        if (st == 0 || st == kStopTrailing) g_dbtable_cols[fid] = std::move(cols);   // trailing bytes: the columns read are whole
     }
 }
 
-// Check one DBRow against the loaded schemas: 0 = match, 257 = linkage/type mismatch, else breaking opcode (256 = overrun).
-int DbRowSchemaCheckLocked(std::vector<std::uint8_t> bytes) {
+// Check one DBRow against the table schemas: 0 = match, kStopSchema = linkage/type mismatch, else the
+// breaking opcode or kStop* code; `last` receives the last opcode read.
+int DbRowSchemaCheck(std::vector<std::uint8_t> bytes, const std::unordered_map<int, std::map<int, std::vector<int>>>& schemas, int& last) {
     InputStream s(std::move(bytes));
     int tag = -1;
     std::vector<std::pair<int, std::vector<int>>> rcols;
-    while (s.remaining() > 0) {
-        int op = s.ReadUnsignedByte();
-        if (op == 0) break;
-        if (op == 4) { tag = s.ReadUnsignedSmart(); continue; }
-        if (op != 3) return op;
+    const int st = WalkOps(s, last, [&](int op) {
+        if (op == 4) { tag = s.ReadUnsignedSmart(); return true; }
+        if (op != 3) return false;
         s.ReadUnsignedByte();                         // total cols
-        while (s.remaining() > 0) {
+        while (!s.overran()) {
             int cb = s.ReadUnsignedByte();
             if (cb == 0xFF) break;
             int colid = cb & 0x3F;
@@ -1398,23 +1401,24 @@ int DbRowSchemaCheckLocked(std::vector<std::uint8_t> bytes) {
             std::vector<int> types((std::size_t)subN);
             for (int i = 0; i < subN; ++i) types[i] = s.ReadUnsignedSmart();
             int rowCount = s.ReadUnsignedSmart();
-            for (int r = 0; r < rowCount; ++r)
+            for (int r = 0; r < rowCount && !s.overran(); ++r)
                 for (int sub = 0; sub < subN; ++sub) {
-                    if (s.remaining() <= 0) return 256;
                     if (types[sub] == 0x24) s.ReadString(); else s.ReadInt();
                 }
             rcols.emplace_back(colid, std::move(types));
         }
-    }
-    if (tag < 0) return 257;                          // no table tag -> unverifiable
+        return true;
+    });
+    if (st) return st;
+    if (tag < 0) return kStopSchema;                  // no table tag -> unverifiable
     const int master = tag < 256 ? tag : (tag >> 8);
     const int sub    = tag < 256 ? 0   : (tag & 0xFF);
-    auto it = g_dbtable_cols.find(sub * 128 + master);
-    if (it == g_dbtable_cols.end()) return 257;       // schema file missing
+    auto it = schemas.find(sub * 128 + master);
+    if (it == schemas.end()) return kStopSchema;      // schema file missing
     if (it->second.empty()) return 0;                 // declaration-less table
     for (const auto& [colid, types] : rcols) {
         auto ct = it->second.find(colid);
-        if (ct == it->second.end() || ct->second != types) return 257;
+        if (ct == it->second.end() || ct->second != types) return kStopSchema;
     }
     return 0;
 }
@@ -1430,18 +1434,21 @@ struct ParamDef {
 std::unordered_map<int, ParamDef> g_param_defs;
 bool g_params_loaded = false;
 
-int DecodeParamFile(std::vector<std::uint8_t> bytes, ParamDef* out) {
+// Returns 0 on a clean end, else the breaking opcode or a kStop* code (InputStream.h); `last_op` receives the last opcode read.
+int DecodeParamFile(std::vector<std::uint8_t> bytes, ParamDef* out, int* last_op = nullptr) {
     InputStream s(std::move(bytes));
-    while (s.remaining() > 0) {
-        int op = s.ReadUnsignedByte();
-        if (op == 0) break;
-        else if (op == 1 || op == 101) { int t = op == 1 ? s.ReadUnsignedByte() : s.ReadUnsignedSmart(); if (out) out->type = t; }
+    int last = -1;
+    const int st = WalkOps(s, last, [&](int op) {
+        probe::note(op);
+        if (op == 1 || op == 101) { int t = op == 1 ? s.ReadUnsignedByte() : s.ReadUnsignedSmart(); if (out) out->type = t; }
         else if (op == 2) { int v = s.ReadInt(); if (out) { out->def_int = v; out->has_int = true; } }
         else if (op == 4) { /* flag, no payload */ }
         else if (op == 5) { std::string v = s.ReadString(); if (out) { out->def_str = std::move(v); out->has_str = true; } }
-        else return op;                               // unknown opcode -> length unknown, stop
-    }
-    return 0;
+        else return false;                            // unknown opcode -> length unknown, stop
+        return true;
+    });
+    if (last_op) *last_op = last;
+    return st;
 }
 
 void LoadParamsLocked() {
@@ -1455,7 +1462,8 @@ void LoadParamsLocked() {
         auto bytes = index->ReadFile(kParamsArchive, fid);
         if (bytes.empty()) continue;
         ParamDef p;
-        if (DecodeParamFile(std::move(bytes), &p) == 0) g_param_defs[fid] = std::move(p);
+        const int st = DecodeParamFile(std::move(bytes), &p);
+        if (st == 0 || st == kStopTrailing) g_param_defs[fid] = std::move(p);   // trailing bytes: the fields read are whole
     }
 }
 }  // namespace
@@ -1527,7 +1535,7 @@ void LoadVarbitMapLocked() {
             if (op == 1)      { domain = s.ReadUnsignedByte(); varp = s.ReadUnsignedShort(); }
             else if (op == 2) { lsb = s.ReadUnsignedByte(); msb = s.ReadUnsignedByte(); }
             else if (op == 16) { /* boolean flag, no data */ }
-            else break;                             // unknown opcode -> length unknown, stop
+            else { probe::unknown(probe::kUnkVarbit, op); break; }   // unknown opcode -> length unknown, stop
         }
         if (varp < 0 || lsb < 0 || msb < 0) continue;
         if (domain == 5) g_objvarbit_defs[fid] = { varp, lsb, msb };
@@ -1633,13 +1641,16 @@ struct QuestDef {
     std::vector<int> startxy;                        // op10 packed start coords (plane<<28 | x<<14 | y)
 };
 
-bool DecodeQuestFile(std::vector<std::uint8_t> bytes, QuestDef& q, int* stop_op = nullptr) {
+// stop_op: 0 clean, 1..255 that opcode is unknown, kStop* (InputStream.h) the record did not end the way a
+// clean one does; last_op: the last opcode read before the stop. Returns whether a name was decoded.
+bool DecodeQuestFile(std::vector<std::uint8_t> bytes, QuestDef& q, int* stop_op = nullptr, int* last_op = nullptr) {
     if (stop_op) *stop_op = 0;
+    if (last_op) *last_op = -1;
     if (bytes.empty()) return false;
     InputStream s(std::move(bytes));
-    while (s.remaining() > 0) {
-        int op = s.ReadUnsignedByte();
-        if (op == 0) break;
+    int last = -1;
+    const int st = WalkOps(s, last, [&](int op) {
+        probe::note(op);
         switch (op) {
         case 1:  s.ReadUnsignedByte(); q.name = s.ReadString(); break;
         case 2:  s.ReadUnsignedByte(); s.ReadString(); break;   // list name (op1 is canonical)
@@ -1703,12 +1714,14 @@ bool DecodeQuestFile(std::vector<std::uint8_t> bytes, QuestDef& q, int* stop_op 
                    } } break;
         default:
             if (op == probe::g_op && probe::g_len <= s.remaining()) { s.skip(probe::g_len); break; }   // unknown-opcode probe (Probe.h)
-            probe::g_stop = s.offset(); probe::g_tail = s.remaining();
-            if (stop_op) *stop_op = op;
-            return !q.name.empty();        // unknown opcode -> keep what decoded
+            return false;                  // unknown opcode -> keep what decoded
         }
-    }
+        return true;
+    });
+    if (st) probe::g_stop = s.offset();
     probe::g_tail = s.remaining();
+    if (stop_op) *stop_op = st;
+    if (last_op) *last_op = last;
     return !q.name.empty();
 }
 
@@ -1958,7 +1971,7 @@ std::string EnumJson(int enum_id) {
         else if (op == 8) { s.ReadUnsignedShort();           // int map, u16 keys
                             int n = s.ReadUnsignedShort();
                             for (int i = 0; i < n; ++i) { int k = s.ReadUnsignedShort(); num(k, s.ReadInt()); } }
-        else break;                                          // unknown opcode -> length unknown
+        else { probe::unknown(probe::kUnkEnum, op); break; }   // unknown opcode -> length unknown
     }
     out += "}";
     return out;
@@ -1977,6 +1990,7 @@ std::string NpcJson(int npc_id) {
 
 namespace {
 struct IfaceCompDef {
+    int  ver = -1;                    // header version byte (signed); -1 in old groups
     int  type = -1, contenttype = 0, parent = -1;
     int  x = 0, y = 0, w = 0, h = 0;
     bool hidden = false;
@@ -1991,6 +2005,7 @@ struct IfaceCompDef {
 int DecodeIfaceComp(std::vector<std::uint8_t> bytes, IfaceCompDef& c) {
     InputStream s(std::move(bytes));
     int ver = s.ReadUnsignedByte(); if (ver >= 0x80) ver -= 0x100;   // signed; -1 in old groups
+    c.ver = ver;
     int tb  = s.ReadUnsignedByte();
     c.type = tb & 0x7F;
     if (tb & 0x80) s.ReadString();                    // optional dev name (unused live)
@@ -2169,7 +2184,7 @@ static int ConfigColourLocked(int archive, int id) {
                 else if (op == 9)  s.ReadUnsignedShort();                          // texture scale
                 else if (op == 11 || op == 14 || op == 16) s.ReadUnsignedByte();  // u8 fields
                 else if (op == 4 || op == 5 || op == 8 || op == 10 || op == 12) { /* bool flag, no payload */ }
-                else break;                                                       // unknown opcode -> length unknown, stop
+                else { probe::unknown(probe::kUnkColour, op); break; }           // unknown opcode -> length unknown, stop
             }
         }
     }
@@ -2871,7 +2886,7 @@ bool DecodeStructFile(std::vector<std::uint8_t> bytes, DecodedStruct& out) {
     while (s.remaining() > 0) {
         int op = s.ReadUnsignedByte();
         if (op == 0) break;
-        if (op != 249) break;                       // unknown opcode -> stop, keep what we have
+        if (op != 249) { probe::unknown(probe::kUnkStruct, op); break; }   // unknown opcode -> stop, keep what we have
         int len = s.ReadUnsignedByte();
         for (int i = 0; i < len && s.remaining() > 0; ++i) {
             bool isStr = s.ReadUnsignedByte() == 1;
@@ -3040,9 +3055,9 @@ std::string LookupBuffNameAdj(int id, const std::unordered_map<int, std::string>
 
 // Ability structs (index 22): param 2794 name, 2795 description, 2796 cooldown (0.6 s ticks), 2799 tier (1 basic, 2 threshold, 3 defensive, 4 ultimate, 5 special, 7 utility; cosmetic overrides carry none), 2802 ability/sprite id, 4650 unlock text.
 // Cooldown-clock varc pairs come from CS2 script 6506 bytecode (js5-12), a switch over struct ids. Opcode ids are build-shuffled, so the parse relies on the stable footer ([6x u16 + u32 counts][switch block][u16 switch-block size]; switch block = u8 count, per switch u16 case count then (i32 value, u32 jump)) and on case bodies starting with two 6-byte varc-push ops [opcode u16][0x02 varc u16 BE 0x00]; pairs zip with the distinct jumps ascending, and more than a few excess bodies emits nothing.
-std::unordered_map<int, std::pair<int, int>> AbilityCooldownVarcsLocked() {
+// Pure: reads script 6506 through `idx` only, so the parse sweep can call it without g_mu.
+std::unordered_map<int, std::pair<int, int>> AbilityCooldownVarcsFrom(SqliteIndexFile* idx) {
     std::unordered_map<int, std::pair<int, int>> out;
-    auto* idx = g_store ? g_store->Get(kIndexClientScript) : nullptr;
     if (!idx || !idx->ready()) return out;
     std::vector<std::uint8_t> d = idx->ReadFile(6506, 0);
     const std::size_t n = d.size();
@@ -3091,6 +3106,10 @@ std::unordered_map<int, std::pair<int, int>> AbilityCooldownVarcsLocked() {
         if (it != byJump.end()) out[cv.first] = it->second;
     }
     return out;
+}
+
+std::unordered_map<int, std::pair<int, int>> AbilityCooldownVarcsLocked() {
+    return AbilityCooldownVarcsFrom(g_store ? g_store->Get(kIndexClientScript) : nullptr);
 }
 
 std::string g_buff_catalog_json;   // under g_mu; cleared on cache update
@@ -3250,7 +3269,7 @@ const EnumInts* enum_ints_locked(int enumId) {
                             for (int i = 0; i < n; ++i) { s.ReadUnsignedShort(); s.ReadString(); } }
         else if (op == 8) { s.ReadUnsignedShort(); int n = s.ReadUnsignedShort();
                             for (int i = 0; i < n; ++i) { int k = s.ReadUnsignedShort(); e.map[k] = s.ReadInt(); } }
-        else break;
+        else { probe::unknown(probe::kUnkEnum, op); break; }
     }
     return &g_enum_int_memo.emplace(enumId, std::move(e)).first->second;
 }
@@ -3490,7 +3509,7 @@ std::map<int, int> EnumIntsLocked(int enum_id) {
         else if (op == 6) { int n = s.ReadUnsignedShort(); for (int i = 0; i < n; ++i) { int k = s.ReadInt(); out[k] = s.ReadInt(); } }
         else if (op == 7) { s.ReadUnsignedShort(); int n = s.ReadUnsignedShort(); for (int i = 0; i < n; ++i) { s.ReadUnsignedShort(); s.ReadString(); } }
         else if (op == 8) { s.ReadUnsignedShort(); int n = s.ReadUnsignedShort(); for (int i = 0; i < n; ++i) { int k = s.ReadUnsignedShort(); out[k] = s.ReadInt(); } }
-        else break;
+        else { probe::unknown(probe::kUnkEnum, op); break; }
     }
     return out;
 }
@@ -4117,7 +4136,7 @@ std::string DbRowDumpJson() {
             int op = s.ReadUnsignedByte();
             if (op == 0) break;
             if (op == 4) { int t = s.ReadUnsignedSmart(); master = t >= 256 ? (t >> 8) : t; subt = t >= 256 ? (t & 0xff) : 0; continue; }
-            if (op != 3) break;
+            if (op != 3) { probe::unknown(probe::kUnkDbrow, op); break; }
             s.ReadUnsignedByte();
             while (s.remaining() > 0) {
                 int b = s.ReadUnsignedByte();
@@ -4194,7 +4213,7 @@ std::string DbRowsJson(int masterTable) {
                 sub    = t >= 256 ? (t & 0xff) : 0;
                 continue;
             }
-            if (op != 3) break;
+            if (op != 3) { probe::unknown(probe::kUnkDbrow, op); break; }
             s.ReadUnsignedByte();                // totalCols (unused)
             while (s.remaining() > 0) {
                 int b = s.ReadUnsignedByte();
@@ -4714,8 +4733,6 @@ std::string ItemIconCoverageJson(bool (*has)(int item_id)) {
            ",\"missing\":[" + missing + "]}";
 }
 
-// Big indexes are sampled (every Nth file). stop_op 256 = stream overrun, 257 = schema mismatch,
-// 258 = a record that ended with bytes unread.
 // Unknown-opcode probe (Probe.h): brute-force the payload size that lets each failing record parse cleanly. Holds g_mu.
 std::string CacheProbeUnknownOps() {
     std::lock_guard<std::mutex> lk(g_mu);
@@ -4773,177 +4790,6 @@ std::string CacheProbeUnknownOps() {
     return log;
 }
 
-std::vector<CacheParseRow> CacheParseHealth() {
-    std::vector<CacheParseRow> rows;
-    std::lock_guard<std::mutex> lk(g_mu);
-    EnsureInit();
-    if (!g_store) return rows;
-
-    auto finish = [](CacheParseRow& row, std::unordered_map<int, int>& stops) {
-        for (const auto& kv : stops)
-            if (kv.second > row.stop_n) { row.stop_op = kv.first; row.stop_n = kv.second; }
-    };
-    auto sweep = [&](const char* name, int index_id, int archive, auto&& decode) {
-        CacheParseRow row; row.name = name;
-        auto* idx = g_store->Get(index_id);
-        if (idx && idx->ready()) {
-            const auto& entries = idx->ref().entries();
-            int a0 = archive >= 0 ? archive : 0;
-            int a1 = archive >= 0 ? archive + 1 : (int)entries.size();
-            long long files = 0;
-            for (int a = a0; a < a1 && a < (int)entries.size(); ++a)
-                files += (long long)entries[a].valid_file_ids.size();
-            long long step = files > 1200 ? files / 1200 : 1;
-            row.sampled = step > 1;
-            std::unordered_map<int, int> stops;
-            long long k = 0;
-            for (int a = a0; a < a1 && a < (int)entries.size(); ++a) {
-                for (int fid : entries[a].valid_file_ids) {
-                    if ((k++ % step) != 0) continue;
-                    auto bytes = idx->ReadFile(a, fid);
-                    if (bytes.empty()) continue;
-                    ++row.total;
-                    int st = decode(a, fid, std::move(bytes));
-                    if (st == 0) ++row.ok; else ++stops[st];
-                }
-            }
-            finish(row, stops);
-        }
-        rows.push_back(std::move(row));
-    };
-
-    sweep("items", kIndexItems, -1, [](int a, int f, std::vector<std::uint8_t> b) {
-        int st = 0; DecodeItem((a << 8) | f, std::move(b), &st); return st; });
-    sweep("npcs", kIndexNpcs, -1, [](int a, int f, std::vector<std::uint8_t> b) {
-        int st = 0; DecodeNpc((a << 7) | f, std::move(b), &st); return st; });
-    sweep("objects", kIndexLocations, -1, [](int a, int f, std::vector<std::uint8_t> b) {
-        int st = 0; DecodeLoc((a << 8) | f, std::move(b), &st); return st; });
-    sweep("quests", kIndexConfigs, kQuestArchive, [](int, int, std::vector<std::uint8_t> b) {
-        QuestDef q; int st = 0; DecodeQuestFile(std::move(b), q, &st); return st; });
-    sweep("varbits", kIndexConfigs, kVarbitArchive, [](int, int, std::vector<std::uint8_t> b) {
-        InputStream s(std::move(b));
-        while (s.remaining() > 0) {
-            int op = s.ReadUnsignedByte();
-            if (op == 0) break;
-            else if (op == 1) { s.ReadUnsignedByte(); s.ReadUnsignedShort(); }
-            else if (op == 2) { s.ReadUnsignedByte(); s.ReadUnsignedByte(); }
-            else if (op == 16) { }
-            else return op;
-        }
-        return 0; });
-    sweep("params", kIndexConfigs, kParamsArchive, [](int, int, std::vector<std::uint8_t> b) {
-        return DecodeParamFile(std::move(b), nullptr); });
-    sweep("enums", kIndexEnums, -1, [](int, int, std::vector<std::uint8_t> b) {
-        InputStream s(std::move(b));
-        while (s.remaining() > 0) {
-            int op = s.ReadUnsignedByte();
-            if (op == 0) break;
-            else if (op == 1 || op == 2) s.ReadUnsignedByte();
-            else if (op == 101 || op == 102) s.ReadUnsignedSmart();
-            else if (op == 3) s.ReadString();
-            else if (op == 4) s.ReadInt();
-            else if (op == 5) { int n = s.ReadUnsignedShort(); for (int i = 0; i < n; ++i) { s.ReadInt(); s.ReadString(); } }
-            else if (op == 6) { int n = s.ReadUnsignedShort(); for (int i = 0; i < n; ++i) { s.ReadInt(); s.ReadInt(); } }
-            else if (op == 7) { s.ReadUnsignedShort(); int n = s.ReadUnsignedShort(); for (int i = 0; i < n; ++i) { s.ReadUnsignedShort(); s.ReadString(); } }
-            else if (op == 8) { s.ReadUnsignedShort(); int n = s.ReadUnsignedShort(); for (int i = 0; i < n; ++i) { s.ReadUnsignedShort(); s.ReadInt(); } }
-            else return op;
-        }
-        return 0; });
-    sweep("structs", kIndexStructs, -1, [](int, int, std::vector<std::uint8_t> b) {
-        InputStream s(std::move(b));
-        while (s.remaining() > 0) {
-            int op = s.ReadUnsignedByte();
-            if (op == 0) break;
-            if (op != 249) return op;
-            int n = s.ReadUnsignedByte();
-            for (int i = 0; i < n && s.remaining() > 0; ++i) {
-                bool str = s.ReadUnsignedByte() == 1;
-                s.Read24BitInt();
-                if (str) s.ReadString(); else s.ReadInt();
-            }
-        }
-        return 0; });
-    sweep("perks (DBRows)", kIndexConfigs, 41, [](int, int, std::vector<std::uint8_t> b) {
-        InputStream s(std::move(b));
-        while (s.remaining() > 0) {
-            int op = s.ReadUnsignedByte();
-            if (op == 0) break;
-            if (op == 4) { s.ReadUnsignedSmart(); continue; }
-            if (op != 3) return op;
-            s.ReadUnsignedByte();
-            while (s.remaining() > 0) {
-                int cb = s.ReadUnsignedByte();
-                if (cb == 0xFF) break;
-                int subN = s.ReadUnsignedByte();
-                if (subN <= 0) continue;
-                std::vector<int> types((std::size_t)subN);
-                for (int i = 0; i < subN; ++i) types[i] = s.ReadUnsignedSmart();
-                int rowCount = s.ReadUnsignedSmart();
-                for (int r = 0; r < rowCount; ++r)
-                    for (int sub = 0; sub < subN; ++sub) {
-                        if (s.remaining() <= 0) return 256;      // structural overrun
-                        if (types[sub] == 0x24) s.ReadString(); else s.ReadInt();
-                    }
-            }
-        }
-        return 0; });
-    sweep("dbtables", kIndexConfigs, kDbTablesArchive, [](int, int, std::vector<std::uint8_t> b) {
-        return DecodeDbTableFile(std::move(b), nullptr); });
-    g_dbtable_cols.clear();
-    g_dbtables_loaded = false;
-    LoadDbTablesLocked();
-    sweep("DBRows vs schema", kIndexConfigs, 41, [](int, int, std::vector<std::uint8_t> b) {
-        return DbRowSchemaCheckLocked(std::move(b)); });
-    sweep("interfaces", kIndexInterfaces, -1, [](int, int, std::vector<std::uint8_t> b) {
-        IfaceCompDef c; return DecodeIfaceComp(std::move(b), c); });
-    sweep("map elements", kIndexConfigs, 36, [](int, int, std::vector<std::uint8_t> b) {
-        MaplabelDef d; return DecodeMaplabel(std::move(b), d); });
-    sweep("map scenes", kIndexConfigs, 34, [](int, int, std::vector<std::uint8_t> b) {
-        InputStream s(std::move(b));
-        while (s.remaining() > 0) {
-            int op = s.ReadUnsignedByte();
-            if (op == 0) return 0;
-            if (op == 1) s.ReadBigSmart();
-            else if (op == 2) s.Read24BitInt();         // colour
-            else if (op < 3 || op > 5) return op;
-        }
-        return 256; });
-    {   // achievements: full sweep via the decoder that owns the opcode table
-        CacheParseRow row; row.name = "achievements";
-        AchievementsParseHealth(row.ok, row.total, row.stop_op, row.stop_n);
-        rows.push_back(std::move(row));
-    }
-    {   // map tiles: sample regions; ok = the full 4*64*64 walk completed (a trailing section is normal, running short is not)
-        static const int kRegions[][2] = { {49,54},{50,50},{48,54},{52,53},{55,24},{58,25},{39,52} };
-        CacheParseRow row; row.name = "map tiles"; row.sampled = true;
-        auto* idx = g_store->Get(kIndexMaps);
-        if (idx && idx->ready()) {
-            for (const auto& r : kRegions) {
-                auto bytes = idx->ReadFile(r[0] | (r[1] << 7), 3);
-                if (bytes.empty()) continue;
-                ++row.total;
-                int left = 0;
-                (void)DecodeMapTiles(std::move(bytes), &left);
-                if (left >= 0) ++row.ok; else { row.stop_op = 256; ++row.stop_n; }
-            }
-        }
-        rows.push_back(std::move(row));
-    }
-    {   // sprites: decode two UI staples (Magic skill icon + a quest journal icon)
-        CacheParseRow row; row.name = "sprites"; row.sampled = true;
-        auto* idx = g_store->Get(kIndexSprites);
-        if (idx && idx->ready()) {
-            for (int id : { 16055, 3797 }) {
-                ++row.total;
-                int w = 0, h = 0;
-                auto px = SpriteRawRgba(*idx, id, w, h);
-                if (!px.empty() && w > 0 && h > 0) ++row.ok;
-            }
-        }
-        rows.push_back(std::move(row));
-    }
-    return rows;
-}
 
 // ---- cache updates while running ----
 void AchievementsResetLocked();   // Achievements.cpp
@@ -4951,6 +4797,7 @@ void AchievementsResetLocked();   // Achievements.cpp
 namespace {
 std::atomic<std::uint64_t>             g_cache_gen{ 1 };
 std::chrono::steady_clock::time_point  g_update_check_at{};
+void ResetSweepLocked();   // the parse sweep memo, defined with the sweep below
 
 void ResetCacheStateLocked() {
     g_store.reset();
@@ -4980,6 +4827,8 @@ void ResetCacheStateLocked() {
     g_config_colour_cache.clear(); g_buff_catalog_json.clear(); g_ability_configs_json.clear(); g_map_symbols_json.clear();
     g_item_varobjs_cache.clear(); g_dbrows_memo.clear();
     AchievementsResetLocked();
+    ResetSweepLocked();
+    probe::unknown_reset();
 }
 
 // An index that was absent when the Store opened (the launcher started before the client wrote
@@ -5016,6 +4865,626 @@ bool CheckCacheUpdate() {
 }
 
 std::uint64_t CacheGeneration() { return g_cache_gen.load(); }
+
+// ---- parse sweep: every decoder run over the cache, with the panels each type feeds ----
+namespace {
+
+constexpr int kSweepSample = 1200;   // records a sampled pass decodes per type
+
+// The panels that read each type, so a failing row names what it breaks.
+constexpr const char* kFeatItems      = "Item tooltips|Bank|Loot|Grand Exchange|Inventory|Equipment|Plugins: item API";
+constexpr const char* kFeatNpcs       = "NPC tooltips|Slayer & Reaper|Thieving levels|Scene";
+constexpr const char* kFeatLocs       = "Loc labels|Tree timers|Blocked tiles|World Map";
+constexpr const char* kFeatQuests     = "Browse Quests|Focused Quest|Quest helper";
+constexpr const char* kFeatVarbits    = "Vars|Every varbit read";
+constexpr const char* kFeatParams     = "Cache Explorer|Item tooltips|Buffs";
+constexpr const char* kFeatEnums      = "Cache Explorer|Slayer & Reaper|Panel mounts|Skills";
+constexpr const char* kFeatStructs    = "Buffs|Ability tooltips|Skill guides|Map categories";
+constexpr const char* kFeatDbrows     = "Perks|Archaeology|Map tooltips|Mysteries|Research";
+constexpr const char* kFeatIfaces     = "Interfaces|HUD windows|Interface pins";
+constexpr const char* kFeatMapLabels  = "World Map: icons|Map tooltips";
+constexpr const char* kFeatMapScenes  = "World Map|Map window";
+constexpr const char* kFeatAchieve    = "Achievements";
+constexpr const char* kFeatTiles      = "Terrain heights|Blocked tiles|Map window";
+constexpr const char* kFeatSprites    = "Skills: icons|Map window|Buffs: icons";
+constexpr const char* kFeatColours    = "World Map|Map window";
+constexpr const char* kFeatPlacements = "World Map|Blocked tiles|Scene: objects";
+constexpr const char* kFeatAreas      = "World Map";
+constexpr const char* kFeatInvs       = "Bank|Inventory|Containers";
+constexpr const char* kFeatAudio      = "Sounds";
+constexpr const char* kFeatCooldown   = "Buffs|Ability tooltips";
+
+// One record's verdict: how the decode ended, the opcode before that, the plausibility rule it
+// failed (nullptr = none) and the bytes left unread.
+struct RecStat { int stop = 0; int last = -1; const char* bad = nullptr; int tail = 0; };
+
+// Reference-table facts the plausibility rules compare against, gathered once per sweep.
+struct SweepRefs {
+    int maxItem = -1, maxNpc = -1, maxLoc = -1, maxSprite = -1, maxQuest = -1, maxUnderlay = -1, maxOverlay = -1;
+    std::vector<bool> varbit, mapscene, maplabel;   // id -> listed in its archive
+    int varMax[16] = {};                             // archive 60 + d -> largest var file id, -1 none
+    bool has(const std::vector<bool>& v, int id) const { return id >= 0 && id < (int)v.size() && v[id]; }
+};
+
+int LargestFileOf(SqliteIndexFile* idx, int archive) {
+    if (!idx || !idx->ready()) return -1;
+    const auto& e = idx->ref().entries();
+    if (archive < 0 || archive >= (int)e.size()) return -1;
+    int m = -1;
+    for (int f : e[archive].valid_file_ids) m = std::max(m, f);
+    return m;
+}
+int LargestIdOf(SqliteIndexFile* idx, int shift) {   // split index: (archive << shift) | file
+    if (!idx || !idx->ready()) return -1;
+    int maxA = -1;
+    for (int a : idx->ref().valid_archive_ids()) maxA = std::max(maxA, a);
+    if (maxA < 0) return -1;
+    return shift ? ((maxA << shift) | std::max(0, LargestFileOf(idx, maxA))) : maxA;
+}
+std::vector<bool> ListedFiles(SqliteIndexFile* idx, int archive) {
+    std::vector<bool> v;
+    const int m = LargestFileOf(idx, archive);
+    if (m < 0) return v;
+    v.assign((std::size_t)m + 1, false);
+    for (int f : idx->ref().entries()[archive].valid_file_ids) v[f] = true;
+    return v;
+}
+SweepRefs GatherRefs(const Store& store) {
+    SweepRefs r;
+    r.maxItem = LargestIdOf(store.Get(kIndexItems), 8);
+    r.maxNpc = LargestIdOf(store.Get(kIndexNpcs), 7);
+    r.maxLoc = LargestIdOf(store.Get(kIndexLocations), 8);
+    r.maxSprite = LargestIdOf(store.Get(kIndexSprites), 0);
+    auto* cfg = store.Get(kIndexConfigs);
+    r.maxQuest = LargestFileOf(cfg, kQuestArchive);
+    r.maxUnderlay = LargestFileOf(cfg, 1);
+    r.maxOverlay = LargestFileOf(cfg, 4);
+    r.varbit = ListedFiles(cfg, kVarbitArchive);
+    r.mapscene = ListedFiles(cfg, 34);
+    r.maplabel = ListedFiles(cfg, 36);
+    for (int d = 0; d < 16; ++d) r.varMax[d] = LargestFileOf(cfg, 60 + d);
+    return r;
+}
+// Var config archive of a varbit domain: 60 player .. 68 campaign, 75 player group.
+int VarArchiveOfDomain(int domain) { return domain == 9 ? 75 : (domain >= 0 && domain <= 8 ? 60 + domain : -1); }
+
+struct SweepOut {
+    std::uint64_t gen = 0;
+    long long records = 0, ms = 0;
+    std::vector<CacheParseRow> rows;
+    std::vector<CacheOpCount>  hist;
+};
+
+// Accumulates one row: stop codes with the first record of each, plausibility rules with the first
+// record of each, and the opcode histogram the decoders note into.
+struct RowAcc {
+    CacheParseRow row;
+    std::map<int, int> stops, stopFirst, stopLast, stopTail;
+    std::map<std::string, std::pair<int, int>> bad;   // rule -> {count, first id}
+    int hist[512] = {};
+
+    void Record(int id, const RecStat& st) {
+        if (st.stop == 0) ++row.ok;
+        else if (++stops[st.stop] == 1) { stopFirst[st.stop] = id; stopLast[st.stop] = st.last; stopTail[st.stop] = st.tail; }
+        if (st.bad) { auto& b = bad[st.bad]; if (b.first++ == 0) b.second = id; ++row.implausible; }
+    }
+    static std::string StopPhrase(int stop, int last, int tail) {
+        const std::string after = last >= 0 ? " after opcode " + std::to_string(last) : std::string();
+        if (stop == kStopOverrun)  return "ran past their end" + after;
+        if (stop == kStopTrailing) return "ended with " + std::to_string(tail) + " bytes unread" + after;
+        if (stop == kStopMisfit)   return last >= 0 ? "length-prefixed opcode " + std::to_string(last) + " did not fit" : "did not fit the shape the reader expects";
+        if (stop == kStopSchema)   return "disagree with their table schema";
+        return "stopped at opcode " + std::to_string(stop) + " (not in the decoder)" + after;
+    }
+    void Finish(SweepOut& out) {
+        for (const auto& kv : stops)
+            if (kv.second > row.stop_n) { row.stop_op = kv.first; row.stop_n = kv.second; }
+        if (row.stop_n > 0) {
+            row.first_id = stopFirst[row.stop_op];
+            row.stop_last = stopLast[row.stop_op];
+            row.first_detail = StopPhrase(row.stop_op, row.stop_last, stopTail[row.stop_op]);
+        }
+        int worst = 0;
+        for (const auto& kv : bad)
+            if (kv.second.first > worst) { worst = kv.second.first; row.implausible_rule = kv.first; row.implausible_id = kv.second.second; }
+        for (int op = 1; op < 512; ++op) if (hist[op]) out.hist.push_back({ row.name, op, hist[op] });
+        out.rows.push_back(std::move(row));
+    }
+};
+
+// Grammar of the colour configs (underlay archive 1, overlay archive 4). Returns the stop code.
+struct ColourDef { int col = -1, col2 = -1, col3 = -1, material = -1; };
+int DecodeColourConfig(std::vector<std::uint8_t> bytes, int archive, ColourDef& c, int& last) {
+    InputStream s(std::move(bytes));
+    auto rgb = [&] { int r = s.ReadUnsignedByte(), g = s.ReadUnsignedByte(), b = s.ReadUnsignedByte(); return (r << 16) | (g << 8) | b; };
+    return WalkOps(s, last, [&](int op) {
+        probe::note(op);
+        if (op == 1)       c.col = rgb();
+        else if (op == 7)  c.col2 = rgb();                                // secondary RGB
+        else if (op == 13) c.col3 = rgb();                                // ternary RGB
+        // Material opcode differs per archive: overlays (4) material at 3, scale at 9; underlays (1) material at 2, scale at 3.
+        else if (op == 3)  { int v = s.ReadUnsignedShort(); if (archive == 4) c.material = v; }
+        else if (op == 2)  { int v = s.ReadUnsignedShort(); if (archive == 1) c.material = v; }
+        else if (op == 9)  s.ReadUnsignedShort();                          // texture scale
+        else if (op == 11 || op == 14 || op == 16) s.ReadUnsignedByte();  // u8 fields
+        else if (op == 4 || op == 5 || op == 8 || op == 10 || op == 12) { /* bool flag, no payload */ }
+        else return false;
+        return true;
+    });
+}
+
+// Grammar of the map scene configs (archive 34). Returns the stop code.
+int DecodeMapsceneConfig(std::vector<std::uint8_t> bytes, int& sprite, int& last) {
+    InputStream s(std::move(bytes));
+    return WalkOps(s, last, [&](int op) {
+        probe::note(op);
+        if (op == 1) sprite = s.ReadBigSmart();                 // sprite_id (variable unsigned int)
+        else if (op == 2) s.Read24BitInt();                     // colour
+        else if (op >= 3 && op <= 5) { /* bool flag, no payload */ }
+        else return false;
+        return true;
+    });
+}
+
+// Grammar of the inventory configs (archive 5): op 2 = u16 size, op 21 = u8 n x { u24 item, u16 count }.
+int DecodeInvConfig(std::vector<std::uint8_t> bytes, int& size, std::vector<int>& items, int& last) {
+    InputStream s(std::move(bytes));
+    return WalkOps(s, last, [&](int op) {
+        probe::note(op);
+        if (op == 2) size = s.ReadUnsignedShort();
+        else if (op == 21) { int n = s.ReadUnsignedByte(); for (int i = 0; i < n; ++i) { items.push_back(s.Read24BitInt()); s.ReadUnsignedShort(); } }
+        else return false;
+        return true;
+    });
+}
+
+// One dbrow through the grammar every dbrow reader uses; `types` collects the value type codes.
+int DecodeDbRowShape(std::vector<std::uint8_t> bytes, std::vector<int>* types, int& last) {
+    InputStream s(std::move(bytes));
+    return WalkOps(s, last, [&](int op) {
+        probe::note(op);
+        if (op == 4) { s.ReadUnsignedSmart(); return true; }
+        if (op != 3) return false;
+        s.ReadUnsignedByte();
+        while (!s.overran()) {
+            int cb = s.ReadUnsignedByte();
+            if (cb == 0xFF) break;
+            int subN = s.ReadUnsignedByte();
+            if (subN <= 0) continue;
+            std::vector<int> t((std::size_t)subN);
+            for (int i = 0; i < subN; ++i) { t[i] = s.ReadUnsignedSmart(); if (types) types->push_back(t[i]); }
+            int rowCount = s.ReadUnsignedSmart();
+            for (int r = 0; r < rowCount && !s.overran(); ++r)
+                for (int sub = 0; sub < subN; ++sub) {
+                    if (t[sub] == 0x24) s.ReadString(); else s.ReadInt();
+                }
+        }
+        return true;
+    });
+}
+
+// World map area record (index 23 archive 0: two strings, 12 header bytes, u8 n x 17-byte bounds) and
+// its zone table (archive 1: u16 n x 11-byte map squares, u16 m x 15-byte zones, u16 size in squares).
+// Returns the stop code; `zones` and `trailing` describe what was found.
+int DecodeWorldMapArea(const std::vector<std::uint8_t>& d, const std::vector<std::uint8_t>& c, int& zones, int& trailing) {
+    zones = 0; trailing = 0;
+    if (d.size() < 14) return kStopOverrun;
+    std::size_t p = 0;
+    for (int k = 0; k < 2; ++k) { while (p < d.size() && d[p]) ++p; if (p >= d.size()) return kStopOverrun; ++p; }   // name, display name
+    if (p + 12 > d.size()) return kStopOverrun;
+    p += 1 + 4 + 4 + 1 + 1;                      // flags, u32, bg, u8, zoom
+    int nrect = d[p]; p += 1;
+    if (p + (std::size_t)nrect * 17 > d.size()) return kStopOverrun;
+    p += (std::size_t)nrect * 17;
+    trailing = (int)(d.size() - p);
+    if (!c.empty()) {
+        auto u16 = [&](std::size_t k) { return ((int)c[k] << 8) | c[k + 1]; };
+        std::size_t q = 0;
+        if (q + 2 > c.size()) return kStopOverrun;
+        const int n = u16(q); q += 2;
+        if (q + (std::size_t)n * 11 > c.size()) return kStopOverrun;
+        zones = n; q += (std::size_t)n * 11;
+        if (q + 2 > c.size()) return kStopOverrun;
+        const int m = u16(q); q += 2;
+        if (q + (std::size_t)m * 15 + 2 > c.size()) return kStopOverrun;
+        q += (std::size_t)m * 15 + 2;
+        if (q != c.size()) return kStopTrailing;
+    }
+    return 0;
+}
+
+// Decodes every record of every type (or an every-Nth sample when `full` is false) through its own
+// decoder and fills `out`. Reads through `store` only, so it runs with or without g_mu held;
+// `cancelled` makes it stop early and return false.
+template <class Cancel>
+bool RunParseSweep(const Store& store, bool full, Cancel&& cancelled, SweepOut& out) {
+    using Bytes = std::vector<std::uint8_t>;
+    const SweepRefs refs = GatherRefs(store);
+    bool stopped = false;
+
+    // `archives` empty = every archive of the index. Record ids: the reader's split for split
+    // indexes, the file id inside a single config archive, else archive << 16 | file.
+    auto sweep = [&](const char* name, const char* features, int index_id, std::vector<int> archives, auto&& decode) {
+        if (stopped) return;
+        RowAcc acc; acc.row.name = name; acc.row.features = features;
+        auto* idx = store.Get(index_id);
+        if (idx && idx->ready()) {
+            const auto& entries = idx->ref().entries();
+            const bool single = archives.size() == 1;
+            if (archives.empty()) for (int a = 0; a < (int)entries.size(); ++a) archives.push_back(a);
+            long long files = 0;
+            for (int a : archives) if (a >= 0 && a < (int)entries.size()) files += (long long)entries[a].valid_file_ids.size();
+            const long long step = (!full && files > kSweepSample) ? files / kSweepSample : 1;
+            acc.row.sampled = step > 1;
+            acc.row.full = step == 1;
+            const int bits = IdSplitBits(index_id);
+            probe::t_hist = acc.hist;
+            long long k = 0;
+            for (int a : archives) {
+                if (a < 0 || a >= (int)entries.size() || stopped) continue;
+                for (int fid : entries[a].valid_file_ids) {
+                    if ((k++ % step) != 0) continue;
+                    if ((k & 255) == 0 && cancelled()) { stopped = true; break; }
+                    Bytes bytes = idx->ReadFile(a, fid);
+                    if (bytes.empty()) continue;
+                    ++acc.row.total; ++out.records;
+                    const int id = bits ? ((a << bits) | fid) : (single ? fid : ((a << 16) | fid));
+                    acc.Record(id, decode(a, fid, std::move(bytes)));
+                }
+            }
+            probe::t_hist = nullptr;
+        }
+        if (!stopped) acc.Finish(out);
+    };
+    // Last opcode and leftover of a decode that reports through probe::g_tail.
+    auto tail = [](RecStat& r) { r.tail = probe::g_tail; return r; };
+
+    sweep("items", kFeatItems, kIndexItems, {}, [&](int a, int f, Bytes b) {
+        RecStat r; ItemDef d = DecodeItem((a << 8) | f, std::move(b), &r.stop, &r.last);
+        if (d.value < -1 || d.value > (1LL << 40)) r.bad = "value -1..2^40";
+        else if (d.ge_limit < -1 || d.ge_limit > 10000000) r.bad = "ge limit -1..10000000";   // 100000 is the usual bulk limit
+        else if (d.wearpos < -1 || d.wearpos > 20 || d.wearpos2 < -1 || d.wearpos2 > 20) r.bad = "wearpos -1..20";   // 18 in use today
+        else if (d.noted_unnoted > refs.maxItem || d.noted_template > refs.maxItem) r.bad = "note link below the item ceiling";
+        else for (int l : d.linked) if (l > refs.maxItem) { r.bad = "linked item below the item ceiling"; break; }
+        return tail(r); });
+    sweep("npcs", kFeatNpcs, kIndexNpcs, {}, [&](int a, int f, Bytes b) {
+        RecStat r; NpcDef d = DecodeNpc((a << 7) | f, std::move(b), &r.stop, &r.last);
+        if (d.size < 0 || d.size > 16) r.bad = "size 0..16";   // 10 is the largest today (Telos); combat level is a u16 up to 50000 (Lucien)
+        else if (d.varbit >= 0 && !refs.has(refs.varbit, d.varbit)) r.bad = "morph varbit listed in archive 69";
+        else for (int t : d.transform_to) if (t > refs.maxNpc) { r.bad = "morph child below the npc ceiling"; break; }
+        return tail(r); });
+    sweep("objects", kFeatLocs, kIndexLocations, {}, [&](int a, int f, Bytes b) {
+        RecStat r; LocDef d = DecodeLoc((a << 8) | f, std::move(b), &r.stop, &r.last);
+        if (d.dim_x < 0 || d.dim_x > 64 || d.dim_y < 0 || d.dim_y > 64) r.bad = "footprint 0..64";   // 48 is the largest today
+        else if (d.mapscene >= 0 && !refs.has(refs.mapscene, d.mapscene)) r.bad = "mapscene listed in archive 34";
+        else if (d.mapFunction >= 0 && !refs.has(refs.maplabel, d.mapFunction)) r.bad = "map function listed in archive 36";
+        else if (d.morph_varbit >= 0 && !refs.has(refs.varbit, d.morph_varbit)) r.bad = "morph varbit listed in archive 69";
+        else for (int c : d.morph_children) if (c > refs.maxLoc) { r.bad = "morph child below the loc ceiling"; break; }
+        return tail(r); });
+    sweep("quests", kFeatQuests, kIndexConfigs, { kQuestArchive }, [&](int, int, Bytes b) {
+        RecStat r; QuestDef q; DecodeQuestFile(std::move(b), q, &r.stop, &r.last);
+        if (q.parent != -1 && (q.parent < 0 || q.parent > refs.maxQuest)) r.bad = "parent is a quest id";
+        else for (int qr : q.questreqs) if (qr < 0 || qr > refs.maxQuest) { r.bad = "required quest is a quest id"; break; }
+        return tail(r); });
+    sweep("varbits", kFeatVarbits, kIndexConfigs, { kVarbitArchive }, [&](int, int, Bytes b) {
+        RecStat r; InputStream s(std::move(b));
+        int domain = -1, var = -1, lsb = -1, msb = -1;
+        r.stop = WalkOps(s, r.last, [&](int op) {
+            probe::note(op);
+            if (op == 1) { domain = s.ReadUnsignedByte(); var = s.ReadUnsignedShort(); }
+            else if (op == 2) { lsb = s.ReadUnsignedByte(); msb = s.ReadUnsignedByte(); }
+            else if (op == 16) { }
+            else return false;
+            return true; });
+        r.tail = s.remaining();
+        if (r.stop) return r;
+        const int va = VarArchiveOfDomain(domain);
+        if (va < 0) r.bad = "domain 0..9";
+        else if (lsb < 0 || msb < lsb || msb > 31) r.bad = "bits lsb <= msb < 32";
+        else if (var < 0 || var > refs.varMax[va - 60]) r.bad = "var listed in the domain's var archive";
+        return r; });
+    sweep("params", kFeatParams, kIndexConfigs, { kParamsArchive }, [&](int, int, Bytes b) {
+        RecStat r; r.stop = DecodeParamFile(std::move(b), nullptr, &r.last); return tail(r); });
+    sweep("enums", kFeatEnums, kIndexEnums, {}, [&](int, int, Bytes b) {
+        RecStat r; InputStream s(std::move(b));
+        r.stop = WalkOps(s, r.last, [&](int op) {
+            probe::note(op);
+            if (op == 1 || op == 2) { int t = s.ReadUnsignedByte(); if (t < 0x21 || t > 0x7E) r.bad = "type is a printable char"; }
+            else if (op == 101 || op == 102) s.ReadUnsignedSmart();
+            else if (op == 3) s.ReadString();
+            else if (op == 4) s.ReadInt();
+            else if (op == 5 || op == 6) { int n = s.ReadUnsignedShort(); if (n > s.remaining() / 5) r.bad = "entry count fits the record";
+                for (int i = 0; i < n; ++i) { s.ReadInt(); if (op == 5) s.ReadString(); else s.ReadInt(); } }
+            else if (op == 7 || op == 8) { s.ReadUnsignedShort(); int n = s.ReadUnsignedShort(); if (n > s.remaining() / 3) r.bad = "entry count fits the record";
+                for (int i = 0; i < n; ++i) { s.ReadUnsignedShort(); if (op == 7) s.ReadString(); else s.ReadInt(); } }
+            else return false;
+            return true; });
+        r.tail = s.remaining();
+        return r; });
+    sweep("structs", kFeatStructs, kIndexStructs, {}, [&](int, int, Bytes b) {
+        RecStat r; InputStream s(std::move(b));
+        r.stop = WalkOps(s, r.last, [&](int op) {
+            probe::note(op);
+            if (op != 249) return false;
+            int n = s.ReadUnsignedByte();
+            for (int i = 0; i < n && !s.overran(); ++i) { bool str = s.ReadUnsignedByte() == 1; s.Read24BitInt(); if (str) s.ReadString(); else s.ReadInt(); }
+            return true; });
+        r.tail = s.remaining();
+        return r; });
+    sweep("perks (DBRows)", kFeatDbrows, kIndexConfigs, { 41 }, [&](int, int, Bytes b) {
+        RecStat r; std::vector<int> types;
+        r.stop = DecodeDbRowShape(std::move(b), &types, r.last);
+        for (int t : types) if (t == 71 || t == 110 || t > 255) { r.bad = "value type is 4 bytes or a string"; break; }   // hash64 / long would misread as i32
+        return r; });
+    sweep("dbtables", kFeatDbrows, kIndexConfigs, { kDbTablesArchive }, [&](int, int, Bytes b) {
+        RecStat r; r.stop = DecodeDbTableFile(std::move(b), nullptr, &r.last); return r; });
+    {   // dbrows against the table schemas, read fresh for this sweep
+        std::unordered_map<int, std::map<int, std::vector<int>>> schemas;
+        auto* cfg = store.Get(kIndexConfigs);
+        if (cfg && cfg->ready() && kDbTablesArchive < (int)cfg->ref().entries().size()) {
+            for (int fid : cfg->ref().entries()[kDbTablesArchive].valid_file_ids) {
+                std::map<int, std::vector<int>> cols;
+                if (DecodeDbTableFile(cfg->ReadFile(kDbTablesArchive, fid), &cols) == 0) schemas[fid] = std::move(cols);
+            }
+        }
+        sweep("DBRows vs schema", kFeatDbrows, kIndexConfigs, { 41 }, [&](int, int, Bytes b) {
+            RecStat r; r.stop = DbRowSchemaCheck(std::move(b), schemas, r.last); return r; });
+    }
+    {
+        auto* ifIdx = store.Get(kIndexInterfaces);
+        sweep("interfaces", kFeatIfaces, kIndexInterfaces, {}, [&](int a, int f, Bytes b) {
+            RecStat r; IfaceCompDef c; r.stop = DecodeIfaceComp(std::move(b), c);
+            if (r.stop == 256) return r;
+            static const int kTypes[] = { 0, 3, 4, 5, 6, 9, 10, 11, 12, 13, 15, 16 };
+            bool known = false;
+            for (int t : kTypes) known = known || t == c.type;
+            if (!known) r.bad = "component type is one the client defines";
+            else if (c.ver < -1 || c.ver > 15) r.bad = "version -1..15";   // -1, 3..6, 9 and 11 in use today; sizes carry the 0x4000 fill flag, so no geometry rule
+            else if (c.type == 5 && c.sprite > refs.maxSprite && c.sprite < 0x01000000) r.bad = "sprite below the sprite ceiling";   // top byte set = a typed reference, not a sprite archive
+            else if (c.parent >= 0 && c.parent != f) {
+                const auto& e = ifIdx->ref().entries();
+                const auto& ids = e[a].valid_file_ids;
+                if (std::find(ids.begin(), ids.end(), c.parent) == ids.end()) r.bad = "parent is a component of the group";
+            }
+            return r; });
+    }
+    sweep("map elements", kFeatMapLabels, kIndexConfigs, { 36 }, [&](int, int, Bytes b) {
+        RecStat r; MaplabelDef d; r.stop = DecodeMaplabel(std::move(b), d, &r.last);
+        if (d.sprite > refs.maxSprite || d.bg_sprite > refs.maxSprite) r.bad = "sprite below the sprite ceiling";
+        else if (!d.sw.kids.empty() && d.sw.varbit != 0xFFFF && d.sw.varbit != 0xFFFFFF && !refs.has(refs.varbit, d.sw.varbit)) r.bad = "switch varbit listed in archive 69";
+        return r; });
+    sweep("map scenes", kFeatMapScenes, kIndexConfigs, { 34 }, [&](int, int, Bytes b) {
+        RecStat r; int sprite = -1; r.stop = DecodeMapsceneConfig(std::move(b), sprite, r.last);
+        if (sprite > refs.maxSprite) r.bad = "sprite below the sprite ceiling";
+        return r; });
+    sweep("achievements", kFeatAchieve, kIndexAchievements, {}, [&](int, int, Bytes b) {
+        RecStat r; r.stop = AchievementDecodeStop(b, r.last); return tail(r); });
+
+    // Regions used as the fixed sample for the map files (Lumbridge, Varrock, Falador, Burthorpe and three more).
+    static const int kRegions[][2] = { {49,54},{50,50},{48,54},{52,53},{55,24},{58,25},{39,52} };
+    if (!stopped) {   // map tiles: ok = the full 4*64*64 walk completed (a trailing section is normal, running short is not)
+        RowAcc acc; acc.row.name = "map tiles"; acc.row.features = kFeatTiles; acc.row.sampled = true;
+        auto* idx = store.Get(kIndexMaps);
+        if (idx && idx->ready()) {
+            for (const auto& rg : kRegions) {
+                const int archive = rg[0] | (rg[1] << 7);
+                Bytes bytes = idx->ReadFile(archive, 3);
+                if (bytes.empty()) continue;
+                ++acc.row.total; ++out.records;
+                int left = 0;
+                const MapTileData td = DecodeMapTiles(std::move(bytes), &left);
+                RecStat r;
+                if (left < 0) r.stop = kStopOverrun;
+                for (std::size_t i = 0; i < td.overlay.size() && !r.bad; ++i) {
+                    if (td.overlay[i] > refs.maxOverlay) r.bad = "overlay listed in archive 4";
+                    else if (td.underlay[i] > refs.maxUnderlay) r.bad = "underlay listed in archive 1";
+                    else if (td.shape[i] > 47) r.bad = "shape 0..47";
+                }
+                acc.Record(archive, r);
+            }
+        }
+        acc.Finish(out);
+    }
+    if (!stopped) {   // sprites: decode two UI staples (Magic skill icon + a quest journal icon)
+        RowAcc acc; acc.row.name = "sprites"; acc.row.features = kFeatSprites; acc.row.sampled = true;
+        auto* idx = store.Get(kIndexSprites);
+        if (idx && idx->ready()) {
+            for (int id : { 16055, 3797 }) {
+                ++acc.row.total; ++out.records;
+                int w = 0, h = 0;
+                auto px = SpriteRawRgba(*idx, id, w, h);
+                RecStat r;
+                if (px.empty() || w <= 0 || h <= 0) r.stop = kStopMisfit;
+                acc.Record(id, r);
+            }
+        }
+        acc.Finish(out);
+    }
+    sweep("map colours", kFeatColours, kIndexConfigs, { 1, 4 }, [&](int a, int, Bytes b) {   // underlays and overlays
+        RecStat r; ColourDef c; r.stop = DecodeColourConfig(std::move(b), a, c, r.last); return r; });
+    if (!stopped) {   // map placements: the land and water files of the sample regions
+        RowAcc acc; acc.row.name = "map placements"; acc.row.features = kFeatPlacements; acc.row.sampled = true;
+        auto* idx = store.Get(kIndexMaps);
+        if (idx && idx->ready()) {
+            probe::t_hist = acc.hist;
+            for (const auto& rg : kRegions) {
+                const int archive = rg[0] | (rg[1] << 7);
+                for (int file : { 0, 1 }) {
+                    Bytes bytes = idx->ReadFile(archive, file);
+                    if (bytes.empty()) continue;
+                    ++acc.row.total; ++out.records;
+                    RecStat r;
+                    const std::size_t n = bytes.size();
+                    auto placements = DecodeMapLocations(std::move(bytes), &r.stop);
+                    r.tail = r.stop == kStopTrailing ? (int)n : 0;
+                    for (const auto& p : placements) {
+                        if (p.id < 0 || p.id > refs.maxLoc) { r.bad = "loc id below the loc ceiling"; break; }
+                        if (p.type > 22) { r.bad = "placement type 0..22"; break; }
+                    }
+                    acc.Record((archive << 1) | file, r);
+                }
+            }
+            probe::t_hist = nullptr;
+        }
+        acc.Finish(out);
+    }
+    if (!stopped) {   // world map areas: every area record with its zone table and image size
+        RowAcc acc; acc.row.name = "world map areas"; acc.row.features = kFeatAreas; acc.row.full = true;
+        auto* idx = store.Get(kIndexWorldMap);
+        if (idx && idx->ready() && idx->ref().entries().size() >= 5) {
+            for (int fid : idx->ref().entries()[0].valid_file_ids) {
+                Bytes d = idx->ReadFile(0, fid);
+                if (d.empty()) continue;
+                ++acc.row.total; ++out.records;
+                Bytes c = idx->ReadFile(1, fid);
+                RecStat r; int zones = 0;
+                r.stop = DecodeWorldMapArea(d, c, zones, r.tail);
+                if (r.stop == 0 && r.tail > 0) r.stop = kStopTrailing;
+                int w = 0, h = 0;
+                Bytes img = idx->ReadFile(4, fid);
+                if (!img.empty() && !wm_read_png_size(img, w, h)) r.bad = "full image is a PNG";
+                acc.Record(fid, r);
+            }
+        }
+        acc.Finish(out);
+    }
+    sweep("inventories", kFeatInvs, kIndexConfigs, { 5 }, [&](int, int, Bytes b) {
+        RecStat r; int size = 0; std::vector<int> items;
+        r.stop = DecodeInvConfig(std::move(b), size, items, r.last);
+        for (int it : items) if (it > refs.maxItem) { r.bad = "stock item below the item ceiling"; break; }
+        return r; });
+    if (!stopped) {   // audio: 50 downloaded streams per index; effects are JAGA-wrapped Ogg, music bare Ogg
+        RowAcc acc; acc.row.name = "audio"; acc.row.features = kFeatAudio; acc.row.sampled = true;
+        for (int index_id : { kIndexSoundEffects, kIndexMusic }) {
+            auto* idx = store.Get(index_id);
+            if (!idx || !idx->ready()) continue;
+            const std::vector<int> present = idx->ArchiveIdsFrom(0, 1 << 20);   // the client downloads streams on demand
+            if (present.empty()) continue;
+            const std::size_t step = std::max<std::size_t>(1, present.size() / 50);
+            int taken = 0;
+            for (std::size_t i = 0; i < present.size() && taken < 50; i += step) {
+                Bytes raw = idx->ReadRawArchive(present[i]);
+                if (raw.empty()) continue;
+                ++taken; ++acc.row.total; ++out.records;
+                RecStat r;
+                std::string why;
+                Bytes bytes = Decompress(raw, &why);
+                const bool ogg = bytes.size() >= 4 && std::memcmp(bytes.data(), "OggS", 4) == 0;
+                if (bytes.empty()) r.stop = kStopOverrun;
+                else if (!ogg && !ParseJaga(bytes).ok) r.stop = kStopMisfit;
+                acc.Record((index_id << 16) | present[i], r);
+            }
+        }
+        acc.Finish(out);
+    }
+    if (!stopped) {   // ability cooldown pairs: script 6506 keeps the shape the reader fits
+        RowAcc acc; acc.row.name = "cooldown pairs"; acc.row.features = kFeatCooldown; acc.row.full = true;
+        auto* cs = store.Get(kIndexClientScript);
+        if (cs && cs->ready() && FileListed(cs, 6506, 0)) {
+            ++acc.row.total; ++out.records;
+            RecStat r;
+            if (AbilityCooldownVarcsFrom(cs).empty()) r.stop = kStopMisfit;
+            acc.Record(6506, r);
+        }
+        acc.Finish(out);
+    }
+    return !stopped;
+}
+
+// The finished full sweep for the current cache generation, and whether one is running.
+std::shared_ptr<const SweepOut> g_sweep_done;   // under g_mu
+bool                            g_sweep_running = false;   // under g_mu
+
+void ResetSweepLocked() { g_sweep_done.reset(); }
+
+void FullSweepThread(std::shared_ptr<Store> store, std::uint64_t gen) {
+    const auto t0 = std::chrono::steady_clock::now();
+    auto out = std::make_shared<SweepOut>();
+    bool done = false;
+    try {
+        done = RunParseSweep(*store, true, [gen] { return g_cache_gen.load() != gen; }, *out);
+    } catch (...) {
+        done = false;
+    }
+    out->gen = gen;
+    out->ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count();
+    int notClean = 0;
+    for (const auto& r : out->rows) if (r.total > 0 && (r.ok != r.total || r.implausible > 0)) ++notClean;
+    {
+        std::lock_guard<std::mutex> lk(g_mu);
+        g_sweep_running = false;
+        if (!done || g_cache_gen.load() != gen) return;
+        g_sweep_done = out;
+    }
+    rtx::log::Launcher("cache: full sweep " + std::to_string(out->records) + " records in " + std::to_string(out->ms) + " ms" +
+                       (notClean ? ", " + std::to_string(notClean) + " rows not clean" : std::string()));
+}
+
+}  // namespace
+
+void CacheFullSweepStart() {
+    std::shared_ptr<Store> store;
+    std::uint64_t gen = 0;
+    {
+        std::lock_guard<std::mutex> lk(g_mu);
+        EnsureInit();
+        if (!g_store) return;
+        gen = g_cache_gen.load();
+        if (g_sweep_running || (g_sweep_done && g_sweep_done->gen == gen)) return;
+        auto* cfg = g_store->Get(kIndexConfigs);
+        if (!cfg || !cfg->ready()) return;       // cache not open yet: a sweep now would memoise empty rows
+        g_sweep_running = true;
+        store = g_store;
+    }
+    try {
+        std::thread(FullSweepThread, store, gen).detach();
+    } catch (...) {
+        std::lock_guard<std::mutex> lk(g_mu);
+        g_sweep_running = false;
+    }
+}
+
+bool CacheFullSweepReady() {
+    std::lock_guard<std::mutex> lk(g_mu);
+    return g_sweep_done && g_sweep_done->gen == g_cache_gen.load();
+}
+
+bool CacheFullSweepRunning() {
+    std::lock_guard<std::mutex> lk(g_mu);
+    return g_sweep_running;
+}
+
+std::vector<CacheParseRow> CacheParseHealth() {
+    std::vector<CacheParseRow> rows;
+    std::shared_ptr<Store> store;
+    {
+        std::lock_guard<std::mutex> lk(g_mu);
+        EnsureInit();
+        if (!g_store) return rows;
+        if (g_sweep_done && g_sweep_done->gen == g_cache_gen.load()) return g_sweep_done->rows;
+        store = g_store;
+    }
+    CacheFullSweepStart();
+    SweepOut out;
+    RunParseSweep(*store, false, [] { return false; }, out);
+    return out.rows;
+}
+
+std::vector<CacheOpCount> CacheOpHist() {
+    std::lock_guard<std::mutex> lk(g_mu);
+    if (!g_sweep_done || g_sweep_done->gen != g_cache_gen.load()) return {};
+    return g_sweep_done->hist;
+}
+
+std::vector<CacheOpCount> CacheUnknownOps() {
+    std::vector<CacheOpCount> out;
+    for (int k = 0; k < probe::kUnkKinds; ++k)
+        for (int op = 0; op < 256; ++op) {
+            const int n = probe::g_unknown[k][op].load(std::memory_order_relaxed);
+            if (n) out.push_back({ probe::kUnknownKindNames[k], op, n });
+        }
+    return out;
+}
 
 // ---- update check: what the code relies on about one cache entry ----
 namespace {
@@ -5134,6 +5603,8 @@ std::string PinEnumLocked(int id, const std::string& want, bool hash) {
     return out;
 }
 
+// Struct: param count, the kinds of the `want` params, and a hash over every param (sorted) so a
+// changed value is seen on a pinned struct.
 std::string PinStructLocked(int id, const std::string& want) {
     const DecodedStruct* ds = struct_memo_locked(id);
     if (!ds) return "?";
@@ -5141,7 +5612,64 @@ std::string PinStructLocked(int id, const std::string& want) {
     std::string out = "n=" + std::to_string(ds->ints.size() + ds->strs.size());
     for (int k : PinWant(want))
         out += ";p" + std::to_string(k) + "=" + (ds->ints.count(k) ? "i" : ds->strs.count(k) ? "s" : "-");
-    return out;
+    std::map<int, std::string> all;
+    for (const auto& kv : ds->ints) all[kv.first] = std::to_string(kv.second);
+    for (const auto& kv : ds->strs) all[kv.first] = "s:" + kv.second;
+    std::uint32_t h = 2166136261u;
+    for (const auto& kv : all) {
+        const std::string one = std::to_string(kv.first) + "=" + kv.second + ";";
+        h = Fnv32(reinterpret_cast<const std::uint8_t*>(one.data()), one.size(), h);
+    }
+    return out + ";h=" + Hex8(h);
+}
+
+// Item, npc and loc definitions: the name, a hash of the set of opcodes the record carries and a
+// hash of every field the readers use. A new or vanished opcode moves `ops`; a changed value moves `f`.
+std::string PinDefLocked(SqliteIndexFile* idx, int archive, int file, const char* kind) {
+    if (!idx || !idx->ready()) return "?";
+    auto bytes = idx->ReadFile(archive, file);
+    if (bytes.empty()) return {};
+    int hist[512] = {};
+    probe::t_hist = hist;
+    std::string name, f;
+    auto num = [&f](long long v) { f += std::to_string(v); f += ','; };
+    auto str = [&f](const std::string& v) { f += v; f += '|'; };
+    const int id = file;
+    if (kind[0] == 'i') {
+        ItemDef d = DecodeItem(id, std::move(bytes));
+        name = d.name;
+        num(d.value); num(d.ge_limit); num(d.wearpos); num(d.wearpos2); num(d.category); num(d.members); num(d.stackable);
+        num(d.tradeable); num(d.noted); num(d.noted_unnoted); num(d.noted_template); num(d.inv_model_id); num(d.augmented);
+        for (int l : d.linked) num(l);
+        for (int v : d.varobjs) num(v);
+        for (const auto& o : d.options) str(o);
+        for (const auto& o : d.worn_options) str(o);
+        for (const auto& kv : d.params_i) { num(kv.first); num(kv.second); }
+        for (const auto& kv : d.params_s) { num(kv.first); str(kv.second); }
+        str(d.desc);
+    } else if (kind[0] == 'n') {
+        NpcDef d = DecodeNpc(id, std::move(bytes));
+        name = d.name;
+        num(d.size); num(d.combat_level); num(d.wander_range); num(d.max_range); num(d.varbit); num(d.varp);
+        for (int t : d.transform_to) num(t);
+        for (const auto& o : d.options) str(o);
+        for (const auto& o : d.members_options) str(o);
+    } else {
+        LocDef d = DecodeLoc(id, std::move(bytes));
+        name = d.name;
+        num(d.dim_x); num(d.dim_y); num(d.mapscene); num(d.mapFunction); num(d.members); num(d.no_clip);
+        num(d.morph_varbit); num(d.morph_varp); num(d.morph_default);
+        for (int c : d.morph_variants) num(c);
+        for (int m : d.models) num(m);
+        for (const auto& o : d.options) str(o);
+        for (const auto& o : d.members_options) str(o);
+    }
+    probe::t_hist = nullptr;
+    std::string ops;
+    for (int op = 1; op < 512; ++op) if (hist[op]) { ops += std::to_string(op); ops += ','; }
+    for (char& c : name) if (c == ';' || c == '\t' || c == '=') c = ' ';
+    return "name=" + name + ";ops=" + Hex8(Fnv32(reinterpret_cast<const std::uint8_t*>(ops.data()), ops.size())) +
+           ";f=" + Hex8(Fnv32(reinterpret_cast<const std::uint8_t*>(f.data()), f.size()));
 }
 
 std::string PinParamLocked(int id) {
@@ -5257,29 +5785,12 @@ bool PinExistsLocked(int idx, int archive, int file) {
 
 std::string PinFingerprint(const std::string& kind, const std::string& key, const std::string& want) {
     const int id = std::atoi(key.c_str());
-    // the definitions that carry a name go through their own readers, which take the lock themselves
-    auto clean = [](std::string n) {
-        for (char& c : n) if (c == ';' || c == '\t' || c == '=') c = ' ';
-        return n;
-    };
-    if (kind == "item") {
-        if (id < 0) return {};
-        ItemInfo it = GetItem(id);
-        return it.name.empty() ? std::string() : "name=" + clean(it.name);
-    }
-    if (kind == "npc") {
-        if (id < 0) return {};
-        NpcMeta m = GetNpc(id);
-        return m.name.empty() ? std::string() : "name=" + clean(m.name);
-    }
-    if (kind == "loc") {
-        if (id < 0) return {};
-        LocMeta m = GetLoc(id);
-        return m.name.empty() ? std::string() : "name=" + clean(m.name);
-    }
     std::lock_guard<std::mutex> lk(g_mu);
     EnsureInit();
     if (!g_store) return "?";
+    if (kind == "item")     return id < 0 ? std::string() : PinDefLocked(g_store->Get(kIndexItems), id >> 8, id & 0xff, "item");
+    if (kind == "npc")      return id < 0 ? std::string() : PinDefLocked(g_store->Get(kIndexNpcs), id >> 7, id & 0x7f, "npc");
+    if (kind == "loc")      return id < 0 ? std::string() : PinDefLocked(g_store->Get(kIndexLocations), id >> 8, id & 0xff, "loc");
     if (kind == "varbit")   return PinVarbitLocked(id);
     if (kind == "varp")     return PinVarLocked(60, id);
     if (kind == "varc")     return PinVarLocked(62, id);
@@ -5327,6 +5838,10 @@ IndexFacts IndexInfo(int index) {
         if (a >= 0 && a < (int)rt.entries().size()) for (int fid : rt.entries()[a].valid_file_ids) f.maxFile = std::max(f.maxFile, fid);
     }
     f.failed = idx->FailedArchives();
+    f.flags = rt.flags();
+    f.exact = rt.consumedExactly();
+    f.leftover = rt.leftoverBytes();
+    f.firstFail = idx->FirstFailure();
     return f;
 }
 
@@ -5364,6 +5879,7 @@ int MaxId(const std::string& kind) {
         { "param", kIndexConfigs, 0, kParamsArchive }, { "sprite", kIndexSprites, 0, -2 }, { "iface", kIndexInterfaces, 0, -2 },
         { "achievement", kIndexAchievements, 7, -1 }, { "script", kIndexClientScript, 0, -2 },
         { "dbtable", kIndexConfigs, 0, kDbTablesArchive },
+        { "varp", kIndexConfigs, 0, 60 }, { "varc", kIndexConfigs, 0, 62 },   // var configs: player, client
     };
     std::lock_guard<std::mutex> lk(g_mu);
     EnsureInit();

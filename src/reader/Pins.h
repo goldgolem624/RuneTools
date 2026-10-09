@@ -40,9 +40,13 @@ Line Find(const std::string& kind, const std::string& key);   // kind empty when
 // Content: every cache pin compared with the cache now, one row per feature. `runtimeJson` is the
 // panels' own declaration ({"Feature":{"varbit":[..],..},..}): ids it names that the manifest does
 // not record get an existence check. A pinned official name must still name its id; `namesWaitMs`
-// bounds the wait for a names build in flight (0 never waits, for the launcher).
+// bounds the wait for a names build in flight (0 never waits, for the launcher). Adds the
+// `content.generated` row: a shipped table whose source script or archive changed fails, naming the
+// tool that rebuilds it.
 void CheckContent(rtx::health::Run& run, const std::string& runtimeJson, int namesWaitMs = 0);
-// Cache format: index lines (archive counts, file split, protocol) and id ceilings.
+// Cache format: index lines (archive counts, file split, protocol, reference table flags and exact
+// consumption), id ceilings, and the opcode histogram of each decoder's sweep against the `ophist`
+// baselines (an opcode a decoder reads a field from that counts 0 moved; one outside its table is new).
 void CheckCacheFormat(rtx::health::Run& run);
 
 // --pins-record: for each "kind key want features" line of `idsTsv`, the expect column from the

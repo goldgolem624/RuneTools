@@ -23,6 +23,8 @@ struct NpcDef {
     std::vector<int>         transform_to;  // varbit/varp morph targets
 };
 
-NpcDef DecodeNpc(int id, std::vector<std::uint8_t> file_bytes, int* stop_op = nullptr);
+// stop_op: 0 clean, 1..255 that opcode is unknown, kStop* (InputStream.h) the record did not end the way a
+// clean one does. last_op: the last opcode read before the stop (-1 when none).
+NpcDef DecodeNpc(int id, std::vector<std::uint8_t> file_bytes, int* stop_op = nullptr, int* last_op = nullptr);
 
 }  // namespace rtx::cache

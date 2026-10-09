@@ -13,7 +13,9 @@ inline constexpr int kGeOffer         = 0x54;   // 0x51 on 949   36 bytes (949 a
 inline constexpr int kRunEnergy       = 0x15;   // 0x5C on 949   1 byte   : [energy u8] -> skill block +0x18
 inline constexpr int kRunWeight       = 0x07;   // 0x00 on 949   2 bytes  : [weight i16 BE] -> skill block +0x1C
 inline constexpr int kPingEcho        = 0xBE;   // 0x8D on 949   8 bytes  : two u32 BE nonces, echoed back
-inline constexpr int kServerTick      = 0xA0;   // 0xB4 on 949   0 bytes  : tick boundary (INC [MainData+0xDBF0])
+inline constexpr int kServerTick      = 0xA0;   // 0xB4 on 949   0 bytes  : tick boundary; the handler increments +0xDBF0 of a heap
+                                                //   object of its own (the tick counter, allocated at start-up), not of the client root, so a
+                                                //   MainData shift never moves it: a change there is a tick counter layout change
 // Var set packets, layouts confirmed live against the varp/varc stores on 2026-09-12 (docs/fieldmap-950-1.md):
 inline constexpr int kVarpInt         = 0x04;   // 6 bytes  : id = ((b0-0x80)&0xFF)|(b1<<8); value = (b4<<24)|(b5<<16)|(b2<<8)|b3   (26/27 matched)
 inline constexpr int kVarpByte        = 0x4F;   // 3 bytes  : value = i8 b0; id = ((b2-0x80)&0xFF)|(b1<<8)                            (10/14)
@@ -40,10 +42,27 @@ inline constexpr int kSound           = 0x2C;   // 8 bytes  : sound effect
 inline constexpr int kAreaSound       = 0xA4;   // 10 bytes : sound at a zone tile
 inline constexpr int kAreaSoundAbs    = 0x5F;   // 11 bytes : sound at a packed world tile
 inline constexpr int kHintArrow       = 0x62;   // 14 bytes : the game's hint arrow (engine markers)
+inline constexpr int kTileTrail       = 0x3A;   // var-short: the game's tile trail (engine markers); its handler is the trail-message signature
 inline constexpr int kProjectile20    = 0x72;   // 20 bytes : projectile, zone sub-packet 0x0F body
 inline constexpr int kProjectile28    = 0xA9;   // 28 bytes : projectile, zone sub-packet 0x10 body
 inline constexpr int kProjectile29    = 0xC4;   // 29 bytes : projectile, zone sub-packet 0x11 body
 inline constexpr int kOpMax           = 0xDE;   // framer bound (`cmp eax,0xDE; ja`); 0xE5 on 949
+
+// The descriptor table is a fixed-capacity vector in the client's data: {begin, end, capacity}
+// then the inline buffer at +0x28, one descriptor pointer per opcode in opcode order. A
+// descriptor holds its opcode at +0, the wire length at +4 (-1 var-byte, -2 var-short) and at
+// +0x10 the vtable whose slot 2 (+0x10) is the handler (often a 9-byte thunk `add rcx,8 ; jmp`).
+// The companion checks its lengths against kExpected at attach (boot record line `check: packets`).
+inline constexpr std::uint32_t kProtBuffer   = 0x28;   // vector -> inline descriptor buffer
+inline constexpr std::uint32_t kDescOp       = 0x00;   // descriptor -> i32 opcode
+inline constexpr std::uint32_t kDescLen      = 0x04;   // descriptor -> i32 wire length
+inline constexpr std::uint32_t kDescVtbl     = 0x10;   // descriptor -> handler object vtable
+inline constexpr std::uint32_t kVtblHandler  = 0x10;   // vtable -> handler (slot 2)
+// The inbound connection object the framer is called with, read by the companion's packet feed.
+inline constexpr std::uint32_t kConnOp       = 0x2C;   // i32 opcode of the packet just framed, -1 none
+inline constexpr std::uint32_t kConnLen      = 0x30;   // i32 payload length
+inline constexpr std::uint32_t kConnPayload  = 0x2D0;  // payload pointer
+inline constexpr std::uint32_t kConnRx       = 0x2E8;  // u32 cumulative inbound bytes
 
 struct Expect { int op; int len; const char* name; };
 inline constexpr Expect kExpected[] = {

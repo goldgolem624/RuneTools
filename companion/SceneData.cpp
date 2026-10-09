@@ -14,6 +14,8 @@
 
 #include "SceneOffsets.h"
 #include "Signatures.h"
+#include "MainDataOffsets.h"
+#include "CodeFind.h"
 #include "SceneHover.h"
 #include "ScenePlayer.h"
 #include "TooltipHook.h"
@@ -78,7 +80,7 @@ void RingLog(const char* fmt, ...) {
 
     FILE* f = nullptr;
     if (fopen_s(&f, path, "a") != 0 || !f) return;
-    char buf[512];
+    char buf[1024];   // a check line carries its detail whole
     va_list ap; va_start(ap, fmt);
     std::vsnprintf(buf, sizeof(buf), fmt, ap);
     va_end(ap);
@@ -107,6 +109,15 @@ void HookState(const char* name, bool attached) {
     if (attached) { ++g_hooksAttached; RingLog("hook: %s ATTACHED", name); }
     else { ++g_hooksMissing; RingLog("hook: %s NOT FOUND", name); }
 }
+// Self-check lines beside the hook lines (grammar in Signatures.h, kCheckNames): status OK, FAIL or
+// SKIP, the kind word, expected and found values without spaces, the panels the check guards, what
+// would let a SKIP judge, then the detail after " ; ".
+void CheckLine(const char* name, const char* status, const char* kind, const char* exp, const char* got,
+               const char* features, const char* need, const char* detail) {
+    RingLog("check: %s %s kind=%s exp=%s got=%s features=%s need=%s ; %s", name, status,
+            kind && kind[0] ? kind : "-", exp && exp[0] ? exp : "-", got && got[0] ? got : "-",
+            features && features[0] ? features : "-", need && need[0] ? need : "-", detail ? detail : "");
+}
 std::uint64_t R64(std::uint64_t a) { std::uint64_t v = 0; return TryRead(a, v) ? v : 0; }
 std::int32_t  R32(std::uint64_t a) { std::int32_t  v = 0; return TryRead(a, v) ? v : 0; }
 float         RF (std::uint64_t a) { float         v = 0; return TryRead(a, v) ? v : 0.f; }
@@ -115,8 +126,140 @@ std::uint8_t  R8 (std::uint64_t a) { std::uint8_t  v = 0; return TryRead(a, v) ?
 bool InModule(std::uint64_t a) { return a >= g_base && a < g_base + (g_size ? g_size : 0x2000000); }
 bool IsHeap(std::uint64_t a)   { return a > 0x10000 && a < 0x7FFFFFFFFFFFull && !InModule(a); }
 
+// ---- anchors: the second route to each hook site (CodeFind.h, Signatures.h kAnchors) ----
+// Resolved once at boot from the image: the server packet descriptor vector (and the framer it
+// names) and the entity vtable family. A hook whose signature misses is attached by its anchor and
+// the hook line says so; one whose signature hits records whether the anchor agrees.
+rtx::codefind::Image     g_im;      bool g_imOk = false;
+rtx::codefind::ProtTable g_prot;    bool g_protOk = false;
+rtx::codefind::Family    g_family;  bool g_familyOk = false;
+bool GuardedProt() { __try { return rtx::codefind::FindProtTable(g_im, g_prot); } __except (EXCEPTION_EXECUTE_HANDLER) { return false; } }
+bool GuardedFamily() { __try { return rtx::codefind::EntityFamily(g_im, g_family); } __except (EXCEPTION_EXECUTE_HANDLER) { return false; } }
+bool GuardedStringUser(const char* text, std::uint64_t& out, int& fns) { __try { out = rtx::codefind::StringUser(g_im, text, &fns); return true; } __except (EXCEPTION_EXECUTE_HANDLER) { return false; } }
+std::uint64_t GuardedProtHandler(int op) { __try { return rtx::codefind::ProtHandler(g_im, g_prot, op); } __except (EXCEPTION_EXECUTE_HANDLER) { return 0; } }
+void ResolveAnchors() {
+    g_imOk = rtx::codefind::OpenImage(g_base, g_base, g_im);
+    if (!g_imOk) { RingLog("anchors: image sections not found"); return; }
+    g_protOk = GuardedProt();
+    g_familyOk = GuardedFamily();
+    RingLog("anchors: descriptor vector %s (%d descriptors, capacity %d, framer 0x%llx), entity family %s (%zu classes)",
+            g_protOk ? "found" : "NOT FOUND", g_prot.count, g_prot.capacity, (unsigned long long)(g_prot.framer ? g_prot.framer - g_base : 0),
+            g_familyOk ? "found" : "NOT FOUND", g_family.members.size());
+}
+// What the anchor behind `name` offers: one function (at), several candidates (n > 1), or nothing.
+struct AnchorHit { std::uint64_t at = 0; std::uint64_t cands[24] = {}; int n = 0; };
+AnchorHit AnchorFor(const char* name) {
+    AnchorHit h;
+    const rtx::sig::Anchor* a = rtx::sig::AnchorOf(name);
+    if (!a || !g_imOk) return h;
+    switch (a->kind) {
+        case rtx::sig::kAnchorString: { int fns = 0; std::uint64_t f = 0; if (GuardedStringUser(a->text, f, fns)) { h.at = f; h.n = f ? 1 : fns; } break; }
+        case rtx::sig::kAnchorFamily:
+            if (g_familyOk) { h.n = rtx::codefind::FamilySlot7(g_family, a->slots, h.cands, 24); if (h.n == 1) h.at = h.cands[0]; }
+            break;
+        case rtx::sig::kAnchorProt: if (g_protOk) { h.at = GuardedProtHandler(a->op); h.n = h.at ? 1 : 0; } break;
+        case rtx::sig::kAnchorFramer: if (g_protOk) { h.at = g_prot.framer; h.n = h.at ? 1 : 0; } break;
+        default: break;
+    }
+    if (h.n == 1 && !h.cands[0]) h.cands[0] = h.at;
+    return h;
+}
+// The site to hook: the signature's function when it hit, else the anchor's when it names one.
+struct Located { std::uint64_t use = 0, sig = 0; const char* via = "sig"; char note[64] = {}; };
+Located Locate(const char* name, std::uint64_t sigAt) {
+    Located L;
+    L.sig = sigAt;
+    const AnchorHit a = AnchorFor(name);
+    bool among = false;
+    for (int i = 0; i < a.n && i < 24; ++i) if (a.cands[i] == sigAt) among = true;
+    if (sigAt) {
+        L.use = sigAt; L.via = "sig";
+        if (a.n == 0) std::snprintf(L.note, sizeof(L.note), "anchor=none");
+        else if (a.n == 1) std::snprintf(L.note, sizeof(L.note), a.at == sigAt ? "anchor=agrees" : "anchor=0x%llx (differs)", (unsigned long long)(a.at - g_base));
+        else std::snprintf(L.note, sizeof(L.note), among ? "anchor=among(%d)" : "anchor=ambiguous(%d)", a.n);
+    } else if (a.at) {
+        L.use = a.at; L.via = "anchor";
+        std::snprintf(L.note, sizeof(L.note), "anchor=0x%llx", (unsigned long long)(a.at - g_base));
+    } else {
+        std::snprintf(L.note, sizeof(L.note), a.n > 1 ? "anchor=ambiguous(%d)" : "anchor=none", a.n);
+    }
+    return L;
+}
+void HookLineL(const char* name, const Located& L, bool attached) {
+    if (!L.use) { ++g_hooksMissing; RingLog("hook: %s NOT FOUND sig=0x0 %s", name, L.note); return; }
+    if (!attached) { ++g_hooksMissing; RingLog("hook: %s attach FAILED rva=0x%llx via=%s %s", name, (unsigned long long)(L.use - g_base), L.via, L.note); return; }
+    ++g_hooksAttached;
+    RingLog("hook: %s ATTACHED rva=0x%llx via=%s sig=0x%llx %s", name, (unsigned long long)(L.use - g_base), L.via,
+            (unsigned long long)(L.sig ? L.sig - g_base : 0), L.note);
+}
+
 std::uint64_t g_rootGlobal = 0;   // address of the global; deref for the root
 std::uint32_t g_rootMethod = 0;   // 0 = unresolved, 1 = byte anchor, 2 = structural scan
+
+// ---- the root's layout, validated by anchor rather than trusted from the compiled offsets ----
+// The player var store is embedded in the root: its vtable pointer sits at md::kVarpMgr, and its
+// second hash map (the varp values) at kVarpHashFromMgr past it. A MainData shift moves the whole
+// block from +0x18D18 up by one delta (950-1 did +0x40), so when the compiled chain fails and the
+// store is found at another offset, that delta is adopted for every root field this module reads.
+std::int64_t g_mdShift = 0;
+std::uint64_t OffPlayerData() { return rtx::scn::kPlayerData + g_mdShift; }
+std::uint64_t OffContainer()  { return rtx::scn::kContainer + g_mdShift; }
+std::uint64_t OffPlayers()    { return rtx::md::kPlayers + g_mdShift; }
+std::uint64_t OffStatus()     { return rtx::md::kStatus + g_mdShift; }
+std::uint64_t OffVarpMgr()    { return rtx::md::kVarpMgr + g_mdShift; }
+// How many vtables in .rdata share `fn` in one slot (the four var store classes share GetVarbit).
+int VtableSlotUsers(std::uint64_t fn) {
+    if (!g_imOk) return -1;
+    int n = 0;
+    for (std::uint64_t p = g_im.rdataLo; p + 8 <= g_im.rdataHi && n < 64; p += 8) if (R64(p) == fn) ++n;
+    return n;
+}
+// Does root+off hold the player var store: a vtable in the image whose slot 3 (GetVarbit) is code
+// shared by the other var store classes (four on 950-1), and a hash map at +kVarpHashFromMgr
+// {buckets +8, divisor +0x10, count +0x18} that is either empty (before login) or holds nodes with
+// var ids. 0 no, 1 store with an empty map, 2 store with live vars.
+int VarStoreAt(std::uint64_t root, std::uint64_t off, int* countOut = nullptr, int* sharedOut = nullptr) {
+    const std::uint64_t vt = R64(root + off);
+    if (!InModule(vt) || !g_imOk || !g_im.InRdata(vt)) return 0;
+    const std::uint64_t slot3 = R64(vt + 24);
+    if (!g_im.InText(slot3)) return 0;
+    const std::uint64_t hash = root + off + rtx::md::kVarpHashFromMgr;
+    const std::uint64_t buckets = R64(hash + 8);
+    const std::int32_t divisor = R32(hash + 0x10), count = R32(hash + 0x18);
+    int score = 0;
+    if (!buckets && divisor == 0 && count == 0) score = 1;
+    else if (IsHeap(buckets) && divisor > 0 && divisor <= (1 << 20) && count >= 0 && count <= 200000) {
+        int nodes = 0, bad = 0;
+        for (std::int32_t b = 0; b < divisor && b < 256 && nodes < 8; ++b) {
+            const std::uint64_t node = R64(buckets + (std::uint64_t)b * 8);
+            if (!node) continue;
+            if (!IsHeap(node)) { ++bad; break; }
+            const std::int32_t id = R32(node);
+            const std::uint64_t next = R64(node + 0x28);
+            if (id < 0 || id > 0xFFFF || (next && !IsHeap(next))) { ++bad; break; }
+            ++nodes;
+        }
+        if (!bad) score = 2;
+    }
+    if (!score) return 0;
+    // the shared GetVarbit is what tells a var store from any other embedded object with a vtable
+    static std::uint64_t s_fn[8]; static int s_users[8]; static int s_n = 0;
+    int shared = -1;
+    for (int i = 0; i < s_n; ++i) if (s_fn[i] == slot3) shared = s_users[i];
+    if (shared < 0) { shared = VtableSlotUsers(slot3); if (s_n < 8) { s_fn[s_n] = slot3; s_users[s_n] = shared; ++s_n; } }
+    if (shared < 2 || shared > 8) return 0;
+    if (countOut) *countOut = count;
+    if (sharedOut) *sharedOut = shared;
+    return score;
+}
+// The one offset in the MainData block holding the player var store, 0 when none or several.
+std::uint64_t FindVarStore(std::uint64_t root, int* found) {
+    std::uint64_t hit = 0; int n = 0;
+    for (std::uint64_t off = 0x18000; off < 0x1C000; off += 8)
+        if (VarStoreAt(root, off)) { if (!n) hit = off; ++n; }
+    if (found) *found = n;
+    return n == 1 ? hit : 0;
+}
 
 bool RootGlobalValid(std::uint64_t globalAddr) {
     std::uint64_t root = R64(globalAddr);
@@ -124,8 +267,8 @@ bool RootGlobalValid(std::uint64_t globalAddr) {
     // A real root is a class instance (vtable in the image) that owns the local-player block. Loose data
     // can pass the scenery walk below by chance; a text buffer did on 950-1 and pinned the scene at zero.
     if (!InModule(R64(root))) return false;
-    if (!IsHeap(R64(root + rtx::scn::kPlayerData))) return false;
-    std::uint64_t cont = R64(root + rtx::scn::kContainer);
+    if (!IsHeap(R64(root + OffPlayerData()))) return false;
+    std::uint64_t cont = R64(root + OffContainer());
     if (!IsHeap(cont)) return false;
     std::int32_t idx = R32(cont + rtx::scn::kActiveIdx);
     std::uint64_t arr = R64(cont + rtx::scn::kEntryArr);
@@ -182,6 +325,23 @@ std::uint64_t ScanRootGlobal() {
     // yet. Guessing another global in the meantime is how a wrong one got pinned for a whole session.
     if (g_anchorGlobal) {
         if (RootGlobalValid(g_anchorGlobal)) { g_rootMethod = 1; return g_anchorGlobal; }
+        // The compiled chain failed on a root that is an object: look for the player var store at
+        // another offset and, when it sits alone and the chain holds with that delta, adopt it.
+        const std::uint64_t root = R64(g_anchorGlobal);
+        if (IsHeap(root) && InModule(R64(root)) && !VarStoreAt(root, OffVarpMgr())) {
+            int found = 0;
+            const std::uint64_t at = FindVarStore(root, &found);
+            if (at && at != OffVarpMgr()) {
+                const std::int64_t was = g_mdShift;
+                g_mdShift = (std::int64_t)at - (std::int64_t)rtx::md::kVarpMgr;
+                if (RootGlobalValid(g_anchorGlobal)) {
+                    RingLog("scene root: player vars at +0x%llx, compiled +0x%x: MainData shift %+lld adopted", (unsigned long long)at, rtx::md::kVarpMgr, (long long)g_mdShift);
+                    g_rootMethod = 1;
+                    return g_anchorGlobal;
+                }
+                g_mdShift = was;
+            }
+        }
         g_rootMethod = 0;
         return 0;
     }
@@ -338,7 +498,7 @@ constexpr std::uint64_t kEntMgr = 0x130;
 
 bool PlayerFine(float& px, float& py) {
     std::uint64_t root = Root();
-    std::uint64_t cont = R64(root + rtx::scn::kContainer);
+    std::uint64_t cont = R64(root + OffContainer());
     int idx = R32(cont + rtx::scn::kActiveIdx);
     std::uint64_t arr = R64(cont + rtx::scn::kEntryArr);
     if (!IsHeap(arr) || idx < 0) return false;
@@ -346,7 +506,7 @@ bool PlayerFine(float& px, float& py) {
     std::uint64_t wk = SceneWorker(W);
     std::uint64_t vb = R64(wk + kVecBegin), ve = R64(wk + kVecEnd);
     if (!IsHeap(vb) || ve <= vb) return false;
-    std::uint64_t pdata = R64(root + rtx::scn::kPlayerData);
+    std::uint64_t pdata = R64(root + OffPlayerData());
     int luid = IsHeap(pdata) ? R32(pdata + rtx::scn::kLocalUid) : -1;
     std::uint64_t n = (ve - vb) / 8; if (n > 30000) n = 30000;
     for (std::uint64_t i = 0; i < n; ++i) {
@@ -998,8 +1158,9 @@ void ResolveRenderHooks() {
     using rtx::sig::kPlDisMask;
     using rtx::sig::kRenderBody;
     static_assert(sizeof(kPlDisBody) == sizeof(kPlDisMask), "player-display pattern/mask length mismatch");
-    std::uint64_t pNpc = FindVarOp(kNpcDisBody, sizeof(kNpcDisBody));
-    std::uint64_t pDis = FindVarOpWild(kPlDisBody, kPlDisMask, sizeof(kPlDisBody));
+    const Located lNpc = Locate("npc-display", FindVarOp(kNpcDisBody, sizeof(kNpcDisBody)));
+    const Located lDis = Locate("player-display", FindVarOpWild(kPlDisBody, kPlDisMask, sizeof(kPlDisBody)));
+    const std::uint64_t pNpc = lNpc.use, pDis = lDis.use;
     bool renderCommitted = false;
     if (pNpc || pDis) {
         DetourTransactionBegin();
@@ -1012,8 +1173,8 @@ void ResolveRenderHooks() {
             if (pDis) g_renderShare->installed |= 2;   // bit1: hide other players
         }
     }
-    HookLine("npc-display", pNpc, renderCommitted);
-    HookLine("player-display", pDis, renderCommitted);
+    HookLineL("npc-display", lNpc, renderCommitted);
+    HookLineL("player-display", lDis, renderCommitted);
     const bool knownBuild = rtx::scn::KnownBuild(g_base);
     std::uint64_t pRender = knownBuild ? FindVarOp(kRenderBody, sizeof(kRenderBody)) : 0;
     if (pRender) {
@@ -1236,6 +1397,10 @@ rtx::ground::Share* MapGroundShare() {
 
 static rtx::ground::Item g_groundBuf[rtx::ground::kMaxItems];
 
+// ground-stacks self-check counters: type-3 entities seen, stack arrays that did not read as one,
+// stack ids in and out of the item id range.
+std::atomic<std::uint32_t> g_groundType3{ 0 }, g_groundNoStacks{ 0 }, g_groundIdOk{ 0 }, g_groundIdBad{ 0 };
+
 // Appends this entity's item stacks to g_groundBuf; returns the new count. Own function for C2712.
 static std::uint32_t ScanGroundEnt(std::uint64_t ent, std::uint32_t c) {
     __try {
@@ -1243,6 +1408,7 @@ static std::uint32_t ScanGroundEnt(std::uint64_t ent, std::uint32_t c) {
         std::uint64_t sub = R64(ent + kSecPtr);
         if (!IsHeap(sub)) return c;
         if (R8(sub + kType) != 3) return c;
+        g_groundType3.fetch_add(1, std::memory_order_relaxed);
         float ex = (RF(ent + kBoxMinX) + RF(ent + kBoxMaxX)) * 0.5f;   // east centre
         float nz = (RF(ent + kBoxMinZ) + RF(ent + kBoxMaxZ)) * 0.5f;   // north centre
         int tx = (int)(ex / 512.f), ty = (int)(nz / 512.f);
@@ -1253,12 +1419,13 @@ static std::uint32_t ScanGroundEnt(std::uint64_t ent, std::uint32_t c) {
         }
         std::int32_t plane = R32(sub + kFloor);
         std::uint64_t beg = R64(sub + 0x70), end = R64(sub + 0x78);
-        if (!IsHeap(beg) || end <= beg) return c;
+        if (!IsHeap(beg) || end <= beg) { g_groundNoStacks.fetch_add(1, std::memory_order_relaxed); return c; }
         std::uint64_t stacks = (end - beg) / 0x90;
-        if (stacks == 0 || stacks > 256) return c;
+        if (stacks == 0 || stacks > 256 || (end - beg) % 0x90) { g_groundNoStacks.fetch_add(1, std::memory_order_relaxed); return c; }
         for (std::uint64_t s = 0; s < stacks && c < (std::uint32_t)rtx::ground::kMaxItems; ++s) {
             std::int32_t id = R32(beg + s * 0x90);
-            if (id <= 0 || id > 300000) continue;
+            if (id <= 0 || id > 300000) { g_groundIdBad.fetch_add(1, std::memory_order_relaxed); continue; }
+            g_groundIdOk.fetch_add(1, std::memory_order_relaxed);
             g_groundBuf[c].id = id; g_groundBuf[c].x = tx; g_groundBuf[c].y = ty; g_groundBuf[c].plane = plane;
             ++c;
         }
@@ -1398,6 +1565,11 @@ static void EventRecord(std::int32_t op, std::int32_t len, const std::uint8_t* p
     ev->written = i + 1;
 }
 
+// framer-conn self-check counters (hot path): packets seen, opcodes outside the descriptor table,
+// fixed wire lengths disagreeing with the descriptor; the first disagreement as (op, len, descriptor).
+std::atomic<std::uint32_t> g_connSeen{ 0 }, g_connBadOp{ 0 }, g_connBadLen{ 0 };
+std::atomic<std::uint64_t> g_connFirstBad{ 0 };
+
 static void NetProbeRecord(std::uint64_t conn, std::uint64_t* out) {
     auto* sh = g_netProbeShare;
     if (!sh) return;
@@ -1405,15 +1577,26 @@ static void NetProbeRecord(std::uint64_t conn, std::uint64_t* out) {
     const std::uint32_t now = (std::uint32_t)GetTickCount64();
     const bool armed = sh->enable != 0 && (std::uint32_t)(now - sh->enable) <= 3000;
     __try {
-        const std::int32_t op = *(const std::int32_t*)(conn + 0x2c);
-        if (op < 0 || op > rtx::sops::kOpMax) { if (armed) sh->diag[2]++; return; }
-        const std::int32_t  len = *(const std::int32_t*)(conn + 0x30);
-        const std::uint32_t rx  = *(const std::uint32_t*)(conn + 0x2e8);
+        const std::int32_t op = *(const std::int32_t*)(conn + rtx::sops::kConnOp);
+        g_connSeen.fetch_add(1, std::memory_order_relaxed);
+        // the table in this image bounds the opcodes; the compiled bound only when it was not found
+        const int bound = g_protOk && g_prot.count > 0 ? g_prot.count - 1 : rtx::sops::kOpMax;
+        if (op < 0 || op > bound) { g_connBadOp.fetch_add(1, std::memory_order_relaxed); if (armed) sh->diag[2]++; return; }
+        const std::int32_t  len = *(const std::int32_t*)(conn + rtx::sops::kConnLen);
+        if (g_protOk) {
+            const int dl = rtx::codefind::ProtLength(g_im, g_prot, op);
+            if (dl >= 0 && dl != len) {
+                g_connBadLen.fetch_add(1, std::memory_order_relaxed);
+                std::uint64_t none = 0;
+                g_connFirstBad.compare_exchange_strong(none, ((std::uint64_t)(std::uint32_t)op << 32) | ((std::uint64_t)((std::uint32_t)len & 0xFFFF) << 16) | ((std::uint32_t)dl & 0xFFFF));
+            }
+        }
+        const std::uint32_t rx  = *(const std::uint32_t*)(conn + rtx::sops::kConnRx);
         static std::uint32_t s_lastRx = 0xFFFFFFFFu; static std::int32_t s_lastOp = -1;
         if (rx == s_lastRx && op == s_lastOp) { if (armed) sh->diag[3]++; return; }
         s_lastRx = rx; s_lastOp = op;
         const std::uint8_t* p =
-            len > 0 ? *(const std::uint8_t* const*)(conn + 0x2d0) : nullptr;
+            len > 0 ? *(const std::uint8_t* const*)(conn + rtx::sops::kConnPayload) : nullptr;
 
         EventRecord(op, len, p);
 
@@ -1460,6 +1643,40 @@ static std::uint64_t* Detour_Framer(std::uint64_t conn, std::uint64_t* out) {
     return r;
 }
 
+// The wire lengths ServerOps.h compiles against the descriptors this image carries, once at boot.
+void PacketsCheck() {
+    const char* F = "Chat capture|Events channel|Zone events|Var updates|GE offers|Engine markers";
+    if (!g_protOk || g_prot.count <= 0) {
+        CheckLine("packets", "SKIP", "unverified", "descriptors", "-", F, "a descriptor vector in the image",
+                  "UNVERIFIED: descriptor vector not found in the image, wire lengths not compared");
+        return;
+    }
+    char detail[600]; std::size_t at = 0; int n = 0, bad = 0;
+    auto one = [&](int op, int want, const char* name) {
+        ++n;
+        const int dl = rtx::codefind::ProtLength(g_im, g_prot, op);
+        if (dl == want) return;
+        ++bad;
+        if (at < sizeof(detail) - 64)
+            at += (std::size_t)std::snprintf(detail + at, sizeof(detail) - at, "%s%s 0x%02x length %d, compiled %d", at ? "; " : "FORMAT: ", name, op, dl, want);
+    };
+    for (const auto& e : rtx::sops::kExpected) one(e.op, e.len, e.name);
+    one(rtx::sops::kTileTrail, -2, "tile_trail");
+    char exp[32], got[32];
+    std::snprintf(exp, sizeof(exp), "%d/%d", n, rtx::sops::kOpMax + 1);
+    std::snprintf(got, sizeof(got), "%d/%d", n - bad, g_prot.count);
+    if (bad) { CheckLine("packets", "FAIL", "format", exp, got, F, "", detail); return; }
+    if (g_prot.count != rtx::sops::kOpMax + 1) {
+        const bool more = g_prot.count > rtx::sops::kOpMax + 1;
+        std::snprintf(detail, sizeof(detail), "%s: %d descriptors in the image, compiled bound 0x%x; the %d known lengths agree",
+                      more ? "NEW" : "GONE", g_prot.count, rtx::sops::kOpMax, n);
+        CheckLine("packets", "OK", more ? "new" : "gone", exp, got, F, "", detail);
+        return;
+    }
+    std::snprintf(detail, sizeof(detail), "%d descriptors, %d wire lengths agree with the compiled table", g_prot.count, n);
+    CheckLine("packets", "OK", "", exp, got, F, "", detail);
+}
+
 static rtx::events::Share* MapEventShare() {
     wchar_t name[128];
     rtx::events::MakeSectionName(GetCurrentProcessId(), name);
@@ -1501,8 +1718,11 @@ void ResolveNetProbe() {
         RingLog("events: share map FAILED");
     }
     // Framer entry prologue; the `test rcx,rcx; jz; cmp dword[rcx],2` tail makes it unique, jz rel32 wildcarded.
-    std::uint64_t p = FindVarOpWild(rtx::sig::kFramerBody, rtx::sig::kFramerMask, sizeof(rtx::sig::kFramerBody));
-    if (!p) { HookLine("framer", 0, false); return; }
+    // The anchor is the function the descriptor vector names (the one comparing against its count).
+    const Located lf = Locate("framer", FindVarOpWild(rtx::sig::kFramerBody, rtx::sig::kFramerMask, sizeof(rtx::sig::kFramerBody)));
+    PacketsCheck();
+    const std::uint64_t p = lf.use;
+    if (!p) { HookLineL("framer", lf, false); return; }
     sh->framerRva = (std::uint32_t)(p - g_base);
     DetourTransactionBegin();
     DetourUpdateThread(GetCurrentThread());
@@ -1513,7 +1733,7 @@ void ResolveNetProbe() {
         sh->flags |= 1;
         if (g_eventShare) g_eventShare->flags |= 1;
     }
-    HookLine("framer", p, framerOk);
+    HookLineL("framer", lf, framerOk);
 }
 
 void ResolveSpecialObserver() {
@@ -1551,24 +1771,25 @@ void ResolveSpecialObserver() {
     } else HookLine("del-hook", 0, false);
 
     // Per-type display hooks (vtable slot 7). The type-4 pattern starts mid-function at the flag
-    // byte test; the hook goes on the function start.
-    std::uint64_t p4 = FindVarOp(rtx::sig::kT4DisplayBody, sizeof(rtx::sig::kT4DisplayBody));
-    if (p4) {
+    // byte test; the hook goes on the function start. The family anchor offers every 36-slot
+    // class, so it can only confirm a hit here, never choose one.
+    const Located l4 = Locate("t4-display", FindVarOp(rtx::sig::kT4DisplayBody, sizeof(rtx::sig::kT4DisplayBody)));
+    if (l4.use) {
         DetourTransactionBegin();
         DetourUpdateThread(GetCurrentThread());
-        g_origT4Display = (Display_t)p4;
+        g_origT4Display = (Display_t)l4.use;
         DetourAttach(&(PVOID&)g_origT4Display, (PVOID)Detour_T4Display);
-        HookLine("t4-display", p4, DetourTransactionCommit() == NO_ERROR);
-    } else HookLine("t4-display", 0, false);
+        HookLineL("t4-display", l4, DetourTransactionCommit() == NO_ERROR);
+    } else HookLineL("t4-display", l4, false);
 
-    std::uint64_t p13 = FindVarOp(rtx::sig::kT13DisplayBody, sizeof(rtx::sig::kT13DisplayBody));
-    if (p13) {
+    const Located l13 = Locate("t13-display", FindVarOp(rtx::sig::kT13DisplayBody, sizeof(rtx::sig::kT13DisplayBody)));
+    if (l13.use) {
         DetourTransactionBegin();
         DetourUpdateThread(GetCurrentThread());
-        g_origT13Display = (Display_t)p13;
+        g_origT13Display = (Display_t)l13.use;
         DetourAttach(&(PVOID&)g_origT13Display, (PVOID)Detour_T13Display);
-        HookLine("t13-display", p13, DetourTransactionCommit() == NO_ERROR);
-    } else HookLine("t13-display", 0, false);
+        HookLineL("t13-display", l13, DetourTransactionCommit() == NO_ERROR);
+    } else HookLineL("t13-display", l13, false);
 
 }
 
@@ -1603,7 +1824,7 @@ void PublishSpecials(rtx::special::Share* sh) {
 
 std::uint64_t FindLocalPlayerSub() {
     std::uint64_t root = Root();
-    std::uint64_t cont = R64(root + rtx::scn::kContainer);
+    std::uint64_t cont = R64(root + OffContainer());
     int idx = R32(cont + rtx::scn::kActiveIdx);
     std::uint64_t arr = R64(cont + rtx::scn::kEntryArr);
     if (!IsHeap(arr) || idx < 0) return 0;
@@ -1611,7 +1832,7 @@ std::uint64_t FindLocalPlayerSub() {
     std::uint64_t wk = SceneWorker(W);
     std::uint64_t vb = R64(wk + kVecBegin), ve = R64(wk + kVecEnd);
     if (!IsHeap(vb) || ve <= vb) return 0;
-    std::uint64_t pdata = R64(root + rtx::scn::kPlayerData);
+    std::uint64_t pdata = R64(root + OffPlayerData());
     int luid = IsHeap(pdata) ? R32(pdata + rtx::scn::kLocalUid) : -1;
     std::uint64_t n = (ve - vb) / 8; if (n > 30000) n = 30000;
     for (std::uint64_t i = 0; i < n; ++i) {
@@ -1621,6 +1842,181 @@ std::uint64_t FindLocalPlayerSub() {
         if (IsHeap(sub) && R8(sub + kType) == 2 && R32(sub + rtx::scn::kUid) == luid) return sub;
     }
     return 0;
+}
+
+// ---- live self-checks: boot record lines written once and again when a state changes ----
+struct CheckState { int state = -1; };
+bool Transition(CheckState& c, int state) { if (c.state == state) return false; c.state = state; return true; }
+
+// The root's layout: the player var store at its compiled offset (or the adopted one), the game
+// state and the scene view chain behind it.
+void RootCheck() {
+    static CheckState s;
+    static ULONGLONG s_objectSince = 0;
+    const char* F = "Scene objects|Ground items|Specials|Hover outline|In-frame labels|Overhead anchors";
+    char exp[24], got[24], detail[400];
+    std::snprintf(exp, sizeof(exp), "0x%x", rtx::md::kVarpMgr);
+    std::snprintf(got, sizeof(got), "0x%llx", (unsigned long long)OffVarpMgr());
+    const std::uint64_t global = g_rootGlobal ? g_rootGlobal : g_anchorGlobal;
+    const std::uint64_t root = global ? R64(global) : 0;
+    if (!root || !IsHeap(root) || !InModule(R64(root))) {
+        s_objectSince = 0;
+        if (Transition(s, 0)) CheckLine("scene-root", "SKIP", "", exp, "-", F, "log in", g_anchorGlobal ? "root global holds no object yet" : "root global not decoded from the image");
+        return;
+    }
+    if (g_rootGlobal && g_rootMethod == 2) {
+        if (Transition(s, 3)) CheckLine("scene-root", "OK", "unverified", exp, got, F, "", "UNVERIFIED: root found by a structural scan; the anchor global did not validate");
+        return;
+    }
+    int count = 0, shared = 0;
+    const int store = VarStoreAt(root, OffVarpMgr(), &count, &shared);
+    const std::int32_t status = R32(root + OffStatus());
+    if (g_rootGlobal && g_rootMethod == 1 && store) {
+        if (g_mdShift) {
+            if (Transition(s, 2)) {
+                std::snprintf(detail, sizeof(detail), "MOVED: player vars at 0x%llx, compiled 0x%x, adopted (shift %+lld for every root field; status %d, %d vars, store vtable shared by %d classes)",
+                              (unsigned long long)OffVarpMgr(), rtx::md::kVarpMgr, (long long)g_mdShift, status, count, shared);
+                CheckLine("scene-root", "OK", "moved", exp, got, F, "", detail);
+            }
+        } else if (Transition(s, 1)) {
+            std::snprintf(detail, sizeof(detail), "player vars at 0x%x (store vtable shared by %d classes, %d vars), status %d, player data and scene view on the heap",
+                          rtx::md::kVarpMgr, shared, count, status);
+            CheckLine("scene-root", "OK", "", exp, got, F, "", detail);
+        }
+        return;
+    }
+    // an object sits in the root global but the chain does not validate: before login that is the
+    // scene not being loaded; in the world it is a layout this module does not know
+    if (!s_objectSince) s_objectSince = GetTickCount64();
+    if (store && status != 30) {
+        if (Transition(s, 4)) {
+            std::snprintf(detail, sizeof(detail), "root object present, game state %d (30 = in the world), scene not loaded", status);
+            CheckLine("scene-root", "SKIP", "", exp, got, F, "log in", detail);
+        }
+        return;
+    }
+    if (GetTickCount64() - s_objectSince < 20000) {
+        if (Transition(s, 5)) CheckLine("scene-root", "SKIP", "", exp, "-", F, "log in", "root object present, waiting for the scene");
+        return;
+    }
+    if (Transition(s, 6)) {
+        int found = 0;
+        FindVarStore(root, &found);
+        std::snprintf(detail, sizeof(detail), "GONE: root never validated: player vars %s 0x%llx (%d store candidates in the block), status at 0x%llx reads %d, player data at 0x%llx %s, scene view at 0x%llx %s",
+                      store ? "at" : "not at", (unsigned long long)OffVarpMgr(), found, (unsigned long long)OffStatus(), status,
+                      (unsigned long long)OffPlayerData(), IsHeap(R64(root + OffPlayerData())) ? "a pointer" : "not a pointer",
+                      (unsigned long long)OffContainer(), IsHeap(R64(root + OffContainer())) ? "a pointer" : "not a pointer");
+        CheckLine("scene-root", "FAIL", "gone", exp, got, F, "", detail);
+    }
+}
+
+// The player registry: root -> registry +0x10 array, index * 8, entry +0x38 names the local
+// player found by uid in the scene worker's vector (the route the engine ops and labels take).
+void PlayerEntityCheck(std::uint64_t root, std::uint64_t lps) {
+    static CheckState s;
+    const char* F = "In-frame labels|Overhead anchors|Hide players";
+    if (!root || !lps) {
+        if (Transition(s, 0)) CheckLine("player-entity", "SKIP", "", "-", "-", F, "log in", "local player not found in the scene yet");
+        return;
+    }
+    const std::uint64_t pdata = R64(root + OffPlayerData());
+    const int luid = IsHeap(pdata) ? R32(pdata + rtx::scn::kLocalUid) : -1;
+    const std::uint64_t reg = R64(root + OffPlayers());
+    const std::uint64_t arr = IsHeap(reg) ? R64(reg + 0x10) : 0;
+    const std::uint64_t entry = (IsHeap(arr) && luid >= 0 && luid < 0x10000) ? R64(arr + (std::uint64_t)luid * 8) : 0;
+    const std::uint64_t ent = IsHeap(entry) ? R64(entry + 0x38) : 0;
+    char exp[24], got[24], detail[300];
+    std::snprintf(exp, sizeof(exp), "0x%llx", (unsigned long long)lps);
+    std::snprintf(got, sizeof(got), "0x%llx", (unsigned long long)ent);
+    if (ent == lps) {
+        if (Transition(s, 1)) {
+            std::snprintf(detail, sizeof(detail), "registry at 0x%llx, entry %d +0x38 names the local player", (unsigned long long)OffPlayers(), luid);
+            CheckLine("player-entity", "OK", "", exp, got, F, "", detail);
+        }
+        return;
+    }
+    if (Transition(s, 2)) {
+        std::snprintf(detail, sizeof(detail), "FORMAT: player registry at 0x%llx (+0x10 array, index %d, entry +0x38) %s; the local player by uid is 0x%llx",
+                      (unsigned long long)OffPlayers(), luid, !IsHeap(reg) ? "is not a pointer" : !IsHeap(arr) ? "has no array" : !IsHeap(entry) ? "has no entry for the local index" : "names another object",
+                      (unsigned long long)lps);
+        CheckLine("player-entity", "FAIL", "format", exp, got, F, "", detail);
+    }
+}
+
+// Ground item stacks: sub +0x70/+0x78 bound stacks of 0x90 bytes with the item id first.
+void GroundCheck() {
+    static CheckState s;
+    const char* F = "Ground items|Loot";
+    const std::uint32_t t3 = g_groundType3.load(std::memory_order_relaxed), none = g_groundNoStacks.load(std::memory_order_relaxed);
+    const std::uint32_t ok = g_groundIdOk.load(std::memory_order_relaxed), bad = g_groundIdBad.load(std::memory_order_relaxed);
+    if (!t3) {
+        if (Transition(s, 0)) CheckLine("ground-stacks", "SKIP", "", "-", "-", F, "stand near a ground item", "no ground item entity seen yet");
+        return;
+    }
+    char exp[24], got[32], detail[300];
+    std::snprintf(exp, sizeof(exp), "ids");
+    std::snprintf(got, sizeof(got), "%u/%u", ok, ok + bad);
+    if (ok && bad * 20 <= ok && none * 4 <= t3) {
+        if (Transition(s, 1)) {
+            std::snprintf(detail, sizeof(detail), "%u ground item entities, %u stack ids in the item range, %u out of it", t3, ok, bad);
+            CheckLine("ground-stacks", "OK", "", exp, got, F, "", detail);
+        }
+        return;
+    }
+    if (Transition(s, 2)) {
+        std::snprintf(detail, sizeof(detail), "FORMAT: ground item stacks at sub+0x70/+0x78 x 0x90: %u entities, %u without a readable stack array, %u ids in the item range, %u out of it",
+                      t3, none, ok, bad);
+        CheckLine("ground-stacks", "FAIL", "format", exp, got, F, "", detail);
+    }
+}
+
+// The framer's connection object: opcode at +0x2C within the descriptor table, fixed lengths at
+// +0x30 equal to the descriptor's.
+void ConnCheck() {
+    static CheckState s;
+    const char* F = "Chat capture|Events channel|Zone events|Var updates|GE offers|Packet feed";
+    const std::uint32_t seen = g_connSeen.load(std::memory_order_relaxed);
+    if (seen < 50) {
+        if (Transition(s, 0)) CheckLine("framer-conn", "SKIP", "", "-", "-", F, "in the world with packets flowing", "fewer than 50 packets framed so far");
+        return;
+    }
+    const std::uint32_t badOp = g_connBadOp.load(std::memory_order_relaxed), badLen = g_connBadLen.load(std::memory_order_relaxed);
+    const int bound = g_protOk && g_prot.count > 0 ? g_prot.count - 1 : rtx::sops::kOpMax;
+    char exp[24], got[32], detail[300];
+    std::snprintf(exp, sizeof(exp), "+0x2c/+0x30");
+    std::snprintf(got, sizeof(got), "%u/%u", seen - badOp - badLen, seen);
+    if (badLen) {
+        if (Transition(s, 2)) {
+            const std::uint64_t first = g_connFirstBad.load(std::memory_order_relaxed);
+            std::snprintf(detail, sizeof(detail), "FORMAT: connection +0x30 length %d disagrees with descriptor %d on opcode 0x%02x (%u of %u packets)",
+                          (int)(std::int16_t)((first >> 16) & 0xFFFF), (int)(std::int16_t)(first & 0xFFFF), (unsigned)(first >> 32), badLen, seen);
+            CheckLine("framer-conn", "FAIL", "format", exp, got, F, "", detail);
+        }
+        return;
+    }
+    if (badOp * 100 > seen) {
+        if (Transition(s, 3)) {
+            std::snprintf(detail, sizeof(detail), "FORMAT: %u of %u opcodes at connection +0x2c lie outside 0..0x%x", badOp, seen, bound);
+            CheckLine("framer-conn", "FAIL", "format", exp, got, F, "", detail);
+        }
+        return;
+    }
+    if (Transition(s, 1)) {
+        std::snprintf(detail, sizeof(detail), "%u packets, opcodes within 0..0x%x, fixed lengths agree with the descriptors%s", seen, bound,
+                      g_protOk ? "" : " (lengths not compared: no descriptor vector)");
+        CheckLine("framer-conn", "OK", g_protOk ? "" : "unverified", exp, got, F, "", detail);
+    }
+}
+
+void LiveChecks(std::uint64_t root, std::uint64_t localPlayerSub) {
+    static ULONGLONG s_next = 0;
+    const ULONGLONG now = GetTickCount64();
+    if (now < s_next) return;
+    s_next = now + 2000;
+    RootCheck();
+    PlayerEntityCheck(root, localPlayerSub);
+    GroundCheck();
+    ConnCheck();
 }
 
 // ---- Session rebind --------------------------------------------------
@@ -1778,6 +2174,8 @@ DWORD WINAPI Worker(LPVOID) {
     sh->pid = GetCurrentProcessId();
     sh->count = 0; sh->diag_len = 0; sh->seq = 0;
 
+    ResolveAnchors();
+
     g_groundShare = MapGroundShare();
     if (g_groundShare) {
         g_groundShare->magic = rtx::ground::kMagic; g_groundShare->version = rtx::ground::kVersion;
@@ -1795,8 +2193,9 @@ DWORD WINAPI Worker(LPVOID) {
         // Same body up to the final bucket-load register: varp ends ...49 8B 0C C2, varc ...49 8B 04 C2.
         using rtx::sig::kVarpBody;
         using rtx::sig::kVarcBody;
-        std::uint64_t pVarp = FindVarOp(kVarpBody, sizeof(kVarpBody));
-        std::uint64_t pVarc = FindVarOp(kVarcBody, sizeof(kVarcBody));
+        const Located lVarp = Locate("varp-observer", FindVarOp(kVarpBody, sizeof(kVarpBody)));
+        const Located lVarc = Locate("varc-observer", FindVarOp(kVarcBody, sizeof(kVarcBody)));
+        const std::uint64_t pVarp = lVarp.use, pVarc = lVarc.use;
         if (pVarp || pVarc) {
             DetourTransactionBegin();
             DetourUpdateThread(GetCurrentThread());
@@ -1804,23 +2203,23 @@ DWORD WINAPI Worker(LPVOID) {
             if (pVarc) { g_origVarc = (VarOp_t)pVarc; DetourAttach(&(PVOID&)g_origVarc, (PVOID)Detour_Varc); }
             const bool ok = DetourTransactionCommit() == NO_ERROR;
             if (ok) vs->flags = 1;
-            HookLine("varp-observer", pVarp, ok);
-            HookLine("varc-observer", pVarc, ok);
+            HookLineL("varp-observer", lVarp, ok);
+            HookLineL("varc-observer", lVarc, ok);
         } else {
-            HookLine("varp-observer", 0, false);
-            HookLine("varc-observer", 0, false);
+            HookLineL("varp-observer", lVarp, false);
+            HookLineL("varc-observer", lVarc, false);
         }
         // cc_if_setdraggable body: add dword [r9+0x10A0],-2; mov rbp,rcx; mov eax,[r9+..]
         using rtx::sig::kCcDragBody;
-        std::uint64_t pCc = FindVarOp(kCcDragBody, sizeof(kCcDragBody));
-        if (pCc) {
+        const Located lCc = Locate("ccdrag-observer", FindVarOp(kCcDragBody, sizeof(kCcDragBody)));
+        if (lCc.use) {
             DetourTransactionBegin();
             DetourUpdateThread(GetCurrentThread());
-            g_origCcDrag = (CcOp_t)pCc; DetourAttach(&(PVOID&)g_origCcDrag, (PVOID)Detour_CcIfSetDraggable);
+            g_origCcDrag = (CcOp_t)lCc.use; DetourAttach(&(PVOID&)g_origCcDrag, (PVOID)Detour_CcIfSetDraggable);
             const bool ok = DetourTransactionCommit() == NO_ERROR;
             if (ok) vs->flags |= 2;   // bit1 = cc_if_setdraggable observed
-            HookLine("ccdrag-observer", pCc, ok);
-        } else HookLine("ccdrag-observer", 0, false);
+            HookLineL("ccdrag-observer", lCc, ok);
+        } else HookLineL("ccdrag-observer", lCc, false);
     }
 
     ResolveRenderHooks();
@@ -1857,6 +2256,8 @@ DWORD WINAPI Worker(LPVOID) {
         { char said[400]; if (rtx::engineops::TakeLog(said, sizeof(said))) RingLog("%s", said); }
         { char said[600]; if (rtx::enginehl::TakeLog(said, sizeof(said))) RingLog("%s", said); }
         { char said[900]; if (rtx::engineiface::TakeLog(said, sizeof(said))) RingLog("%s", said); }
+        { char said[600]; if (rtx::menuprobe::TakeLog(said, sizeof(said))) RingLog("%s", said); }
+        { char said[400]; if (rtx::tooltip::TakeLog(said, sizeof(said))) RingLog("%s", said); }
         EnsureProducers(sh);
         if (!sh) { Sleep(250); continue; }
         float cpx = 0, cpy = 0;
@@ -1924,13 +2325,17 @@ DWORD WINAPI Worker(LPVOID) {
                         g_specialShare->diag[2], g_specialShare->diag[7], (unsigned long long)root);
         }
 
-        if (g_renderShare) {
+        {
             std::uint64_t lps = FindLocalPlayerSub();
             if (lps) g_localPlayerSub.store(lps, std::memory_order_relaxed);
-            bool wantBlank = g_renderShare->hideAll != 0;
-            if (wantBlank != g_sceneBlankPatched) SceneBlankSet(wantBlank);
-            rtx::vkpresent::SetHideScene(wantBlank);
-            if (rtx::vkpresent::HideSceneAvailable()) g_renderShare->installed |= 4;
+            if (g_renderShare) {
+                bool wantBlank = g_renderShare->hideAll != 0;
+                if (wantBlank != g_sceneBlankPatched) SceneBlankSet(wantBlank);
+                rtx::vkpresent::SetHideScene(wantBlank);
+                if (rtx::vkpresent::HideSceneAvailable()) g_renderShare->installed |= 4;
+            }
+            rtx::engineops::SetRootShift(g_mdShift);
+            LiveChecks(g_rootGlobal ? R64(g_rootGlobal) : 0, g_rootGlobal ? lps : 0);
         }
         Sleep(250);
     }

@@ -18,15 +18,17 @@ int ReadSmarts(InputStream& s) {
 
 }  // namespace
 
-std::vector<LocPlacement> DecodeMapLocations(std::vector<std::uint8_t> file_bytes) {
+std::vector<LocPlacement> DecodeMapLocations(std::vector<std::uint8_t> file_bytes, int* stop) {
     std::vector<LocPlacement> out;
+    if (stop) *stop = 0;
     if (file_bytes.empty()) return out;
     InputStream s(std::move(file_bytes));
 
     int id = -1;
+    bool ended = false;
     while (s.remaining() > 0) {
         int inc = ReadSmarts(s);
-        if (inc == 0) break;
+        if (inc == 0) { ended = true; break; }
         id += inc;
 
         int pos = 0;
@@ -58,6 +60,10 @@ std::vector<LocPlacement> DecodeMapLocations(std::vector<std::uint8_t> file_byte
             }
             out.push_back(p);
         }
+    }
+    if (stop) {
+        if (s.overran() || !ended) *stop = kStopOverrun;      // no terminator before the end
+        else if (s.remaining() > 0) *stop = kStopTrailing;    // bytes after the terminator
     }
     return out;
 }

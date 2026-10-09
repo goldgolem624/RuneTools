@@ -5,7 +5,9 @@ namespace rtx::cache {
 
 namespace {
 
-bool ReadOne(InputStream& s, NpcDef& d, int op) {
+// `misfit` receives the opcode of a length-prefixed block whose fields did not end where its length
+// said (the decoder re-aligns on the length and carries on; the sweep reports it as kStopMisfit).
+bool ReadOne(InputStream& s, NpcDef& d, int op, int& misfit) {
     switch (op) {
         case 1: {                                   // model ids
             int n = s.ReadUnsignedByte();
@@ -238,7 +240,7 @@ bool ReadOne(InputStream& s, NpcDef& d, int op) {
                 for (int o = op_start; o < s.offset(); ++o) probe::g_payload.push_back((char)s.peek(o));
                 for (int o = s.offset(); s.peek(o) >= 0; ++o) probe::g_tail_bytes.push_back((char)s.peek(o));
             }
-            if (s.offset() != end) s.seek(end);                      // length is authoritative
+            if (s.offset() != end) { misfit = op; s.seek(end); }     // length is authoritative
             return true;
         }
         default:
@@ -252,19 +254,20 @@ bool ReadOne(InputStream& s, NpcDef& d, int op) {
 
 }  // namespace
 
-NpcDef DecodeNpc(int id, std::vector<std::uint8_t> file_bytes, int* stop_op) {
+NpcDef DecodeNpc(int id, std::vector<std::uint8_t> file_bytes, int* stop_op, int* last_op) {
     NpcDef d;
     d.id = id;
     if (stop_op) *stop_op = 0;
+    if (last_op) *last_op = -1;
     if (file_bytes.empty()) return d;
     InputStream s(std::move(file_bytes));
-    for (;;) {
-        int op = s.ReadUnsignedByte();
-        probe::note(op);
-        if (op == 0) break;
-        if (!ReadOne(s, d, op)) { if (stop_op) *stop_op = op; probe::g_stop = s.offset(); break; }
-    }
+    int last = -1, misfit = 0;
+    int st = WalkOps(s, last, [&](int op) { probe::note(op); return ReadOne(s, d, op, misfit); });
+    if (misfit) { st = kStopMisfit; last = misfit; }   // the earlier anomaly outranks what followed it
+    if (st) probe::g_stop = s.offset();
     probe::g_tail = s.remaining();
+    if (stop_op) *stop_op = st;
+    if (last_op) *last_op = last;
     return d;
 }
 

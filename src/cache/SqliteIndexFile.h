@@ -53,6 +53,9 @@ public:
 
     std::size_t CachedBytes()     const;
     int         FailedArchives()  const;
+    // Why the first archive that failed to decode did ("container type 4 at archive 1234",
+    // "lzma failed at archive 12", "file table layout changed ... at archive 7"); empty when none.
+    std::string FirstFailure()    const;
 
 private:
     enum class SlotState : std::uint8_t { NotLoaded, Loaded, Failed };
@@ -103,6 +106,7 @@ private:
     std::size_t                    byte_budget_;
     std::size_t                    cached_bytes_  = 0;
     int                            failed_count_  = 0;
+    std::string                    first_fail_;         // reason of the first failed decode (archive_cache_mu_)
     std::uint64_t                  use_counter_   = 0;
 };
 

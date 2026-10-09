@@ -7,6 +7,7 @@
 #include "Cs2Browser.h"
 #include "Dock.h"
 #include "GameUi.h"
+#include "HealthAuto.h"
 #include "WikiBrowser.h"
 #include "IconCache.h"
 #include "Loader.h"
@@ -568,43 +569,34 @@ JSValueRef ReaderHealth(JSContextRef ctx, JSObjectRef, JSObjectRef,
     return utf8_to_js(ctx, rtx::reader::ReaderHealthJson(pid, pins));
 }
 
-namespace {
-std::mutex g_healthMu;
-bool g_healthRunning = false;
-std::string g_healthResult;
-std::uint64_t g_healthSeq = 0;
-}
-
+// The run itself lives in HealthAuto, shared with the automatic trigger: one run at a time, and a
+// page picks up a run it did not start.
 JSValueRef ReaderHealthStart(JSContextRef ctx, JSObjectRef, JSObjectRef,
                              size_t argc, const JSValueRef argv[], JSValueRef*) {
     auto pid = (argc >= 1) ? (std::uint32_t)JSValueToNumber(ctx, argv[0], nullptr) : 0;
     const std::string pins = argc >= 2 && JSValueIsString(ctx, argv[1]) ? js_to_utf8(ctx, argv[1]) : std::string();
-    {
-        std::lock_guard<std::mutex> lk(g_healthMu);
-        if (g_healthRunning) return JSValueMakeNumber(ctx, (double)g_healthSeq);
-        g_healthRunning = true;
-    }
-    std::thread([pid, pins] {
-        std::string out;
-        try { out = rtx::reader::ReaderHealthJson(pid, pins); }
-        catch (const std::exception& e) { rtx::log::Launcher(std::string("[health] ") + e.what()); }
-        std::lock_guard<std::mutex> lk(g_healthMu);
-        g_healthResult = std::move(out);
-        ++g_healthSeq;
-        g_healthRunning = false;
-    }).detach();
-    std::lock_guard<std::mutex> lk(g_healthMu);
-    return JSValueMakeNumber(ctx, (double)g_healthSeq);
+    return JSValueMakeNumber(ctx, (double)rtx::launcher::healthauto::Start(pid, pins, "manual"));
 }
 
 // {"running":bool,"seq":n,"run":<the last finished run or null>}
 JSValueRef ReaderHealthPoll(JSContextRef ctx, JSObjectRef, JSObjectRef,
                             size_t, const JSValueRef[], JSValueRef*) {
-    std::lock_guard<std::mutex> lk(g_healthMu);
-    std::string out = std::string("{\"running\":") + (g_healthRunning ? "true" : "false") +
-                      ",\"seq\":" + std::to_string(g_healthSeq) + ",\"run\":" +
-                      (g_healthResult.empty() ? std::string("null") : g_healthResult) + "}";
-    return utf8_to_js(ctx, out);
+    return utf8_to_js(ctx, rtx::launcher::healthauto::PollJson());
+}
+
+// healthLatest(sinceSeq): the latest run's seq, the queued automatic run, and the run itself when
+// seq differs from the caller's.
+JSValueRef HealthLatest(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                        size_t argc, const JSValueRef argv[], JSValueRef*) {
+    const auto since = (argc >= 1 && JSValueIsNumber(ctx, argv[0])) ? (std::uint64_t)JSValueToNumber(ctx, argv[0], nullptr) : 0;
+    return utf8_to_js(ctx, rtx::launcher::healthauto::LatestJson(since));
+}
+
+// healthSummary(name): the readable form of a history run, of the last run when the name is empty.
+JSValueRef HealthSummary(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                         size_t argc, const JSValueRef argv[], JSValueRef*) {
+    const std::string name = argc >= 1 && JSValueIsString(ctx, argv[0]) ? js_to_utf8(ctx, argv[0]) : std::string();
+    return utf8_to_js(ctx, rtx::launcher::healthauto::SummaryText(name));
 }
 
 JSValueRef HealthHistory(JSContextRef ctx, JSObjectRef, JSObjectRef,
@@ -6120,6 +6112,8 @@ void AttachBridge(ultralight::View* view) {
     install_fn(ctx, ns, "healthRead",        HealthRead);
     install_fn(ctx, ns, "healthDiff",        HealthDiff);
     install_fn(ctx, ns, "healthMarkReviewed", HealthMarkReviewed);
+    install_fn(ctx, ns, "healthLatest",      HealthLatest);
+    install_fn(ctx, ns, "healthSummary",     HealthSummary);
     install_fn(ctx, ns, "bridgeStatus",      BridgeStatus);
     install_fn(ctx, ns, "itemIcon",          ItemIcon);
     install_fn(ctx, ns, "iconSource",        IconSource);

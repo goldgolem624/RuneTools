@@ -1,5 +1,6 @@
 #include "EngineMarkers.h"
 #include "Signatures.h"
+#include "MainDataOffsets.h"
 #include "EngineComponents.h"
 #include "EngineOps.h"
 #include "EngineIface.h"
@@ -143,6 +144,10 @@ const std::uint8_t* g_imageHi = nullptr;
 
 std::mutex g_logMu;
 char    g_log[400] = {};
+char    g_check[600] = {};                     // the markers check line, taken before the log (under g_logMu)
+const char* g_checkKind = "";                  // "moved" when a hit named another displacement than compiled
+bool    g_selfChecked = false;                 // the managers read as the layout this file knows (game thread)
+bool    g_roundTripSaid = false;
 
 void Say(const char* fmt, ...) {
     std::lock_guard<std::mutex> lk(g_logMu);
@@ -153,6 +158,15 @@ void Say(const char* fmt, ...) {
     std::vsnprintf(g_log + used, sizeof(g_log) - used, fmt, ap);
     va_end(ap);
 }
+// Boot record check line (grammar in Signatures.h): what the managers and routines read as.
+void SayCheck(const char* status, const char* kind, const char* exp, const char* got, const char* need, const char* detail) {
+    std::lock_guard<std::mutex> lk(g_logMu);
+    std::snprintf(g_check, sizeof(g_check), "check: markers %s kind=%s exp=%s got=%s features=%s need=%s ; %s", status,
+                  kind && kind[0] ? kind : "-", exp && exp[0] ? exp : "-", got && got[0] ? got : "-",
+                  "Engine markers|Engine markers: hint arrows|Engine markers: tile trail|Engine markers: tile outline",
+                  need && need[0] ? need : "-", detail);
+}
+char g_exp[40] = {}, g_got[40] = {};           // compiled and found manager displacements and slot size, for the check line
 
 // What the two routines read from: the bytes at +0x10, how far along at +0x18.
 struct Stream {
@@ -368,11 +382,48 @@ void TendOurs(std::uint8_t* manager, std::uint8_t* trails) {
     }
 }
 
+// Before anything is written into the managers: every request record carries a slot (-1 none, or
+// 0..7), every filled slot holds an object of the game's, and the style table, once loaded, counts
+// 1..64 styles. A layout that reads otherwise turns the markers off and says so.
+bool SelfCheck(std::uint8_t* manager, std::uint8_t* root, std::uint8_t* trails) {
+    char why[240];
+    for (int s = 0; s < 8; ++s) {
+        std::int32_t waiting;
+        std::memcpy(&waiting, manager + kArrowRequests + (std::size_t)s * kArrowRequestSize, sizeof(waiting));
+        if (waiting != -1 && (waiting < 0 || waiting > 7)) {
+            std::snprintf(why, sizeof(why), "FORMAT: arrow request record %d at +0x%zx reads slot %d (expected -1 or 0..7); markers off", s, kArrowRequests + (std::size_t)s * kArrowRequestSize, waiting);
+            SayCheck("FAIL", "format", g_exp, g_got, "", why);
+            return false;
+        }
+        std::uint8_t* a = static_cast<std::uint8_t*>(SlotObject(manager, s));
+        std::uint8_t* t = static_cast<std::uint8_t*>(SlotObject(trails, s));
+        if ((a && !InImage(a)) || (t && !InImage(t))) {
+            std::snprintf(why, sizeof(why), "FORMAT: %s slot %d holds something without a vtable in the image; markers off", a && !InImage(a) ? "arrow" : "trail", s);
+            SayCheck("FAIL", "format", g_exp, g_got, "", why);
+            return false;
+        }
+    }
+    if (const std::uint8_t* table = At(At(root, g_arrowDisp - sizeof(void*)), kStyleTable)) {
+        std::int32_t count = 0;
+        std::memcpy(&count, table + kStyleCount, sizeof(count));
+        if (count <= 0 || count > 64) {
+            std::snprintf(why, sizeof(why), "FORMAT: arrow style table count %d (expected 1..64); markers off", count);
+            SayCheck("FAIL", "format", g_exp, g_got, "", why);
+            return false;
+        }
+    }
+    return true;
+}
+
 void ApplyUnguarded(std::uint8_t* manager) {
     std::uint8_t* root = *reinterpret_cast<std::uint8_t**>(manager + kMgrRoot);
     if (!root || *reinterpret_cast<std::uint8_t**>(root + g_arrowDisp) != manager) return;
     std::uint8_t* trails = *reinterpret_cast<std::uint8_t**>(root + g_trailDisp);
     if (!trails || *reinterpret_cast<std::uint8_t**>(trails + kMgrRoot) != root) return;
+    if (!g_selfChecked) {
+        g_selfChecked = true;
+        if (!SelfCheck(manager, root, trails)) { g_markersOn = false; return; }
+    }
 
     if (manager != g_manager) {             // a new session: nothing of ours is in it
         g_manager = manager;
@@ -387,6 +438,16 @@ void ApplyUnguarded(std::uint8_t* manager) {
     const bool lostArrow = g_ownArrow && !SlotObject(manager) && waiting == -1;
     const bool lostTrail = g_ownTrail && !SlotObject(trails);
     const bool lostPath = g_ownPath && !SlotObject(trails, kPathSlot);
+    // the first request that the game answered with an object of its own closes the self-check
+    if (!g_roundTripSaid && ((g_ownArrow && SlotObject(manager)) || (g_ownTrail && SlotObject(trails)) || (g_ownPath && SlotObject(trails, kPathSlot)))) {
+        g_roundTripSaid = true;
+        char d[200];
+        std::snprintf(d, sizeof(d), "%s request round-tripped: the game filled slot %d with its own object%s",
+                      g_ownArrow && SlotObject(manager) ? "arrow" : g_ownTrail && SlotObject(trails) ? "tile" : "path",
+                      g_ownArrow && SlotObject(manager) ? kSlot : g_ownTrail && SlotObject(trails) ? kSlot : kPathSlot,
+                      g_checkKind[0] ? "; the managers sit at displacements other than compiled (adopted from the frame site)" : "");
+        SayCheck("OK", g_checkKind, g_exp, g_got, "", d);
+    }
     if (seq == g_seenSeq) {
         TendOurs(manager, trails);
         if (!(lostArrow || lostTrail || lostPath) || now < g_retryAt || g_tries >= kMaxTries) return;
@@ -423,6 +484,13 @@ void ApplyUnguarded(std::uint8_t* manager) {
         if (count > 0 && count < 256 && w.arrow_style >= (std::uint32_t)count) w.arrow_style = (std::uint32_t)count - 1;
     }
 
+    // a request that faults inside the game's routine is a layout the routine does not expect
+    auto faulted = [&](const char* which) {
+        g_markersOn = false;
+        char d[160];
+        std::snprintf(d, sizeof(d), "FORMAT: the %s request faulted inside the game's message routine; markers off", which);
+        SayCheck("FAIL", "format", g_exp, g_got, "", d);
+    };
     if (!SameArrow(w, g_done) || lostArrow) {
         // a slot the game filled by itself is the game's: leave it alone
         if (g_ownArrow || (!SlotObject(manager) && waiting == -1)) {
@@ -431,6 +499,7 @@ void ApplyUnguarded(std::uint8_t* manager) {
             Say(ok ? "markers: arrow %s at %d,%d style %u height %u range %u feet %d"
                    : "markers: arrow request failed (%s %d,%d style %u height %u range %u feet %d)",
                 w.arrow_on ? (w.arrow_npc >= 0 ? "set on npc" : "set") : "cleared", w.arrow_x, w.arrow_y, w.arrow_style, w.arrow_height, w.arrow_range, w.arrow_pointer);
+            if (!ok) { faulted("arrow"); return; }
         } else {
             Say("markers: arrow slot is in use by the game");
         }
@@ -441,6 +510,7 @@ void ApplyUnguarded(std::uint8_t* manager) {
             g_ownTrail = ok && w.tile_on;
             Say(ok ? "markers: tile %s at %d,%d model %u" : "markers: tile request failed (%s %d,%d model %u)",
                 w.tile_on ? "set" : "cleared", w.tile_x, w.tile_y, w.tile_model);
+            if (!ok) { faulted("tile"); return; }
         } else {
             Say("markers: tile slot is in use by the game");
         }
@@ -451,7 +521,7 @@ void ApplyUnguarded(std::uint8_t* manager) {
             const bool lay = w.path_on && w.path_model != 0;
             const bool ok = SendPath(root, lay, w);
             g_ownPath = ok && lay;
-            if (!ok) Say("markers: path request failed (%d,%d to %d,%d model %u)", w.path_x0, w.path_y0, w.path_x1, w.path_y1, w.path_model);
+            if (!ok) { Say("markers: path request failed (%d,%d to %d,%d model %u)", w.path_x0, w.path_y0, w.path_x1, w.path_y1, w.path_model); faulted("path"); return; }
         }
     }
     g_done = w;
@@ -564,32 +634,76 @@ bool Install() {
     Image im;
     if (!OpenImage(im)) return false;
     const std::uint8_t* arrowAt = FindUnique(im, kArrowSig, kArrowLen);
-    const std::uint8_t* trail = FindUnique(im, kTrailSig, kTrailLen);
+    const std::uint8_t* trailAt = FindUnique(im, kTrailSig, kTrailLen);
     const std::uint8_t* site = FindUnique(im, kFrameSig, kFrameLen);
-    if (!arrowAt || !trail || !site) return false;
-    const std::uint8_t* arrow = reinterpret_cast<const std::uint8_t*>(
-        rtx::codefind::FunctionStart(reinterpret_cast<std::uint64_t>(im.base), reinterpret_cast<std::uint64_t>(arrowAt)));
+    // the anchors behind the two message routines: the handlers the server packet descriptors name
+    const std::uint8_t* arrowAnchor = nullptr;
+    const std::uint8_t* trailAnchor = nullptr;
+    bool tableOk = false;
+    {
+        rtx::codefind::Image cim;
+        rtx::codefind::ProtTable pt;
+        if (rtx::codefind::OpenImage(reinterpret_cast<std::uint64_t>(im.base), reinterpret_cast<std::uint64_t>(im.base), cim) &&
+            rtx::codefind::FindProtTable(cim, pt) && pt.count > 0) {
+            tableOk = true;
+            arrowAnchor = reinterpret_cast<const std::uint8_t*>(rtx::codefind::ProtHandler(cim, pt, rtx::sops::kHintArrow));
+            trailAnchor = reinterpret_cast<const std::uint8_t*>(rtx::codefind::ProtHandler(cim, pt, rtx::sops::kTileTrail));
+        }
+    }
+    std::snprintf(g_exp, sizeof(g_exp), "0x%x/0x%x/%u", rtx::md::kArrowMgr, rtx::md::kTrailMgr, rtx::sig::kArrowSlotSize);
+    if (!site) {
+        SayCheck("FAIL", "gone", g_exp, "-", "", "GONE: the arrow manager's frame call site was not recognised; engine markers, in-frame panels, sounds and asks off");
+        return false;
+    }
+    const std::uint8_t* arrow = arrowAt ? reinterpret_cast<const std::uint8_t*>(
+        rtx::codefind::FunctionStart(reinterpret_cast<std::uint64_t>(im.base), reinterpret_cast<std::uint64_t>(arrowAt))) : arrowAnchor;
+    const std::uint8_t* trail = trailAt ? trailAt : trailAnchor;
     std::int32_t frameRel;
     std::memcpy(&frameRel, site + rtx::sig::kArrowFrameCall + 1, 4);
     const std::uint8_t* frame = site + rtx::sig::kArrowFrameCall + 5 + frameRel;
-    if (!arrow || frame <= im.base || frame >= im.base + im.nt->OptionalHeader.SizeOfImage) return false;
+    if (frame <= im.base || frame >= im.base + im.nt->OptionalHeader.SizeOfImage) {
+        SayCheck("FAIL", "format", g_exp, "-", "", "FORMAT: the frame call site does not name a routine in the image; engine markers, in-frame panels, sounds and asks off");
+        return false;
+    }
 
-    // the frame's call site names both managers; the two message routines must name the same ones
+    // the frame's call site names both managers; the two message routines, when their signatures
+    // hit, must name the same ones. Markers write into the managers' slots: only with the slot size
+    // this file knows. The frame hook itself also serves the panels, sounds and asks, and stays.
     std::memcpy(&g_arrowDisp, site + rtx::sig::kArrowFrameArrow, 4);
     std::memcpy(&g_trailDisp, site + rtx::sig::kArrowFrameTrail, 4);
-    const std::uint8_t* named = nullptr;
-    for (std::size_t o = kTrailLen; o < 0xA0 && !named; ++o)
-        if (Matches(trail + o, kTrailMgrSig, kTrailMgrLen)) named = trail + o;
-    if (!named) return false;
-    std::uint32_t trailNamed = 0;
-    std::memcpy(&trailNamed, named + 3, 4);
-    const std::uint32_t arrowNamed = rtx::sig::RootFieldLoad(arrowAt + kArrowLen, rtx::sig::kArrowLoadSpan);
-    if (g_arrowDisp == 0 || g_arrowDisp > 0x100000 || arrowNamed != g_arrowDisp || trailNamed != g_trailDisp) return false;
-    // markers write into the managers' slots: only with the slot size this file knows; the frame
-    // hook itself also serves the panels, sounds and asks, and stays
     const std::uint32_t slotSize = rtx::sig::ArrowSlotSize(site);
-    g_markersOn = slotSize == rtx::sig::kArrowSlotSize;
-    if (!g_markersOn) Say("markers: manager slots are %u bytes on this client, markers off", slotSize);
+    std::snprintf(g_got, sizeof(g_got), "0x%x/0x%x/%u", g_arrowDisp, g_trailDisp, slotSize);
+    char why[300] = {};
+    const char* kind = "";
+    bool on = true;
+    if (g_arrowDisp == 0 || g_arrowDisp > 0x100000 || g_trailDisp == 0 || g_trailDisp > 0x100000) {
+        on = false; kind = "format";
+        std::snprintf(why, sizeof(why), "FORMAT: the frame site names managers at 0x%x and 0x%x, not root fields; markers off", g_arrowDisp, g_trailDisp);
+    } else if (!arrow || !trail) {
+        on = false; kind = "gone";
+        std::snprintf(why, sizeof(why), "GONE: the %s message routine was not recognised (signature%s); markers off", !arrow ? "arrow" : "trail", tableOk ? " and descriptor" : ", no descriptor vector");
+    } else {
+        if (arrowAt) {
+            const std::uint32_t arrowNamed = rtx::sig::RootFieldLoad(arrowAt + kArrowLen, rtx::sig::kArrowLoadSpan);
+            if (arrowNamed != g_arrowDisp) { on = false; kind = "moved"; std::snprintf(why, sizeof(why), "MOVED: the arrow routine reads the manager at 0x%x, the frame site 0x%x; markers off", arrowNamed, g_arrowDisp); }
+        }
+        if (on && trailAt) {
+            const std::uint8_t* named = nullptr;
+            for (std::size_t o = kTrailLen; o < 0xA0 && !named; ++o)
+                if (Matches(trailAt + o, kTrailMgrSig, kTrailMgrLen)) named = trailAt + o;
+            std::uint32_t trailNamed = 0;
+            if (named) std::memcpy(&trailNamed, named + 3, 4);
+            if (!named) { on = false; kind = "format"; std::snprintf(why, sizeof(why), "FORMAT: the trail routine does not name its manager where expected; markers off"); }
+            else if (trailNamed != g_trailDisp) { on = false; kind = "moved"; std::snprintf(why, sizeof(why), "MOVED: the trail routine reads the manager at 0x%x, the frame site 0x%x; markers off", trailNamed, g_trailDisp); }
+        }
+        if (on && slotSize != rtx::sig::kArrowSlotSize) {
+            on = false; kind = "format";
+            std::snprintf(why, sizeof(why), "FORMAT: manager slots are %u bytes on this client, compiled %u; markers off", slotSize, rtx::sig::kArrowSlotSize);
+            Say("markers: manager slots are %u bytes on this client, markers off", slotSize);
+        }
+    }
+    g_markersOn = on;
+    if (on && (g_arrowDisp != rtx::md::kArrowMgr || g_trailDisp != rtx::md::kTrailMgr || !arrowAt || !trailAt)) g_checkKind = "moved";
 
     g_arrow = reinterpret_cast<Message>(const_cast<std::uint8_t*>(arrow));
     g_trail = reinterpret_cast<Message>(const_cast<std::uint8_t*>(trail));
@@ -598,6 +712,17 @@ bool Install() {
     DetourUpdateThread(GetCurrentThread());
     DetourAttach(&reinterpret_cast<PVOID&>(g_frame), reinterpret_cast<PVOID>(FrameHook));
     g_installed = DetourTransactionCommit() == NO_ERROR;
+    if (!g_installed) SayCheck("FAIL", "gone", g_exp, g_got, "", "GONE: the frame hook did not attach; engine markers, in-frame panels, sounds and asks off");
+    else if (!on) SayCheck("FAIL", kind, g_exp, g_got, "", why);
+    else {
+        char d[400];
+        std::snprintf(d, sizeof(d), "%sarrow routine 0x%llx (%s), trail routine 0x%llx (%s), managers at 0x%x/0x%x%s, %u-byte slots; the round trip is reported on the first request",
+                      g_checkKind[0] ? "MOVED: " : "",
+                      (unsigned long long)(arrow - im.base), arrowAt ? (arrowAnchor == arrow ? "signature, descriptor 0x62 agrees" : arrowAnchor ? "signature, descriptor 0x62 differs" : "signature") : "descriptor 0x62, signature missed",
+                      (unsigned long long)(trail - im.base), trailAt ? (trailAnchor == trail ? "signature, descriptor 0x3a agrees" : trailAnchor ? "signature, descriptor 0x3a differs" : "signature") : "descriptor 0x3a, signature missed",
+                      g_arrowDisp, g_trailDisp, (g_arrowDisp != rtx::md::kArrowMgr || g_trailDisp != rtx::md::kTrailMgr) ? " (compiled 0x198f0/0x198f8, the frame site's in use)" : "", slotSize);
+        SayCheck("SKIP", g_checkKind, g_exp, g_got, "a marker request from the launcher", d);
+    }
     // how the game has a moved node show it: read out of the frame routine, an extra as well
     for (std::size_t o = 0; g_installed && o < 0x200 && !g_refresh; ++o) {
         if (!Matches(frame + o, kRefreshSig, kRefreshLen)) continue;
@@ -656,7 +781,9 @@ void Update(const Want& want) {
 
 bool TakeLog(char* out, std::size_t cap) {
     std::lock_guard<std::mutex> lk(g_logMu);
-    if (!g_log[0] || cap == 0) return false;
+    if (cap == 0) return false;
+    if (g_check[0]) { std::snprintf(out, cap, "%s", g_check); g_check[0] = 0; return true; }   // one check line per take
+    if (!g_log[0]) return false;
     std::snprintf(out, cap, "%s", g_log);
     g_log[0] = 0;
     return true;

@@ -4,6 +4,7 @@
 #include <windows.h>
 #include <detours.h>
 #include <atomic>
+#include <cstdio>
 #include <cstring>
 
 namespace rtx::tooltip {
@@ -39,6 +40,37 @@ using Pusher = void* (*)(void* ctx, void* entry, void* vm);
 Pusher g_orig = nullptr;
 bool   g_installed = false;
 
+// Layout self-check (boot record line `check: hover-object`): every hover object the routine is
+// handed must read as the layout above (three strings, then the interface slot). Counted on the
+// script thread, judged by TakeLog; a layout that fails turns the text injection off.
+std::atomic<std::uint32_t> g_hoverSeen{ 0 }, g_hoverBad{ 0 }, g_hoverWhy{ 0 };   // why bits: 1 target, 2 verb, 4 third string, 8 ref, 16 slot, 32 comp
+std::atomic<bool> g_layoutOk{ true };
+
+bool StringReads(const std::uint8_t* s) {
+    const std::uint8_t flag = s[kStrFlag];
+    if (!(flag & 0x80)) return flag <= 0x17;
+    const char* p = *reinterpret_cast<const char* const*>(s);
+    std::uint64_t len; std::memcpy(&len, s + kStrLen, sizeof(len));
+    if (!p || len > 4096) return false;
+    volatile char c = p[0]; (void)c;   // a heap string must be readable
+    return true;
+}
+// The hover object against the layout; false when it does not read as one (counted).
+bool ObjectReads(const std::uint8_t* obj) {
+    unsigned bad = 0;
+    if (!StringReads(obj + kTarget)) bad |= 1;
+    if (!StringReads(obj + 0x18)) bad |= 2;
+    if (!StringReads(obj + 0x30)) bad |= 4;
+    std::int32_t ref, slot; std::uint32_t comp;
+    std::memcpy(&ref, obj + kRef, 4); std::memcpy(&slot, obj + kSlot, 4); std::memcpy(&comp, obj + kComp, 4);
+    if (ref < -1 || ref > 0xFFFF) bad |= 8;
+    if (slot < -1 || slot > 100000) bad |= 16;
+    if ((comp >> 16) > 4096) bad |= 32;
+    g_hoverSeen.fetch_add(1, std::memory_order_relaxed);
+    if (bad) { g_hoverBad.fetch_add(1, std::memory_order_relaxed); g_hoverWhy.fetch_or(bad, std::memory_order_relaxed); }
+    return bad == 0;
+}
+
 // Written by the render thread, read by the script thread.
 struct Wanted {
     std::atomic<std::uint32_t> seq{ 0 };
@@ -73,6 +105,7 @@ bool BuildFake(void* entry, std::uint8_t* copy, char* joined, std::size_t joined
         if (!entry) return false;
         const std::uint8_t* obj = *reinterpret_cast<std::uint8_t**>(static_cast<std::uint8_t*>(entry) + 8);
         if (!obj) return false;
+        if (!ObjectReads(obj) || !g_layoutOk.load(std::memory_order_relaxed)) return false;
 
         std::int32_t slot, ref; std::uint32_t comp; char text[kTextMax + 1];
         if (!ReadWanted(slot, comp, ref, text)) return false;
@@ -175,6 +208,36 @@ void Uninstall() {
     DetourDetach(&reinterpret_cast<PVOID&>(g_orig), reinterpret_cast<PVOID>(Hook));
     DetourTransactionCommit();
     g_installed = false;
+}
+
+// The check line, once per state: nothing hovered yet, the layout holds, or it does not.
+bool TakeLog(char* out, std::size_t cap) {
+    static int s_state = -1;
+    if (cap == 0) return false;
+    const char* F = "Tooltip text (item prices, levels)|Thieving levels";
+    const std::uint32_t seen = g_hoverSeen.load(std::memory_order_relaxed), bad = g_hoverBad.load(std::memory_order_relaxed);
+    int state; char detail[300]; char got[32];
+    if (!g_installed) { state = 3; std::snprintf(detail, sizeof(detail), "GONE: the hover entry op stub was not recognised; tooltip text off"); }
+    else if (seen < 5) { state = 0; std::snprintf(detail, sizeof(detail), "%u hover objects seen so far", seen); }
+    else if (bad * 20 > seen) {
+        state = 2;
+        const unsigned why = g_hoverWhy.load(std::memory_order_relaxed);
+        std::snprintf(detail, sizeof(detail), "FORMAT: hover object 0x%zx: %u of %u objects failed (%s%s%s%s%s%s); tooltip text off", kObjSize, bad, seen,
+                      why & 1 ? "target string " : "", why & 2 ? "verb string " : "", why & 4 ? "third string " : "",
+                      why & 8 ? "ref " : "", why & 16 ? "slot " : "", why & 32 ? "interface id " : "");
+        g_layoutOk.store(false, std::memory_order_relaxed);
+    } else {
+        state = 1;
+        std::snprintf(detail, sizeof(detail), "%u hover objects: three strings readable, ref, slot and interface id at +0x48..+0x50 in range%s", seen, bad ? " (a few mid-change)" : "");
+        g_layoutOk.store(true, std::memory_order_relaxed);
+    }
+    if (state == s_state) return false;
+    s_state = state;
+    std::snprintf(got, sizeof(got), "%u/%u", seen - bad, seen);
+    std::snprintf(out, cap, "check: hover-object %s kind=%s exp=0x%zx got=%s features=%s need=%s ; %s",
+                  state == 1 ? "OK" : state == 0 ? "SKIP" : "FAIL", state == 2 ? "format" : state == 3 ? "gone" : "-",
+                  kObjSize, state == 0 ? "-" : got, F, state == 0 ? "hover an item, NPC or object" : "-", detail);
+    return true;
 }
 
 void Update(bool on, std::int32_t slot, std::uint32_t comp, std::int32_t ref, const char* text) {

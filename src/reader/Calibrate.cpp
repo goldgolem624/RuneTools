@@ -23,8 +23,11 @@ namespace {
 // 32-bit displacement); `nth` picks a later match when the first is a different field. `compiled`
 // is set for a reference rule: an offset a compiled table carries, reported against that value and
 // never applied (the reader's own offsets take theirs through Use()).
-struct Rule { const char* name; const char* op; const char* head; std::uint32_t lo, hi; int nth; std::uint32_t compiled = 0; };
+// `wrap`: the handler is a component setter wrapper and the shape sits in the callback it hands on.
+struct Rule { const char* name; const char* op; const char* head; std::uint32_t lo, hi; int nth; std::uint32_t compiled = 0; bool wrap = false; const char* what = nullptr; };
 constexpr std::uint32_t kMdLo = 0x18000, kMdHi = 0x60000, kInLo = 0x1000, kInHi = 0x10000;
+// The varp hash map sits inside the player var store: derived from md::kVarpMgr, never pinned alone.
+constexpr std::uint32_t kVarpHashFromMgr = rtx::md::kVarpHashFromMgr;
 
 // Root register rcx is the first argument of every handler; rax after `mov rax,[rcx+disp]` holds
 // the object the offset points at, which the inner rules read through.
@@ -57,8 +60,11 @@ const Rule kRules[] = {
     { "md::kVarpMgr",      "QUEST_FINISHED",                   "48 8D 97", kMdLo, kMdHi, 0, rtx::md::kVarpMgr },        // lea rdx,[rdi+disp]
     { "md::kOptions",      "CLIENTOPTION_GET",                 "48 8B 81", kMdLo, kMdHi, 0, rtx::md::kOptions },
     // references: offsets written out in the reader and the companion
-    { "dbMgr",             "DB_FIND_GET",                      "48 8B B1", kMdLo, kMdHi, 0, 0x19980 },
-    { "dbOther",           "DB_LISTALL",                       "48 8B 89", kMdLo, kMdHi, 0, 0x198C0 },
+    { "dbMgr",             "DB_FIND_GET",                      "48 8B B1", kMdLo, kMdHi, 0, 0x19980, false, "ScriptRunner" },
+    { "dbOther",           "DB_LISTALL",                       "48 8B 89", kMdLo, kMdHi, 0, 0x198C0, false, "DbDatabase" },
+    // the script string stack: cc_settext's callback adds the stack base to the state and counts the pointer down
+    { "stringStack",       "CC_SETTEXT",                       "49 81 C1", kInLo, kInHi, 0, 0x10A8, true, "string stack base in the script state" },
+    { "stringSp",          "CC_SETTEXT",                       "41 FF 89", kInLo, kInHi, 0, 0x8DA8, true, "string stack pointer in the script state" },
     { "varcMouseX",        "GET_MOUSEX",                       "44 0F 2C 80", kInLo, kInHi, 0, 0x46D8 },   // cvttss2si r8d,[rax+disp], in the store
     { "varcMouseY",        "GET_MOUSEY",                       "44 0F 2C 80", kInLo, kInHi, 0, 0x46DC },
     { "varcButtons",       "GET_MOUSEBUTTONS",                 "44 38 80", kInLo, kInHi, 0, 0x46E8 },
@@ -217,25 +223,45 @@ std::uint32_t RootGlobal(const Pe& pe) {
     return 0;
 }
 
+// A fourth clock read: mov rax,[clock] ; add rax,20000 (a connection's ping deadline, 20 s ahead).
+constexpr int kClockReadD[] = { 0x48, 0x8B, 0x05, -1, -1, -1, -1, 0x48, 0x05, 0x20, 0x4E, 0x00, 0x00 };
+
 // Where the engine clock sits after the root global, from the routines that read it; 0 when none
 // is found or two disagree (`why` says which).
 std::uint32_t EngineClock(const Pe& pe, std::string& why) {
     const std::uint32_t g = RootGlobal(pe);
     if (!g) { why = "root global not found"; return 0; }
     std::uint32_t off = 0;
-    for (const auto& r : rtx::sig::kClockReads) {
-        const auto hits = ScanCode(pe, r.pat, r.len, 2);
-        if (hits.size() != 1) continue;
+    auto take = [&](const int* pat, std::size_t len) {
+        const auto hits = ScanCode(pe, pat, len, 2);
+        if (hits.size() != 1) return true;
         const std::uint8_t* p = At(pe, hits[0] + rtx::sig::kClockDispAt, 4);
-        if (!p) continue;
+        if (!p) return true;
         std::int32_t rel; std::memcpy(&rel, p, 4);
         const std::int64_t d = (std::int64_t)hits[0] + rtx::sig::kClockDispAt + 4 + rel - g;
-        if (d <= 0 || d >= rtx::sig::kClockMax) continue;
-        if (off && off != (std::uint32_t)d) { why = "the clock reads name two places"; return 0; }
+        if (d <= 0 || d >= rtx::sig::kClockMax) return true;
+        if (off && off != (std::uint32_t)d) { why = "the clock reads name two places"; return false; }
         off = (std::uint32_t)d;
-    }
+        return true;
+    };
+    for (const auto& r : rtx::sig::kClockReads) if (!take(r.pat, r.len)) return 0;
+    if (!take(kClockReadD, sizeof(kClockReadD) / sizeof(int))) return 0;
     if (!off) why = "no clock read of a known shape";
     return off;
+}
+
+// A component setter handler that is a wrapper: the callback it hands its dispatcher, else 0.
+std::uint32_t WrapperCallback(const Pe& pe, std::uint32_t h) {
+    using namespace rtx::sig;
+    const std::uint8_t* p = At(pe, h, 0x40);
+    if (!p) return 0;
+    if (p[0] == 0x40) { ++h; ++p; }
+    if (std::memcmp(p, kCcWrapHead, sizeof(kCcWrapHead)) || std::memcmp(p + kCcWrapMidAt, kCcWrapMid, sizeof(kCcWrapMid)) ||
+        std::memcmp(p + kCcWrapTailAt, kCcWrapTail, sizeof(kCcWrapTail))) return 0;
+    std::int32_t rel; std::memcpy(&rel, p + 25, 4);
+    const std::int64_t cb = (std::int64_t)h + 29 + rel;
+    if (cb < pe.textRva || cb >= (std::int64_t)pe.textRva + pe.textSize) return 0;
+    return (std::uint32_t)cb;
 }
 
 }  // namespace
@@ -446,20 +472,35 @@ static const std::vector<Found>& RunLocked(const std::wstring& exePath, const st
     for (const Rule& r : kRules) {
         Found fd{ r.name, r.compiled, 0, r.op, Outcome::NotFound };
         fd.ref = r.compiled != 0;
+        fd.what = r.what;
         auto o = ops.find(r.op);
         if (o == ops.end()) { fd.status = Outcome::NoOp; rep << "  " << r.name << ": operation " << r.op << " not in the table\n"; g_cache.found.push_back(fd); continue; }
         auto h = handlers.find(o->second);
         if (h == handlers.end()) { fd.status = Outcome::NoHandler; rep << "  " << r.name << ": no handler for " << r.op << " (number " << o->second << ")\n"; g_cache.found.push_back(fd); continue; }
         auto next = std::upper_bound(starts.begin(), starts.end(), h->second);
-        const std::uint32_t end = next != starts.end() ? *next : pe.textRva + pe.textSize;
+        std::uint32_t at = h->second, end = next != starts.end() ? *next : pe.textRva + pe.textSize;
+        if (r.wrap) {
+            // the shape sits in the callback the wrapper hands on; a handler that is no wrapper is read as is
+            if (const std::uint32_t cb = WrapperCallback(pe, at)) { at = cb; end = cb + 0x140; }
+        }
         bool ambiguous = false;
-        fd.found = FindDisp(pe, h->second, end, r, ambiguous);
+        fd.found = FindDisp(pe, at, end, r, ambiguous);
         fd.status = ambiguous ? Outcome::Ambiguous : fd.found ? Outcome::Found : Outcome::NotFound;
         if (fd.ref && fd.status == Outcome::Found && fd.found != fd.compiled) fd.status = Outcome::Moved;
         char line[200];
         if (ambiguous) std::snprintf(line, sizeof(line), "  %s: not found, more than one candidate (from %s)\n", r.name, r.op);
         else if (fd.ref) std::snprintf(line, sizeof(line), "  %s: %s0x%X (from %s; compiled 0x%X)\n", r.name, fd.found ? "" : "not found ", fd.found, r.op, fd.compiled);
         else std::snprintf(line, sizeof(line), "  %s: %s0x%X (from %s)\n", r.name, fd.found ? "" : "not found, wanted ", fd.found, r.op);
+        rep << line;
+        g_cache.found.push_back(fd);
+    }
+    {   // the varp hash map, derived from the varp manager the QUEST_FINISHED handler names
+        Found fd{ "kOffVarpHash", 0, 0, "QUEST_FINISHED (varp manager + 0x1C0C8)", Outcome::NotFound };
+        for (const auto& f : g_cache.found)
+            if (std::strcmp(f.name, "md::kVarpMgr") == 0 && f.found) { fd.found = f.found + kVarpHashFromMgr; fd.status = Outcome::Found; }
+        char line[160];
+        if (fd.found) std::snprintf(line, sizeof(line), "  kOffVarpHash: 0x%X (varp manager + 0x%X)\n", fd.found, kVarpHashFromMgr);
+        else std::snprintf(line, sizeof(line), "  kOffVarpHash: not found (the varp manager was not)\n");
         rep << line;
         g_cache.found.push_back(fd);
     }
@@ -477,7 +518,9 @@ std::uint32_t Use(const char* name, std::uint32_t compiled) {
     for (auto& fd : g_cache.found) {
         if (std::strcmp(fd.name, name) != 0) continue;
         fd.compiled = compiled;
+        fd.applied = true;
         if (fd.status == Outcome::Found && fd.found != compiled) fd.status = Outcome::Moved;
+        else if (fd.status == Outcome::Moved && fd.found == compiled) fd.status = Outcome::Found;
         return fd.found ? fd.found : compiled;
     }
     return compiled;
@@ -490,7 +533,7 @@ std::string Report() {
         if (fd.found && fd.compiled && fd.found != fd.compiled) {
             char line[160];
             std::snprintf(line, sizeof(line), "  %s MOVED: compiled 0x%X, client 0x%X, %s\n", fd.name, fd.compiled, fd.found,
-                          fd.ref ? "the compiled copy still reads the old one" : "using the client's");
+                          fd.ref && !fd.applied ? "the compiled copy still reads the old one" : "using the client's");
             r += line;
         }
     return r;
@@ -499,14 +542,14 @@ std::string Report() {
 std::vector<Found> Results() {
     std::lock_guard<std::mutex> lk(g_mu);
     std::vector<Found> out;
-    for (const auto& fd : g_cache.found) if (!fd.ref) out.push_back(fd);
+    for (const auto& fd : g_cache.found) if (!fd.ref || fd.applied) out.push_back(fd);
     return out;
 }
 
 std::vector<Found> References() {
     std::lock_guard<std::mutex> lk(g_mu);
     std::vector<Found> out;
-    for (const auto& fd : g_cache.found) if (fd.ref) out.push_back(fd);
+    for (const auto& fd : g_cache.found) if (fd.ref && !fd.applied) out.push_back(fd);
     return out;
 }
 
@@ -528,6 +571,7 @@ std::string CheckText(const std::wstring& exePath, const std::wstring& opcodesJs
         std::snprintf(line, sizeof(line), "%-18s %-34s %-10s found 0x%X", fd.name, fd.op, kStatus[(int)fd.status], fd.found);
         o << line;
         if (fd.ref) { std::snprintf(line, sizeof(line), " compiled 0x%X", fd.compiled); o << line; }
+        if (fd.what) o << " (" << fd.what << ")";
         o << "\n";
     }
     return o.str();

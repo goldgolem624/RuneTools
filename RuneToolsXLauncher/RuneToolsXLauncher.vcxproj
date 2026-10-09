@@ -220,6 +220,7 @@
     <ClCompile Include="..\src\launcher\Crypto.cpp" />
     <ClCompile Include="..\src\launcher\Dock.cpp" />
     <ClCompile Include="..\src\launcher\GameUi.cpp" />
+    <ClCompile Include="..\src\launcher\HealthAuto.cpp" />
     <ClCompile Include="..\src\launcher\Http.cpp" />
     <ClCompile Include="..\src\launcher\Zip.cpp" />
     <ClCompile Include="..\src\launcher\IconCache.cpp" />

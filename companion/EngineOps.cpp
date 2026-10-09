@@ -33,10 +33,12 @@ constexpr std::size_t kEntityRef = 0xC3B0;   // the character the state holds: r
 constexpr std::size_t kEntityObj = 0xC3B8;
 constexpr std::size_t kOffPlayers = rtx::md::kPlayers;
 constexpr std::size_t kOffStatusByte = rtx::md::kStatus;   // 30 = in the world
+// The MainData shift the scene module adopted, applied to the two root fields read here.
+std::atomic<std::int64_t> g_rootShift{ 0 };
 // Status byte off the client's root: 30 is in the world. Calling the engine's own operations while
 // the client is still loading is not safe, and there is nothing to answer for anyway.
 bool InTheWorld(std::uint8_t* root) {
-    __try { return *reinterpret_cast<std::int8_t*>(root + kOffStatusByte) == 30; }
+    __try { return *reinterpret_cast<std::int8_t*>(root + kOffStatusByte + g_rootShift.load(std::memory_order_relaxed)) == 30; }
     __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
 }
 
@@ -49,11 +51,23 @@ std::map<std::uint32_t, OpFn> g_byNumber;          // this build's number -> han
 std::map<std::string, std::uint32_t> g_byName;     // name -> number
 std::set<std::string> g_faulted;                   // named operations that faulted (guarded by g_mu)
 std::uint8_t* g_state = nullptr;
-std::mutex g_logMu; char g_log[400] = {};
+// Messages for the log, oldest first; a few can arrive between two takes (the resolver says three
+// things in a row), so they queue rather than overwrite.
+std::mutex g_logMu; char g_log[6][400] = {}; int g_logHead = 0, g_logCount = 0;
 
 void Say(const char* fmt, ...) {
     std::lock_guard<std::mutex> lk(g_logMu);
-    va_list ap; va_start(ap, fmt); std::vsnprintf(g_log, sizeof(g_log), fmt, ap); va_end(ap);
+    constexpr int kSlots = sizeof(g_log) / sizeof(g_log[0]);
+    if (g_logCount == kSlots) { g_logHead = (g_logHead + 1) % kSlots; --g_logCount; }   // drop the oldest
+    char* at = g_log[(g_logHead + g_logCount) % kSlots];
+    va_list ap; va_start(ap, fmt); std::vsnprintf(at, sizeof(g_log[0]), fmt, ap); va_end(ap);
+    ++g_logCount;
+}
+// Boot record check line (grammar in Signatures.h).
+void Check(const char* status, const char* kind, const char* exp, const char* got, const char* detail) {
+    Say("check: engine-ops %s kind=%s exp=%s got=%s features=%s need=- ; %s", status, kind && kind[0] ? kind : "-",
+        exp && exp[0] ? exp : "-", got && got[0] ? got : "-",
+        "Asks: achievements and quests|Sounds, camera zoom and FOV|In-frame panels and text|In-frame labels|Overhead anchors", detail);
 }
 
 struct Section { const std::uint8_t* begin; std::size_t size; };
@@ -211,9 +225,10 @@ int SpotDisagreements(int& checked) {
 // the self-naming handlers must sit under the table's numbers (or, when too few can be compared, its
 // label must carry this exe's time stamp). Operations recognised by their own code (projection,
 // positions) do not depend on it.
-bool NamesMatchBuild() {
+// `running` and `table` take the two build labels; `why` the short reason when they do not match.
+bool NamesMatchBuild(std::string& running, std::string& table, std::string& why) {
     wchar_t up[MAX_PATH] = {};
-    if (!GetEnvironmentVariableW(L"USERPROFILE", up, MAX_PATH)) return false;
+    if (!GetEnvironmentVariableW(L"USERPROFILE", up, MAX_PATH)) { why = "no profile folder"; return false; }
     const std::wstring path = std::wstring(up) + L"\\RuneToolsX\\cs2\\client_version.txt";
     HANDLE h = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0, nullptr);
     char buf[64] = {}; DWORD got = 0;
@@ -221,9 +236,9 @@ bool NamesMatchBuild() {
     std::string label(buf, got);
     while (!label.empty() && (label.back() == '\r' || label.back() == '\n' || label.back() == ' ')) label.pop_back();
     const std::size_t sp = label.find(' ');      // "950.1.0.0 6a9986f8": the build, then the exe's time stamp
-    const std::string table = label.substr(0, sp);
+    table = label.substr(0, sp);
     const std::uint32_t tableStamp = sp == std::string::npos ? 0 : (std::uint32_t)std::strtoul(label.c_str() + sp + 1, nullptr, 16);
-    const std::string running = RunningBuild();
+    running = RunningBuild();
     const std::uint32_t runningStamp = RunningStamp();
     if (!running.empty() && table == running) {
         int checked = 0;
@@ -231,6 +246,9 @@ bool NamesMatchBuild() {
         if (bad > 0 || (checked < 3 && (tableStamp == 0 || runningStamp == 0 || tableStamp != runningStamp))) {
             Say("engine ops: the operation table is from another exe of build %s (%d of %d self-naming handlers disagree, stamp %08x, this is %08x); named operations are off until the tables are extracted again",
                 running.c_str(), bad, checked, tableStamp, runningStamp);
+            char w[160];
+            std::snprintf(w, sizeof(w), "op names are from another exe of build %s (%d of %d self-naming handlers disagree, stamp %08x vs %08x); named ops off", running.c_str(), bad, checked, tableStamp, runningStamp);
+            why = w;
             return false;
         }
     }
@@ -245,10 +263,12 @@ bool NamesMatchBuild() {
             CompareFileTime(&t.ftLastWriteTime, &v.ftLastWriteTime) >= 0) return true;
         Say("engine ops: the operation table was not extracted from game build %s; named operations are off until the tables are extracted again",
             running.c_str());
+        why = "the operation table was not extracted from build " + running + "; named ops off";
         return false;
     }
     Say("engine ops: operation names are from game build %s, this is %s; named operations are off until the tables are extracted again",
         table.empty() ? "(unknown)" : table.c_str(), running.empty() ? "(unknown)" : running.c_str());
+    why = "op names are from build " + (table.empty() ? std::string("(unknown)") : table) + ", this is " + (running.empty() ? std::string("(unknown)") : running) + "; named ops off";
     return false;
 }
 
@@ -259,13 +279,22 @@ bool ResolveGuarded(const Section& text) {
 void Resolve() {
     const std::uint8_t* base = reinterpret_cast<const std::uint8_t*>(GetModuleHandleW(nullptr));
     Section text;
-    if (!base || !FindText(base, text)) return;
-    if (!ResolveGuarded(text)) { Say("engine ops: registrar not recognised"); return; }
-    if (!Names()) { Say("engine ops: operation table not readable"); return; }
-    if (!NamesMatchBuild()) g_byName.clear();
+    if (!base || !FindText(base, text)) { Check("FAIL", "gone", "handlers", "-", "GONE: no code section to read the op registrar from; every engine op off"); return; }
+    if (!ResolveGuarded(text)) { Say("engine ops: registrar not recognised"); Check("FAIL", "gone", "handlers", "0", "GONE: the op registrar was not recognised in this exe; every engine op off"); return; }
+    if (!Names()) { Say("engine ops: operation table not readable"); Check("FAIL", "gone", "names", "0", "GONE: the operation table (cs2/opcodes.json) is not readable; every engine op off until the tables are extracted"); return; }
+    std::string running, table, why;
+    const bool match = NamesMatchBuild(running, table, why);
+    if (!match) g_byName.clear();
     g_state = static_cast<std::uint8_t*>(VirtualAlloc(nullptr, kStateSize, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE));
     g_ready = g_state != nullptr;
     Say("engine ops: %zu handlers, %zu names", g_byNumber.size(), g_byName.size());
+    const std::string exp = running.empty() ? std::string("(unknown)") : running, got = table.empty() ? std::string("(unknown)") : table;
+    if (!match) Check("FAIL", "gone", exp.c_str(), got.c_str(), ("GONE: " + why).c_str());
+    else {
+        char d[160];
+        std::snprintf(d, sizeof(d), "%zu handlers from the registrar, %zu names from this build's table", g_byNumber.size(), g_byName.size());
+        Check("OK", "", exp.c_str(), got.c_str(), d);
+    }
 }
 
 void* CallGuarded(OpFn fn, std::uint8_t* root) {
@@ -461,7 +490,7 @@ bool HeightHeld(std::uint8_t* root, std::uint8_t* entity, std::int32_t& lift) {
 // character sits at a fixed place inside it.
 std::uint8_t* PlayerEntity(std::uint8_t* root, int index) {
     __try {
-        std::uint8_t* reg = *reinterpret_cast<std::uint8_t**>(root + kOffPlayers);
+        std::uint8_t* reg = *reinterpret_cast<std::uint8_t**>(root + kOffPlayers + g_rootShift.load(std::memory_order_relaxed));
         if (!reg) return nullptr;
         std::uint8_t* arr = *reinterpret_cast<std::uint8_t**>(reg + 0x10);
         if (!arr) return nullptr;
@@ -698,8 +727,13 @@ void PumpAsks(std::uint8_t* root) {
 
 bool TakeLog(char* out, std::size_t cap) {
     std::lock_guard<std::mutex> lk(g_logMu);
-    if (!g_log[0] || cap == 0) return false;
-    std::snprintf(out, cap, "%s", g_log); g_log[0] = 0; return true;
+    if (!g_logCount || cap == 0) return false;
+    constexpr int kSlots = sizeof(g_log) / sizeof(g_log[0]);
+    std::snprintf(out, cap, "%s", g_log[g_logHead]);
+    g_logHead = (g_logHead + 1) % kSlots; --g_logCount;
+    return true;
 }
+
+void SetRootShift(std::int64_t delta) { g_rootShift.store(delta, std::memory_order_relaxed); }
 
 }  // namespace rtx::engineops

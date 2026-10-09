@@ -13,6 +13,7 @@ public:
     explicit Walk(const std::vector<std::uint8_t>& d) : d_(d) {}
 
     bool   in_bounds(std::size_t need) const { return p_ + need <= d_.size(); }
+    std::size_t pos() const { return p_; }
 
     std::uint8_t  U8()  { return in_bounds(1) ? d_[p_++] : 0; }
     std::uint16_t U16() {
@@ -50,6 +51,7 @@ ReferenceTable::ReferenceTable(int /*index_id*/,
     : default_file_count_(default_file_count) {
     auto payload = Decompress(zlib_blob);
     if (payload.empty()) return;
+    payload_bytes_ = (int)payload.size();
     Decode(payload);
 }
 
@@ -59,6 +61,7 @@ void ReferenceTable::Decode(const std::vector<std::uint8_t>& d) {
     if (protocol_ >= 6) version_ = (int)w.U32();
 
     const int flags         = w.U8();
+    flags_ = flags;
     const bool has_names    = (flags & 0x1) != 0;
     const bool has_digests  = (flags & 0x2) != 0;
     const bool has_lengths  = (flags & 0x4) != 0;
@@ -133,6 +136,10 @@ void ReferenceTable::Decode(const std::vector<std::uint8_t>& d) {
             w.Skip(vfids.size() * 4);   // per-file name hashes, unused here
         }
     }
+    // A table this code read to its last byte has the layout it expects; a new protocol or flag
+    // moves every later field and shows up here as bytes left over or a walk past the end.
+    exact_ = w.pos() == d.size();
+    leftover_ = w.pos() <= d.size() ? (int)(d.size() - w.pos()) : -(int)(w.pos() - d.size());
 }
 
 }  // namespace rtx::cache

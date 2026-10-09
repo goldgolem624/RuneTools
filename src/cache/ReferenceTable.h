@@ -24,6 +24,13 @@ public:
 
     int               protocol() const { return protocol_; }
     int               version()  const { return version_; }
+    // The flags byte (bit 0 names, 1 digests, 2 lengths, 3 hash); -1 when the blob did not decode.
+    int               flags()    const { return flags_; }
+    // True when the decode read the payload exactly to its end: the layout is the one this code
+    // expects. False after a bad count, a new protocol or a trailing section.
+    bool              consumedExactly() const { return exact_; }
+    int               payloadBytes()    const { return payload_bytes_; }
+    int               leftoverBytes()   const { return leftover_; }
     const std::vector<int>& valid_archive_ids() const { return valid_archive_ids_; }
     const std::vector<ArchiveEntry>& entries() const { return entries_; }
 
@@ -32,6 +39,10 @@ private:
 
     int protocol_ = 0;
     int version_  = 0;
+    int flags_    = -1;
+    bool exact_   = false;
+    int payload_bytes_ = 0;
+    int leftover_ = 0;
     int default_file_count_;
     std::vector<int>          valid_archive_ids_;   // sparse archive id list
     std::vector<ArchiveEntry> entries_;             // dense; index = archive id

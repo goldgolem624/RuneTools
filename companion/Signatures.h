@@ -4,10 +4,27 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include "ServerOps.h"
 
 namespace rtx::sig {
 
 constexpr int kAny = -1;
+
+// Displacements the signature bodies embed with open low bytes, at these offsets in the hit, and
+// the compiled values the modules read with. A hit whose displacement differs from the compiled
+// value is a MOVED field: the module reports it (boot record check lines) and reads the hit's value
+// where it can.
+inline constexpr std::size_t   kPlDisFieldAt = 3;          // player-display: mov rax,[rcx+field]
+inline constexpr std::uint32_t kPlDisField = 0x1078;
+inline constexpr std::size_t   kMenuInitLanguageAt = 35;   // menu-init: mov rdx,[rax+Language] (md::kLanguage)
+inline constexpr std::size_t   kMenuClearEndAt = 10, kMenuClearBeginAt = 20;   // menu-clear: the targets vector end, then begin
+inline constexpr std::uint32_t kMenuTargetsBegin = 0x1380, kMenuTargetsEnd = 0x1388;
+inline constexpr std::size_t   kMenuSnapCounterAt = 3, kMenuSnapBaseAt = 10;   // menu-snap: inc qword [rcx+counter] ; lea reg,[rcx+base]
+inline constexpr std::uint32_t kMenuSnapCounter = 0x21B0, kMenuSnapBase = 0x1A80;
+inline constexpr std::size_t   kMenuExecStatusAt = 15;     // menu-exec: cmp dword [rax+status],0x28 (md::kStatus)
+inline constexpr std::size_t   kSoundSynthCtxAt = 23;      // sound-synth: mov rcx,[rcx+SoundCtx] (md::kSoundCtx)
+inline constexpr std::uint32_t kMenuLeftClickSlot = 0x13E0; // the slot FindMenuAssign names on 950-1 (0x13E8 on the plugin client)
+inline std::uint32_t HitDisp(const unsigned char* hit, std::size_t at) { std::uint32_t d; std::memcpy(&d, hit + at, 4); return d; }
 
 // Varp and varc-int set handlers, the same body up to the bucket load register.
 inline constexpr unsigned char kVarpBody[] = {
@@ -448,6 +465,53 @@ inline constexpr Sig kTable[] = {
 #undef RTX_SIG_I
 #undef RTX_SIG_MH
 #undef RTX_SIG_IH
+
+// ---- anchors: a second route to a hook site, taken when its byte signature misses ----
+// kAnchorString: the one function whose code names the unique string `text` (rip-relative lea or
+// mov). kAnchorFamily: slot 7 of the entity vtable family member with `slots` slots; the family is
+// the group of vtables sharing slots 1, 2, 5 and 6 that holds the 69-slot NPC class. 69 names one
+// class (NPC); 67 names two (player and another actor) and 36 about thirteen, so there the anchor
+// confirms a signature hit and refuses to pick on its own. kAnchorProt: the handler the server
+// packet descriptor `op` names (ServerOps.h layout, thunks followed). kAnchorFramer: the non-leaf
+// function that references the descriptor vector and compares against its count. kAnchorOpLea: the
+// first rip-relative lea into writable data in the handler of the engine op named `text`, which
+// needs this build's op table. Signature first, anchor second; a site found only by the anchor is
+// attached and the hook line says `via=anchor`.
+enum AnchorKind : std::uint8_t { kAnchorNone, kAnchorString, kAnchorFamily, kAnchorProt, kAnchorFramer, kAnchorOpLea };
+struct Anchor { const char* name; AnchorKind kind; const char* text; std::uint16_t slots; std::uint16_t op; };
+inline constexpr Anchor kAnchors[] = {
+    { "varp-observer",   kAnchorString, "push_var",           0,  0 },
+    { "varc-observer",   kAnchorString, "push_varbit",        0,  0 },
+    { "ccdrag-observer", kAnchorString, "cc_if_setdraggable", 0,  0 },
+    { "npc-display",     kAnchorFamily, nullptr,              69, 0 },
+    { "player-display",  kAnchorFamily, nullptr,              67, 0 },
+    { "t4-display",      kAnchorFamily, nullptr,              36, 0 },
+    { "t13-display",     kAnchorFamily, nullptr,              36, 0 },
+    { "tile-draw",       kAnchorFamily, nullptr,              36, 0 },
+    { "framer",          kAnchorFramer, nullptr,              0,  0 },
+    { "tick-anchor",     kAnchorProt,   nullptr,              0,  (std::uint16_t)rtx::sops::kServerTick },
+    { "arrow-message",   kAnchorProt,   nullptr,              0,  (std::uint16_t)rtx::sops::kHintArrow },
+    { "trail-message",   kAnchorProt,   nullptr,              0,  (std::uint16_t)rtx::sops::kTileTrail },
+    { "outline-table",   kAnchorOpLea,  "HIGHLIGHT_SET_CATEGORY_MODE", 0, 0 },
+};
+inline const Anchor* AnchorOf(const char* name) {
+    for (const auto& a : kAnchors) if (std::strcmp(a.name, name) == 0) return &a;
+    return nullptr;
+}
+
+// ---- boot record check lines ----
+// Beside the hook lines the companion writes one line per self-check, after the module resolved
+// its targets and again when the state changes:
+//   check: <name> OK|FAIL|SKIP kind=<moved|format|gone|new|unverified|-> exp=<v> got=<v> features=<a|b> need=<hint> ; <detail>
+// The five keys always appear, in this order, with - for an empty value; exp and got carry no
+// spaces; features and need may. The detail follows " ; " and on a non-OK line starts with the kind
+// word in capitals (MOVED:, FORMAT:, GONE:, NEW:, UNVERIFIED:). OK with a kind word means the
+// module works after adopting a moved value. SKIP names in need= what would let it judge. Hook
+// lines add `via=sig|anchor` after rva=, with sig=0x.. (the signature's function, 0 when it missed)
+// and anchor=0x..|agrees|ambiguous(n)|none.
+inline constexpr const char* kCheckNames[] = {
+    "scene-root", "player-entity", "ground-stacks", "framer-conn", "markers", "menu-record", "hover-object", "highlight", "packets", "engine-ops",
+};
 
 // Engine ops called by their fixed number; the head must be that handler's first bytes.
 struct OpHead { const char* name; std::uint32_t op; const unsigned char* head; std::size_t len; const char* features; };

@@ -116,18 +116,19 @@ bool ReadOne(InputStream& s, ItemDef& d, int opcode) {
 
 }  // namespace
 
-ItemDef DecodeItem(int id, std::vector<std::uint8_t> file_bytes, int* stop_op) {
+ItemDef DecodeItem(int id, std::vector<std::uint8_t> file_bytes, int* stop_op, int* last_op) {
     ItemDef def;
     def.id = id;
     if (stop_op) *stop_op = 0;
+    if (last_op) *last_op = -1;
     if (file_bytes.empty()) return def;
     InputStream s(std::move(file_bytes));
-    for (;;) {
-        int op = s.ReadUnsignedByte();
-        if (op == 0) break;
-        probe::note(op);
-        if (!ReadOne(s, def, op)) { if (stop_op) *stop_op = op; break; }
-    }
+    int last = -1;
+    const int st = WalkOps(s, last, [&](int op) { probe::note(op); return ReadOne(s, def, op); });
+    if (st) probe::g_stop = s.offset();
+    probe::g_tail = s.remaining();
+    if (stop_op) *stop_op = st;
+    if (last_op) *last_op = last;
     return def;
 }
 

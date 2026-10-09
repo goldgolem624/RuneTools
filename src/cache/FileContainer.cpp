@@ -5,7 +5,8 @@ namespace rtx::cache {
 std::vector<std::vector<std::uint8_t>>
 SplitArchive(const std::vector<std::uint8_t>& data,
              const std::vector<int>& valid_file_ids,
-             int largest_file_id) {
+             int largest_file_id,
+             std::string* why) {
     std::vector<std::vector<std::uint8_t>> files;
     if (largest_file_id < 0 || valid_file_ids.empty()) return files;
     files.resize((std::size_t)largest_file_id + 1);
@@ -20,7 +21,10 @@ SplitArchive(const std::vector<std::uint8_t>& data,
 
     const std::size_t table_start = 1;
     const std::size_t table_end   = table_start + (std::size_t)(n + 1) * 4;
-    if (data.size() < table_end) return files;
+    if (data.size() < table_end) {
+        if (why) *why = "file table layout changed (" + std::to_string(data.size()) + " bytes for " + std::to_string(n) + " files)";
+        return {};
+    }
 
     std::vector<std::int32_t> offsets((std::size_t)n + 1);
     for (std::size_t i = 0; i <= (std::size_t)n; ++i) {
@@ -29,6 +33,13 @@ SplitArchive(const std::vector<std::uint8_t>& data,
                      ((std::int32_t)data[p + 1] << 16) |
                      ((std::int32_t)data[p + 2] <<  8) |
                       (std::int32_t)data[p + 3];
+    }
+    // The first file starts right after the table and the last ends inside the blob; anything else
+    // is another container layout, not files.
+    if (offsets[0] != (std::int32_t)table_end || offsets[n] < 0 || (std::size_t)offsets[n] > data.size()) {
+        if (why) *why = "file table layout changed (first file at " + std::to_string(offsets[0]) + ", table ends at " +
+                        std::to_string(table_end) + ", last file ends at " + std::to_string(offsets[n]) + " of " + std::to_string(data.size()) + ")";
+        return {};
     }
 
     for (int i = 0; i < n; ++i) {

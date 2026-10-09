@@ -183,6 +183,16 @@
     }
     const rec = { el, msg, sticky, n: 1, ttl, start: now,
                   until: ttl ? now + ttl : 0, barEl, countEl: cnt, closing: false };
+    if (typeof opts.onClick === 'function') {
+      // a card that opens something: the whole card except its dismiss button
+      el.style.cursor = 'pointer';
+      el.style.pointerEvents = 'auto';
+      el.addEventListener('click', (e) => {
+        if (e.target && e.target.closest && e.target.closest('.toast-x')) return;
+        try { opts.onClick(rec); } catch (e2) {}
+        toastClose(rec);
+      });
+    }
     $('toaster').appendChild(el);
     toasts.push(rec);
     while (toasts.filter(t => !t.closing).length > TOAST_MAX) {

@@ -91,7 +91,7 @@ constexpr int           kGESlotCount = 8;        // members get 8, non-members 3
 
 // Container manager: root + this -> mgr { start@+0x8, end@+0x10 }; entry stride 0x48, id@+0x10,
 // items start@+0x18 / end@+0x20 (stride 0x8: item_id@+0, stack@+4). Bank (95) present only while open.
-constexpr std::uint32_t kOffInvData      = 0x199C8;
+std::uint32_t kOffInvData                = rtx::md::kContainers;   // 0x199C8
 constexpr std::uint32_t kContainerStride = 0x48;
 constexpr int           kBankContainerId = 95;
 constexpr int           kMetalBankContainerId = 858;   // Mining&Smithing metal bank (ores + bars)
@@ -112,13 +112,30 @@ static int container_count(std::uint64_t cstart, std::uint64_t cend) {
 
 // Varp hashmap at MainData+0x36080: buckets@+0x8, divisor(i32)@+0x10; node = buckets[id % divisor],
 // node id@+0, value@+0x8 (low 32), type tag@+0x20 (0/1 = int), next@+0x28. Unset varp = no node = 0.
-constexpr std::uint32_t kOffVarpHash     = 0x36080;
+std::uint32_t kOffVarpHash               = rtx::md::kVarpHash;   // 0x36080 = varp manager + 0x1C0C8, derived at attach
 
 // Varc (int + string) hashmap at store + kVarcHashOff, store = *(MainData + kOffVarcStore);
 // same node layout as the varp map.
 std::uint32_t kOffVarcStore    = 0x19920;
 constexpr std::uint32_t kVarcHashOff     = 0x7630;
 constexpr std::uint32_t kVarNodeNext     = 0x28;
+
+// The other MainData stores the reader walks, each the companion table's value until the client
+// proves another through the calibration rule of the same name (kCalibrated below), so a store that
+// moved is adopted and reported instead of read at the old place.
+std::uint32_t kOffChatStore     = rtx::md::kChatStore;      // 0x19880
+std::uint32_t kOffClanSettings  = rtx::md::kClanSettings;   // 0x19888
+std::uint32_t kOffMapMgr        = rtx::md::kMapMgr;         // 0x19898
+std::uint32_t kOffInputReporter = rtx::md::kInputReport;    // 0x198B0, MainData -> input reporter
+std::uint32_t kOffArrowMgr      = rtx::md::kArrowMgr;       // 0x198F0
+std::uint32_t kOffIfaceOwner    = rtx::md::kIfaceOwner;     // 0x19900
+std::uint32_t kOffInputProc     = rtx::md::kInputProc;      // 0x19928 (0x198E8 through 949-5)
+std::uint32_t kOffPlayerGroup   = rtx::md::kPlayerGroup;    // 0x19948
+std::uint32_t kOffPlayers       = rtx::md::kPlayers;        // 0x19950
+std::uint32_t kOffFriends       = rtx::md::kFriends;        // 0x19970
+std::uint32_t kOffCutscene      = rtx::md::kCutscene;       // 0x19A18
+std::uint32_t kOffVarpMgr       = rtx::md::kVarpMgr;        // 0x19FB8 (0x19F78 through 949-5)
+std::uint32_t kOffOptions       = rtx::md::kOptions;        // 0x535D0
 
 // Tick anchor: `FF 81 F0 DB 00 00` = INC dword [RCX+0xDBF0], preceded in the same prologue by
 // `48 8B 0D <disp32>` = MOV RCX, [rip+disp32] (the owner global).
@@ -700,6 +717,20 @@ const CalibratedOffset kCalibrated[] = {
     { "kOffVarcStore",   &kOffVarcStore,   kOffVarcStore },
     { "kOffAccount",     &kOffAccount,     kOffAccount },
     { "kEngineClock",    &kEngineClock,    kEngineClock },
+    { "kOffVarpHash",    &kOffVarpHash,    kOffVarpHash },
+    { "md::kContainers", &kOffInvData,     kOffInvData },
+    { "md::kChatStore",  &kOffChatStore,   kOffChatStore },
+    { "md::kClanSettings", &kOffClanSettings, kOffClanSettings },
+    { "md::kMapMgr",     &kOffMapMgr,      kOffMapMgr },
+    { "md::kInputReport", &kOffInputReporter, kOffInputReporter },
+    { "md::kIfaceOwner", &kOffIfaceOwner,  kOffIfaceOwner },
+    { "md::kInputProc",  &kOffInputProc,   kOffInputProc },
+    { "md::kPlayerGroup", &kOffPlayerGroup, kOffPlayerGroup },
+    { "md::kPlayers",    &kOffPlayers,     kOffPlayers },
+    { "md::kFriends",    &kOffFriends,     kOffFriends },
+    { "md::kCutscene",   &kOffCutscene,    kOffCutscene },
+    { "md::kVarpMgr",    &kOffVarpMgr,     kOffVarpMgr },
+    { "md::kOptions",    &kOffOptions,     kOffOptions },
 };
 
 // Ask the client itself for the offsets, once per attach. The exe on disk is read, not the process.
@@ -2090,7 +2121,6 @@ constexpr std::uint32_t kOffAcctIsMember = 0x28;      // u8, nonzero = members
 constexpr std::uint32_t kOffAcctExpiry   = 0x30;      // u64, raw value LOBBY_MEMBERSHIP divides down
 constexpr int           kPremierVarbit   = 50572;
 
-constexpr std::uint32_t kOffInputReporter = 0x198B0;  // MainData -> input reporter
 constexpr std::uint32_t kOffRepPointerA   = 0x28;     // u64 ms, last pointer flush (recorder A)
 constexpr std::uint32_t kOffRepPointerB   = 0x50;     // u64 ms, last pointer flush (recorder B)
 constexpr std::uint32_t kOffRepKeyboard   = 0x2858;   // u64 ms, last key batch (0 = none yet)
@@ -2113,10 +2143,10 @@ std::string ClientStateJson(std::uint32_t pid) {
     if (!root || *root <= 0x10000) return "{}";
     std::string out = "{";
     int cutscene = -1;
-    if (auto cs = rpm<std::uint64_t>(h, *root + 0x19A18); cs && *cs > 0x10000) cutscene = rpm<std::int32_t>(h, *cs + 0x150).value_or(-1);
+    if (auto cs = rpm<std::uint64_t>(h, *root + kOffCutscene); cs && *cs > 0x10000) cutscene = rpm<std::int32_t>(h, *cs + 0x150).value_or(-1);
     out += "\"cutscene\":" + std::to_string(cutscene) + ",\"inCutscene\":" + std::string(cutscene != -1 ? "true" : "false");
     out += ",\"options\":[";
-    if (auto opt = rpm<std::uint64_t>(h, *root + 0x535D0); opt && *opt > 0x10000) {
+    if (auto opt = rpm<std::uint64_t>(h, *root + kOffOptions); opt && *opt > 0x10000) {
         for (int i = 0; i < 44; ++i) {
             auto o = rpm<std::uint64_t>(h, *opt + 0x2DA8 + (std::uint64_t)i * 8);
             long long v = 0;
@@ -2327,9 +2357,9 @@ std::string VarDomainStoresJson(std::uint32_t pid) {
     };
     std::uint64_t store = rpm<std::uint64_t>(h, *root + kOffVarcStore).value_or(0);
     std::uint64_t clan  = store > 0x10000 ? rpm<std::uint64_t>(h, store + 0x77b0).value_or(0) : 0;
-    std::uint64_t grp   = rpm<std::uint64_t>(h, *root + 0x19948).value_or(0);
+    std::uint64_t grp   = rpm<std::uint64_t>(h, *root + kOffPlayerGroup).value_or(0);
     std::uint64_t grpObj = grp > 0x10000 ? rpm<std::uint64_t>(h, grp + 8).value_or(0) : 0;
-    std::uint64_t clanReg = rpm<std::uint64_t>(h, *root + 0x19888).value_or(0);
+    std::uint64_t clanReg = rpm<std::uint64_t>(h, *root + kOffClanSettings).value_or(0);
     std::uint64_t cs0 = clanReg > 0x10000 ? rpm<std::uint64_t>(h, clanReg).value_or(0) : 0;
     std::uint64_t cs1 = clanReg > 0x10000 ? rpm<std::uint64_t>(h, clanReg + 16).value_or(0) : 0;
 
@@ -2342,7 +2372,7 @@ std::string VarDomainStoresJson(std::uint32_t pid) {
                       vt_ok(vt) ? "true" : "false", (unsigned long long)(in_image(vt) ? vt - ps.mod_base : 0));
         out += buf; firstS = false;
     };
-    emit("0",  "MainData+0x19fb8 (varp manager)", *root + 0x19fb8, *root + kOffVarpHash - 8);
+    emit("0",  "MainData+0x19fb8 (varp manager)", *root + kOffVarpMgr, *root + kOffVarpHash - 8);
     emit("2",  "[MainData+0x19920]+0x7620 (varc object)", store > 0x10000 ? store + 0x7620 : 0, store + 0x7620 + 8);
     emit("6",  "[[MainData+0x19920]+0x77b0]", clan, clan);
     emit("7",  "[[MainData+0x19888]+0] (clan settings slot 0; table offset not pinned)", cs0, cs0);
@@ -3022,7 +3052,7 @@ std::string EventsJson(std::uint32_t pid, std::uint64_t since) {
             ProcSnap ps = snap_proc(pid);
             if (ps) {
                 auto root = rpm<std::uint64_t>(ps.h, ps.mgva);
-                auto mgr = root && *root > 0x10000 ? rpm<std::uint64_t>(ps.h, *root + 0x19898) : std::nullopt;
+                auto mgr = root && *root > 0x10000 ? rpm<std::uint64_t>(ps.h, *root + kOffMapMgr) : std::nullopt;
                 if (mgr && *mgr > 0x10000) {
                     auto bx = rpm<std::int32_t>(ps.h, *mgr + 0x698), by = rpm<std::int32_t>(ps.h, *mgr + 0x69C);
                     if (bx && by) { rtx::evzone::g_mapBaseX = *bx; rtx::evzone::g_mapBaseY = *by; }
@@ -3747,7 +3777,7 @@ static void actor_overhead_json(HANDLE h, std::uint64_t sec, std::string& splats
 // Validated by type and uid; 0 when the chain does not resolve (callers fall back to the scan).
 static std::uint64_t local_player_sec_fast(HANDLE h, std::uint64_t root, int local_uid) {
     if (root <= 0x10000 || local_uid < 0 || local_uid >= 4096) return 0;
-    auto reg = rpm<std::uint64_t>(h, root + 0x19950);
+    auto reg = rpm<std::uint64_t>(h, root + kOffPlayers);
     if (!reg || *reg <= 0x10000) return 0;
     auto tbl = rpm<std::uint64_t>(h, *reg + 0x10);
     if (!tbl || *tbl <= 0x10000) return 0;
@@ -4893,7 +4923,7 @@ static bool read_gameview_rect(HANDLE h, std::uint64_t mainData,
     auto r64 = [&](std::uint64_t a){ return rpm<std::uint64_t>(h, a).value_or(0); };
     auto r32 = [&](std::uint64_t a){ return rpm<std::int32_t>(h, a).value_or(0); };
     auto r16 = [&](std::uint64_t a){ return (int)rpm<std::int16_t>(h, a).value_or(0); };
-    std::uint64_t owner = r64(mainData + 0x19900);
+    std::uint64_t owner = r64(mainData + kOffIfaceOwner);
     if (owner <= 0x10000) return false;
     std::uint64_t gs = r64(owner + kIfaceGroupsBegin), ge = r64(owner + kIfaceGroupsEnd);
     if (gs <= 0x10000 || ge <= gs || (ge - gs) % 0x10 || (ge - gs) > 0x200000) return false; // UI-container gate
@@ -5248,7 +5278,7 @@ static void iface_walk(HANDLE h, int group, std::uint64_t node, int depth,
 static void iface_groups_range(HANDLE h, std::uint64_t mainData,
                                std::uint64_t& gs, std::uint64_t& ge) {
     gs = ge = 0;
-    std::uint64_t owner = rpm<std::uint64_t>(h, mainData + 0x19900).value_or(0);
+    std::uint64_t owner = rpm<std::uint64_t>(h, mainData + kOffIfaceOwner).value_or(0);
     if (owner <= 0x10000) return;
     std::uint64_t s = rpm<std::uint64_t>(h, owner + kIfaceGroupsBegin).value_or(0);
     std::uint64_t e = rpm<std::uint64_t>(h, owner + kIfaceGroupsEnd).value_or(0);
@@ -5500,7 +5530,7 @@ static bool iface_sub_parent(HANDLE h, std::uint64_t main_data, int gid, IfaceSu
         sn.ms = now; sn.map.clear();
         auto r64 = [&](std::uint64_t a){ return rpm<std::uint64_t>(h, a).value_or(0); };
         auto r32 = [&](std::uint64_t a){ return rpm<std::int32_t>(h, a).value_or(0); };
-        std::uint64_t owner = r64(main_data + 0x19900);
+        std::uint64_t owner = r64(main_data + kOffIfaceOwner);
         if (owner > 0x10000) {
             std::uint64_t buckets = r64(owner + kIfaceSubBuckets);
             int nb = r32(owner + kIfaceSubBucketCount);
@@ -5974,7 +6004,7 @@ std::string CompassTargetJson(std::uint32_t pid) {
 // Scan-orb ring tiles from the scene-graphic registry: op83 stores a 0x2c-byte record at MainData+0x198f0 (+0x90 + slot*0x2c) with fine coords (0x100 + tile*512) as floats.
 // Base may be the struct or a pointer to it; every plausible tile is returned for the caller to validate.
 static void ScanRingTilesFromMemory(HANDLE h, std::uint64_t root, std::vector<std::pair<int,int>>& out) {
-    constexpr std::uint64_t kOffRegistry = 0x198f0, kRecBase = 0x90, kRecSize = 0x2c, kSlots = 8;
+    constexpr std::uint64_t kRecBase = 0x90, kRecSize = 0x2c, kSlots = 8;
     // Fine coordinate = 0x100 + tile*512; must land on a tile centre.
     auto fine_to_tile = [](float f) -> int {
         if (!(f > 0.0f) || f > 16383.0f * 512.0f + 512.0f) return -1;
@@ -5984,8 +6014,8 @@ static void ScanRingTilesFromMemory(HANDLE h, std::uint64_t root, std::vector<st
         if (t - (double)ti > 0.02 || (double)ti - t > 0.02) return -1;   // must sit ON a tile centre
         return ti;
     };
-    std::uint64_t bases[2] = { root + kOffRegistry, 0 };
-    if (auto pv = rpm<std::uint64_t>(h, root + kOffRegistry); pv && *pv > 0x10000) bases[1] = *pv;
+    std::uint64_t bases[2] = { root + kOffArrowMgr, 0 };
+    if (auto pv = rpm<std::uint64_t>(h, root + kOffArrowMgr); pv && *pv > 0x10000) bases[1] = *pv;
     for (std::uint64_t bi = 0; bi < 2; ++bi) {
         if (!bases[bi]) continue;
         std::uint8_t blk[kRecSize * kSlots];
@@ -6084,7 +6114,7 @@ static int iface_item_at(HANDLE h, std::uint64_t mainData, int group, int comp, 
 
 std::string HoverEntityJson(std::uint32_t pid) {
     const char* kNone = "{\"ok\":false}";
-    constexpr std::uint64_t kOffInputProc = 0x19928, kHoverSlot = 0x13F8;   // 0x198E8 through 949-5 (+0x40 on 950-1)
+    constexpr std::uint64_t kHoverSlot = 0x13F8;
     auto ps = snap_proc(pid);
     if (!ps) return kNone;
     HANDLE h = ps.h;
@@ -6973,7 +7003,7 @@ std::string chat_store_json(HANDLE h, std::uint64_t root, int want) {
     auto r64 = [&](std::uint64_t a){ return rpm<std::uint64_t>(h, a).value_or(0); };
     auto r32 = [&](std::uint64_t a){ return rpm<std::int32_t>(h, a).value_or(0); };
 
-    const std::uint64_t store = r64(root + 0x19880);
+    const std::uint64_t store = r64(root + kOffChatStore);
     if (store <= 0x10000) return "[]";
     const std::int32_t next = r32(store + 0x18);          // the id the next message will take
     const std::uint64_t buckets = r64(store + 0x880);
@@ -7635,7 +7665,7 @@ std::string AbilityCooldownsJson(std::uint32_t pid) {
     HANDLE h = ps.h;
     auto rootv = rpm<std::uint64_t>(h, ps.mgva);
     if (!rootv || *rootv <= 0x10000) return kEmpty;
-    std::uint64_t mgr     = *rootv + 0x19fb8;   // 0x19f78 through 949-5 (+0x40 on 950-1)
+    std::uint64_t mgr     = *rootv + kOffVarpMgr;
     std::uint64_t clock   = rpm<std::uint64_t>(h, ps.mgva + kEngineClock).value_or(0);
     std::uint64_t buckets = rpm<std::uint64_t>(h, mgr + 0x38178).value_or(0);
     std::uint32_t cap     = rpm<std::uint32_t>(h, mgr + 0x38180).value_or(0);
@@ -8737,7 +8767,7 @@ std::string PlayerInfoJson(std::uint32_t pid) {
                 if (rpm_bytes(h, *st + 0x46E8, btn, 3)) mb = (btn[0] ? 1 : 0) | (btn[1] ? 2 : 0) | (btn[2] ? 4 : 0);
                 mods = rpm<std::uint8_t>(h, *st + 0x4F0).value_or(0);
             }
-            auto cam = rpm<std::uint64_t>(h, *root + 0x19898);
+            auto cam = rpm<std::uint64_t>(h, *root + kOffMapMgr);
             if (cam && *cam > 0x10000) {
                 int a = rpm<std::int32_t>(h, *cam + 0x710).value_or(-1), b = rpm<std::int32_t>(h, *cam + 0x714).value_or(-1);
                 if (a >= 0 && b >= 0) loadPct = std::min(a, b);
@@ -8771,7 +8801,7 @@ std::string SocialJson(std::uint32_t pid) {
         if (w2 && *w2 > 0x10000) world = rpm<std::int32_t>(h, *w2 + 8).value_or(-1);
     }
     std::string friends; int fc = 0, online = 0; bool loaded = false;
-    auto fr = rpm<std::uint64_t>(h, *root + 0x19970);
+    auto fr = rpm<std::uint64_t>(h, *root + kOffFriends);
     if (fr && *fr > 0x10000) {
         loaded = rpm<std::int32_t>(h, *fr + 0x10).value_or(0) == 2;
         auto b0 = rpm<std::uint64_t>(h, *fr + 0x18), e0 = rpm<std::uint64_t>(h, *fr + 0x20);
@@ -9009,6 +9039,10 @@ struct HCtx {
     std::uint64_t wv = 0, worker = 0;
     bool cli = false;
     std::string runtimePins;
+    std::string trigger;                // why the run started
+    bool bootFound = false;             // the companion's boot record was read
+    bool complete = false;              // in the world with a companion: every group judged
+    int varpMaxId = -1;                 // largest varp id the store holds (live packet rows)
     bool fxRead = false;                // the type-4 effects below were read from the scene
     int t4Seen = 0;                     // type-4 effects in the scene
     std::map<int, int> t4Gfx;           // graphic -> type-4 effects with it that validated
@@ -9183,31 +9217,43 @@ void health_build(HCtx& c, rtx::health::Run& run) {
     std::string flav = c.flavour == "vulkan" ? "Vulkan" : c.flavour == "opengl" ? "OpenGL" : c.flavour;
     std::string d = c.version + " " + flav + " " + st;
     int ok = kPass;
+    rtx::health::BuildChange bc;
+    bc.to = c.version + " " + st;
+    bc.firstSeen = bs.firstSeen;
     if (!known) {
         ok = kWarn;
+        bc.exe = "unvalidated";
         d += ": exe not in the manifest (new build). Build-pinned features: scene blank, packet table, var table, zone table, sound origin labels";
     } else {
         d += ", validated " + (validated.empty() ? std::string("(no date)") : validated);
     }
     if (bs.known) {
-        if (!bs.reviewed) { ok = kWarn; d += "; first seen " + bs.firstSeen + ", not yet reviewed (a clean run or Mark reviewed clears this)"; }
+        if (!bs.reviewed) { ok = kWarn; d += "; first seen " + bs.firstSeen + ", not yet reviewed (a clean complete run or Mark reviewed clears this)"; }
         else d += "; cache unchanged since " + bs.firstSeen;
     } else if (bs.exeSeen) {
         ok = kWarn;
+        bc.cache = "changed";
         const auto was = parse_revs(bs.prevRevs), now = parse_revs(revs);
         std::string changed;
         for (const auto& k : kRevKeys) {
             auto a = was.find(k.key), b = now.find(k.key);
-            if (a != was.end() && b != now.end() && a->second != b->second) changed += std::string(changed.empty() ? "" : ", ") + k.name;
+            if (a != was.end() && b != now.end() && a->second != b->second) {
+                changed += std::string(changed.empty() ? "" : ", ") + k.name;
+                bc.archives += std::string(bc.archives.empty() ? "" : "|") + k.name;
+            }
         }
         d += "; exe unchanged, cache changed: " + (changed.empty() ? std::string("revisions differ") : changed) + " (since " + bs.firstSeen + ")";
     } else if (!bs.prevLabel.empty()) {
-        if (bs.prevLabel != c.version) { ok = kWarn; d += "; game updated from " + bs.prevLabel; }
+        bc.from = bs.prevLabel;
+        if (bs.prevLabel != c.version) { ok = kWarn; if (bc.exe == "same") bc.exe = "new"; d += "; game updated from " + bs.prevLabel; }
         else d += "; first fingerprint recorded (stamp and cache revisions now tracked)";
     } else {
         ok = kWarn;
+        if (bc.exe == "same") bc.exe = "new";
         d += "; first run on this exe";
     }
+    if (ok != kPass) d = "NEW: " + d;
+    run.SetBuild(bc);
     run.Add(G, "build.game", "Game build", ok, d, "Everything", known ? "validated exe" : "a validated exe", st);
 
     // CS2 export: what the generated tables and the op table were made from
@@ -9309,16 +9355,13 @@ void health_build(HCtx& c, rtx::health::Run& run) {
                 }
             }
         }
-        run.Add(G, "build.cs2", "Script export", k, det, "Game text, buff timers, op table, generated tables", "", "", "build.game");
+        if (k != kPass) det = "NEW: " + det;   // newer content or another build than the export: its tables lag
+        run.Add(G, "build.cs2", "Script export", k, det, "Game text|Buff timers|Engine ops by name|Generated tables", "", "", "build.game").kind = k == kPass ? std::string() : "stale";
     }
 }
 
 // ---- Context ----
-void health_context(HCtx& c, rtx::health::Run& run) {
-    const char* G = "Context";
-    run.Add(G, "context.client", "Game client", kPass, "attached, pid " + std::to_string(c.pid));
-    run.Add(G, "context.world", "In the world", c.inWorld ? kPass : kUnchecked,
-            c.inWorld ? "status 30, world " + std::to_string(c.world) : "status " + std::to_string(c.status) + ": live checks need a logged-in client");
+std::string context_json(const HCtx& c) {
     const auto lines = rtx::pins::Lines();
     const std::string perr = rtx::pins::Error();
     std::wstring pf = rtx::pins::File();
@@ -9326,10 +9369,19 @@ void health_context(HCtx& c, rtx::health::Run& run) {
     for (wchar_t ch : pf) pfile.push_back(ch < 0x80 ? static_cast<char>(ch) : '?');
     for (char& ch : pfile) if (ch == '\\') ch = '/';
     const std::size_t slash = pfile.find_last_of('/');
-    run.Section("context", std::string("{\"inWorld\":") + (c.inWorld ? "true" : "false") +
-                ",\"status\":" + std::to_string(c.status) + ",\"process\":\"" + (c.cli ? "cli" : "launcher") +
-                "\",\"pins\":\"" + rtx::health::Escape(perr.empty() ? (slash == std::string::npos ? pfile : pfile.substr(slash + 1)) + " " + rtx::pins::Made() + " (" + std::to_string(lines->size()) + " pins)" : perr) +
-                "\",\"cacheGen\":" + std::to_string(rtx::cache::CacheGeneration()) + "}");
+    return std::string("{\"inWorld\":") + (c.inWorld ? "true" : "false") +
+           ",\"status\":" + std::to_string(c.status) + ",\"process\":\"" + (c.cli ? "cli" : "launcher") +
+           "\",\"trigger\":\"" + rtx::health::Escape(c.trigger) + "\",\"complete\":" + (c.complete ? "true" : "false") +
+           ",\"pins\":\"" + rtx::health::Escape(perr.empty() ? (slash == std::string::npos ? pfile : pfile.substr(slash + 1)) + " " + rtx::pins::Made() + " (" + std::to_string(lines->size()) + " pins)" : perr) +
+           "\",\"cacheGen\":" + std::to_string(rtx::cache::CacheGeneration()) + "}";
+}
+
+void health_context(HCtx& c, rtx::health::Run& run) {
+    const char* G = "Context";
+    run.Add(G, "context.client", "Game client", kPass, "attached, pid " + std::to_string(c.pid));
+    run.Add(G, "context.world", "In the world", c.inWorld ? kPass : kUnchecked,
+            c.inWorld ? "status 30, world " + std::to_string(c.world) : "status " + std::to_string(c.status) + ": live checks need a logged-in client").need = c.inWorld ? "" : "log in";
+    run.Section("context", context_json(c));
 }
 
 // ---- Calibration ----
@@ -9341,6 +9393,7 @@ void health_calibration(HCtx& c, rtx::health::Run& run) {
     {
         std::string d = ts.usable ? (std::to_string(ts.handlers) + " handlers, " + std::to_string(ts.names) + " named, label " + ts.label)
                                   : (why.empty() ? std::string("not run") : why);
+        if (!ts.usable) d = "GONE: " + d + " (the compiled offsets stay in force)";
         run.Add(G, "calib.table", "Operation table", ts.usable ? kPass : kFail, d,
                 "Calibrated offsets|Engine ops by name|Asks|In-frame panels", "table for " + ts.exeVersion, ts.label, "code.exe");
         run.Fact("calib.label", ts.label);
@@ -9355,24 +9408,26 @@ void health_calibration(HCtx& c, rtx::health::Run& run) {
             run.Fact("calib.spot." + s.op, std::to_string(s.number) + " in [" + s.owners + "]");
         }
         run.Add(G, "calib.spots", "Self-naming handlers", bad.empty() ? (checkable ? kPass : kUnchecked) : kFail,
-                bad.empty() ? std::to_string(good) + "/" + std::to_string(checkable) + " carry the table's numbers" : bad,
-                "Operation table", std::to_string(checkable), std::to_string(good), "calib.table");
+                bad.empty() ? (checkable ? std::to_string(good) + "/" + std::to_string(checkable) + " carry the table's numbers" : std::string("UNVERIFIED: no self-naming handler could be matched with the table")) : "MOVED: " + bad,
+                "Operation table", std::to_string(checkable), std::to_string(good), "calib.table").need = checkable ? "" : "a script export for this build";
     }
     for (const auto& f : rtx::calib::Results()) {
         const std::string id = std::string("calib.") + f.name;
         const std::string key = std::string("Offset ") + f.name;
         using O = rtx::calib::Outcome;
-        int ok = kPass; std::string d;
+        int ok = kPass; std::string d, kind;
+        const std::string what = f.what ? std::string(" (") + f.what + ")" : std::string();
         switch (f.status) {
-            case O::Found:   d = hx(f.found) + " from " + f.op; break;
-            case O::Moved:   ok = kWarn; d = "MOVED: compiled " + hx(f.compiled) + ", client " + hx(f.found) + " (from " + f.op + "), the client's in use"; break;
-            case O::NotFound: ok = kFail; d = "no read of the expected shape in " + std::string(f.op) + "; compiled " + hx(f.compiled) + " in use"; break;
-            case O::Ambiguous: ok = kFail; d = std::string(f.op) + " reads more than one candidate; compiled " + hx(f.compiled) + " in use"; break;
-            case O::NoOp:    ok = kFail; d = std::string(f.op) + " is not in the operation table"; break;
-            case O::NoHandler: ok = kFail; d = std::string(f.op) + " has no handler in this exe"; break;
+            case O::Found:   d = hx(f.found) + " from " + f.op + what; break;
+            case O::Moved:   ok = kWarn; d = "MOVED: compiled " + hx(f.compiled) + ", client " + hx(f.found) + " (from " + f.op + "), the client's in use" + what; break;
+            case O::NotFound: ok = kFail; kind = "fallback"; d = "GONE: no read of the expected shape in " + std::string(f.op) + "; compiled " + hx(f.compiled) + " in use" + what; break;
+            case O::Ambiguous: ok = kFail; kind = "fallback"; d = "NEW: " + std::string(f.op) + " reads more than one candidate; compiled " + hx(f.compiled) + " in use" + what; break;
+            case O::NoOp:    ok = kFail; kind = "fallback"; d = "GONE: " + std::string(f.op) + " is not in the operation table; compiled " + hx(f.compiled) + " in use"; break;
+            case O::NoHandler: ok = kFail; kind = "fallback"; d = "GONE: " + std::string(f.op) + " has no handler in this exe; compiled " + hx(f.compiled) + " in use"; break;
         }
         run.Fact(std::string("calib.") + f.name, hx(f.found ? f.found : f.compiled));
-        run.Add(G, id, key, ok, d, "Game data reads", hx(f.compiled), f.found ? hx(f.found) : std::string("none"), "calib.table");
+        rtx::health::Row& row = run.Add(G, id, key, ok, d, "Game data reads", hx(f.compiled), f.found ? hx(f.found) : std::string("none"), "calib.table");
+        if (!kind.empty()) row.kind = kind;
     }
     // offsets the compiled tables carry, found the same way: what a game update asks to change
     if (const auto refs = rtx::calib::References(); !refs.empty()) {
@@ -9387,18 +9442,36 @@ void health_calibration(HCtx& c, rtx::health::Run& run) {
         std::string d = std::to_string(at) + "/" + std::to_string(refs.size()) + " at their compiled values";
         if (!moved.empty()) d += "; moved, update the constants: " + moved;
         if (!lost.empty()) d += "; not found: " + lost;
+        if (!moved.empty()) d = "MOVED: " + d; else if (!lost.empty()) d = "GONE: " + d;
         run.Add(G, "calib.refs", "Compiled offsets", moved.empty() && lost.empty() ? kPass : kWarn, d,
                 "Companion and reader offsets", std::to_string(refs.size()), std::to_string(at), "calib.table");
     }
-    // compiled copies the companion and the scene code still carry
+    // compiled copies the companion and the scene code still carry, against every offset the reader
+    // applies: a pair that differs means the reader adopted a moved store the companion still reads
+    // at the old place
     {
-        std::string bad;
-        if (rtx::md::kStatus != kOffStatus) bad += "status byte " + hx(rtx::md::kStatus) + " vs " + hx(kOffStatus) + "; ";
-        if (rtx::scn::kPlayerData != kOffAccount) bad += "player data " + hx(rtx::scn::kPlayerData) + " vs " + hx(kOffAccount) + "; ";
-        if (rtx::md::kWorld != kOffWorld) bad += "world " + hx(rtx::md::kWorld) + " vs " + hx(kOffWorld) + "; ";
+        static const struct { const char* name; std::uint32_t copy; const std::uint32_t* live; } kPairs[] = {
+            { "status", rtx::md::kStatus, &kOffStatus }, { "player data", (std::uint32_t)rtx::scn::kPlayerData, &kOffAccount },
+            { "world", rtx::md::kWorld, &kOffWorld }, { "containers", rtx::md::kContainers, &kOffInvData },
+            { "chat store", rtx::md::kChatStore, &kOffChatStore }, { "clan settings", rtx::md::kClanSettings, &kOffClanSettings },
+            { "map manager", rtx::md::kMapMgr, &kOffMapMgr }, { "input reporter", rtx::md::kInputReport, &kOffInputReporter },
+            { "arrow manager", rtx::md::kArrowMgr, &kOffArrowMgr }, { "interface owner", rtx::md::kIfaceOwner, &kOffIfaceOwner },
+            { "input processor", rtx::md::kInputProc, &kOffInputProc }, { "player group", rtx::md::kPlayerGroup, &kOffPlayerGroup },
+            { "players", rtx::md::kPlayers, &kOffPlayers }, { "friends", rtx::md::kFriends, &kOffFriends },
+            { "cutscene", rtx::md::kCutscene, &kOffCutscene }, { "varp manager", rtx::md::kVarpMgr, &kOffVarpMgr },
+            { "varp hash", rtx::md::kVarpHash, &kOffVarpHash }, { "options", rtx::md::kOptions, &kOffOptions },
+            { "varc store", rtx::md::kVarcStore, &kOffVarcStore }, { "Grand Exchange", rtx::md::kGrandExchange, &kOffGE },
+            { "client clock", rtx::md::kClientClock, &kOffClientClock },
+        };
+        std::string bad; int agree = 0;
+        for (const auto& p : kPairs) {
+            if (p.copy == *p.live) { ++agree; continue; }
+            bad += std::string(bad.empty() ? "" : "; ") + p.name + " " + hx(p.copy) + " compiled, reader uses " + hx(*p.live);
+        }
+        const int total = (int)(sizeof(kPairs) / sizeof(kPairs[0]));
         run.Add(G, "calib.copies", "Compiled copies", bad.empty() ? kPass : kWarn,
-                bad.empty() ? "companion and scene constants agree with the calibrated offsets" : "not following calibration: " + bad.substr(0, bad.size() - 2),
-                "Companion engine ops|Scene reads", "", "", "calib.table");
+                bad.empty() ? std::to_string(total) + " companion and scene constants agree with the offsets in use" : "MOVED: companion copies behind the reader: " + bad,
+                "Companion engine ops|Scene reads|Engine markers", std::to_string(total), std::to_string(agree), "calib.table");
     }
 }
 
@@ -9427,14 +9500,15 @@ void health_data(HCtx& c, rtx::health::Run& run) {
         const bool known = std::find(std::begin(kStates), std::end(kStates), c.status) != std::end(kStates);
         int ok = known ? kPass : kFail;
         std::string d = "status " + std::to_string(c.status) + (known ? "" : " (not a known login state: status offset moved?)");
-        if (c.status == 0) { ok = kWarn; d += " (boot state; a moved offset also reads 0)"; }
+        if (!known) d = "MOVED: " + d;
+        if (c.status == 0) { ok = kWarn; d = "UNVERIFIED: " + d + " (boot state; a moved offset also reads 0)"; }
         if (c.status == 30) {
-            if (worldA < 1 || worldA > 300 || worldA != worldB) { ok = kFail; d += ", world " + std::to_string(worldA) + "/" + std::to_string(worldB) + " (world chain moved?)"; }
+            if (worldA < 1 || worldA > 300 || worldA != worldB) { ok = kFail; d = "MOVED: " + d + ", world " + std::to_string(worldA) + "/" + std::to_string(worldB) + " (world chain moved?)"; }
             else d += ", world " + std::to_string(worldA);
         }
-        if (kOffAccount != kOffStatus + 8) { ok = kWarn; d += "; account no longer sits at status + 8"; }
-        if (c.status != 30 && c.status != 35 && c.status != 36 && c.status != 37 && c.localSec) { ok = kFail; d += "; the local player is in the scene while the status says otherwise (status offset moved?)"; }
-        run.Add(G, "data.root", "Root and status", ok, d, "Everything", "status in 0/1/10/20/23/30/35/36/37/40", std::to_string(c.status), "code.sig.main-anchor");
+        if (kOffAccount != kOffStatus + 8) { if (ok == kPass) { ok = kWarn; d = "MOVED: " + d; } d += "; account no longer sits at status + 8"; }
+        if (c.status != 30 && c.status != 35 && c.status != 36 && c.status != 37 && c.localSec) { ok = kFail; d = "MOVED: " + d + "; the local player is in the scene while the status says otherwise (status offset moved?)"; }
+        run.Add(G, "data.root", "Root and status", ok, d, "Everything", "status in 0/1/10/20/23/30/35/36/37/40, world 1..300", std::to_string(c.status) + (c.status == 30 ? ", world " + std::to_string(worldA) : std::string()), "code.sig.main-anchor");
         run.Fact("data.status", std::to_string(c.status));
     }
     // clocks
@@ -9442,21 +9516,22 @@ void health_data(HCtx& c, rtx::health::Run& run) {
         const double ccRate = (double)(std::int64_t)(ccB - ccA) / secs;
         const bool ok = ccRate >= 40 && ccRate <= 60;
         run.Add(G, "data.clock.client", "Client clock", c.inWorld ? (ok ? kPass : kFail) : kUnchecked,
-                "MainData+" + hx(kOffClientClock) + " advances " + std::to_string((int)std::lround(ccRate)) + "/s" + (ok ? "" : " (expected 50/s)"),
-                "Buff timers|Ticks|Combat log", "50/s", std::to_string((int)std::lround(ccRate)), "data.root");
+                std::string(c.inWorld && !ok ? "MOVED: " : "") + "MainData+" + hx(kOffClientClock) + " advances " + std::to_string((int)std::lround(ccRate)) + "/s" + (ok ? "" : " (expected 50/s: the cycle counter is not at this offset)"),
+                "Buff timers|Ticks|Combat log", "50/s", std::to_string((int)std::lround(ccRate)), "data.root").need = c.inWorld ? "" : "log in";
         const double ecRate = (double)(std::int64_t)(ecB - ecA) / secs;
         const long long drift = (long long)ecB - (long long)tB;
         const bool eok = ecRate >= 800 && ecRate <= 1200 && std::llabs(drift) < 2000;
         run.Add(G, "data.clock.engine", "Engine clock", eok ? kPass : kFail,
-                "root global + " + hx(kEngineClock) + " advances " + std::to_string((int)std::lround(ecRate)) + "/s, " + std::to_string(drift) + " ms from the system clock",
-                "Ability cooldowns|Action bar clock|Input idle", "1000/s", std::to_string((int)std::lround(ecRate)), "code.sig.main-anchor");
+                std::string(eok ? "" : "MOVED: ") + "root global + " + hx(kEngineClock) + " advances " + std::to_string((int)std::lround(ecRate)) + "/s, " + std::to_string(drift) + " ms from the system clock" + (eok ? "" : " (expected 1000/s within 2 s of the system clock)"),
+                "Ability cooldowns|Action bar clock|Input idle", "1000/s, drift < 2000 ms", std::to_string((int)std::lround(ecRate)) + "/s, " + std::to_string(drift) + " ms", "code.sig.main-anchor");
         std::uint32_t tickB = 0; double ageB = 0; TickState(c.pid, tickB, ageB);
         const bool tok = haveTick && ageB >= 0 && ageB < 5000;
         run.Add(G, "data.tick", "Server tick", !haveTick ? kFail : c.inWorld ? (tok ? kPass : kFail) : kUnchecked,
-                !haveTick ? "tick counter not found" : "tick " + std::to_string(tickB) + ", last change " + std::to_string((int)ageB) + " ms ago",
-                "Ticks|Tick timers|Metronome", "< 5000 ms", std::to_string((int)ageB), "code.sig.tick-anchor");
+                !haveTick ? "GONE: tick counter not found (the owner global or the increment moved)" : std::string(c.inWorld && !tok ? "MOVED: " : "") + "tick " + std::to_string(tickB) + ", last change " + std::to_string((int)ageB) + " ms ago" + (c.inWorld && !tok ? " (a live tick changes every 600 ms)" : ""),
+                "Ticks|Tick timers|Metronome", "changed < 5000 ms ago", std::to_string((int)ageB) + " ms", "code.sig.tick-anchor").need = c.inWorld || !haveTick ? "" : "log in";
         const float fps = rpm<float>(h, root + rtx::md::kFps).value_or(-1.f);
-        run.Add(G, "data.fps", "FPS", fps >= 1.f && fps <= 1000.f ? kPass : kFail, std::to_string((int)fps) + " at MainData+" + hx(rtx::md::kFps),
+        const bool fpsOk = fps >= 1.f && fps <= 1000.f;
+        run.Add(G, "data.fps", "FPS", fpsOk ? kPass : kFail, std::string(fpsOk ? "" : "MOVED: ") + std::to_string((int)fps) + " at MainData+" + hx(rtx::md::kFps) + (fpsOk ? "" : " (not a frame rate: the field moved)"),
                 "Player State FPS", "1..1000", std::to_string((int)fps), "data.root");
     }
     // varp store
@@ -9489,13 +9564,15 @@ void health_data(HCtx& c, rtx::health::Run& run) {
         for (const auto& s : sample) if (read_varp(h, root, s.first) == s.second) ++agree;
         int ok = kPass; std::string d = std::to_string(walked) + " nodes, store count " + std::to_string(count) +
             ", lookups " + std::to_string(agree) + "/" + std::to_string(sample.size()) + ", largest id " + std::to_string(maxId);
-        if (!c.inWorld && walked == 0) ok = kUnchecked;
-        else if (walked == 0) { ok = kFail; d = "no varps while logged in (store offset moved?)"; }
-        else if (count >= 0 && count != walked) { ok = kWarn; d += " (walk and count differ)"; }
-        if (!sample.empty() && agree != (int)sample.size()) { ok = kFail; d += " (lookup chain differs from the walk)"; }
-        if (maxId > 90000) { if (ok == kPass) ok = kWarn; d += "; ids near the 100000 filter"; }
-        run.Add(G, "data.varps", "Player variables", ok, d, "Every varp and varbit read", std::to_string(count), std::to_string(walked), "data.root");
+        if (!c.inWorld && walked == 0) { ok = kUnchecked; d = "no varps before login"; }
+        else if (walked == 0) { ok = kFail; d = "GONE: no varps while logged in at MainData+" + hx(kOffVarpHash) + " (store offset moved?)"; }
+        else if (count >= 0 && count != walked) { ok = kWarn; d = "FORMAT: " + d + " (walk and count differ: node or bucket layout)"; }
+        if (!sample.empty() && agree != (int)sample.size()) { ok = kFail; d = "FORMAT: " + d + " (lookup chain differs from the walk)"; }
+        if (maxId > 90000) { if (ok == kPass) { ok = kWarn; d = "NEW: " + d; } d += "; ids near the 100000 filter"; }
+        run.Add(G, "data.varps", "Player variables", ok, d, "Every varp and varbit read", "store count == walked nodes, every sampled lookup agrees, ids < 90000",
+                std::to_string(walked) + " walked, count " + std::to_string(count) + ", " + std::to_string(agree) + "/" + std::to_string(sample.size()) + " lookups", "data.root").need = ok == kUnchecked ? "log in" : "";
         run.Fact("varp.maxId", std::to_string(maxId));
+        c.varpMaxId = maxId;
     }
     // varc store
     {
@@ -9523,16 +9600,17 @@ void health_data(HCtx& c, rtx::health::Run& run) {
         int gx = 0, gy = 0, gw = 0, gh = 0;
         const bool tree = read_gameview_rect(h, root, gx, gy, gw, gh);
         int ok = kPass; std::string d = std::to_string(walked) + " varcs, largest id " + std::to_string(maxId);
-        if (walked == 0) { ok = c.inWorld ? kFail : kUnchecked; d = "no varcs (store offset moved?)"; }
+        if (walked == 0) { ok = c.inWorld ? kFail : kUnchecked; d = c.inWorld ? "GONE: no varcs at [MainData+" + hx(kOffVarcStore) + "]+" + hx(kVarcHashOff) + " (store offset moved?)" : "no varcs before login"; }
         else {
-            if (c.inWorld && (!fw || !fh)) { ok = kFail; d += "; gameview size varcs 3001/3002 missing"; }
-            else if (tree && gw > 0 && (std::abs(vw - gw) > 2 || std::abs(vh - gh) > 2)) { ok = kWarn; d += "; varcs " + std::to_string(vw) + "x" + std::to_string(vh) + " vs layout " + std::to_string(gw) + "x" + std::to_string(gh); }
+            if (c.inWorld && (!fw || !fh)) { ok = kFail; d = "GONE: " + d + "; gameview size varcs 3001/3002 missing"; }
+            else if (tree && gw > 0 && (std::abs(vw - gw) > 2 || std::abs(vh - gh) > 2)) { ok = kWarn; d = "MOVED: " + d + "; varcs " + std::to_string(vw) + "x" + std::to_string(vh) + " vs layout " + std::to_string(gw) + "x" + std::to_string(gh); }
             else if (fw) d += "; gameview " + std::to_string(vw) + "x" + std::to_string(vh);
-            if (c.inWorld && (!fy || !fp || !fz)) { if (ok == kPass) ok = kWarn; d += "; camera varcs 5115/5114/1971 not all present"; }
-            else if (fy && (yaw < 0 || yaw > 16383)) { ok = kFail; d += "; yaw 5115 = " + std::to_string(yaw) + " out of range"; }
+            if (c.inWorld && (!fy || !fp || !fz)) { if (ok == kPass) { ok = kWarn; d = "GONE: " + d; } d += "; camera varcs 5115/5114/1971 not all present"; }
+            else if (fy && (yaw < 0 || yaw > 16383)) { ok = kFail; d = "FORMAT: " + d + "; yaw 5115 = " + std::to_string(yaw) + " out of range"; }
         }
-        if (maxId > 90000) { if (ok == kPass) ok = kWarn; d += "; ids near the 100000 filter"; }
-        run.Add(G, "data.varcs", "Client variables", ok, d, "Overlays|Camera|Panel positions", "", std::to_string(walked), "calib.kOffVarcStore");
+        if (maxId > 90000) { if (ok == kPass) { ok = kWarn; d = "NEW: " + d; } d += "; ids near the 100000 filter"; }
+        run.Add(G, "data.varcs", "Client variables", ok, d, "Overlays|Camera|Panel positions", "varcs 3001/3002 and 5115/5114/1971 present, yaw 0..16383",
+                std::to_string(walked) + " varcs, gameview " + std::to_string(vw) + "x" + std::to_string(vh) + ", yaw " + std::to_string(yaw), "calib.kOffVarcStore").need = ok == kUnchecked ? "log in" : "";
         run.Fact("varc.maxId", std::to_string(maxId));
     }
     // var domain stores
@@ -9543,24 +9621,36 @@ void health_data(HCtx& c, rtx::health::Run& run) {
             const rtx::health::JVal* d = st ? st->get(dom) : nullptr; return d ? d->str(f) : std::string();
         };
         const bool p0 = field("0", "live") == "true", p2 = field("2", "live") == "true", vt2 = field("2", "vt") == "true";
+        const bool clan = field("6", "live") == "true", clanSet = field("7", "live") == "true";   // slot 0 is the player's own clan
         int ok = (p0 && p2 && vt2) ? kPass : kFail;
-        std::string d = "player " + (p0 ? field("0", "count") + " vars" : std::string("FAILED")) +
-                        ", client " + (p2 ? field("2", "count") + " vars" : std::string("FAILED")) +
+        std::string d = "player " + (p0 ? field("0", "count") + " vars" : std::string("absent")) +
+                        ", client " + (p2 ? field("2", "count") + " vars" : std::string("absent")) +
                         (p2 && !vt2 ? " (class vtable " + field("2", "vt_rva") + " not recognised)" : std::string()) +
-                        ", clan " + (field("6", "live") == "true" ? field("6", "count") + " vars" : std::string("absent")) +
+                        ", clan " + (clan ? field("6", "count") + " vars" : std::string("absent")) +
+                        ", clan settings " + (clanSet ? std::string("present") : std::string("absent")) +
                         ", group " + (field("9", "live") == "true" ? field("9", "count") + " vars" : std::string("absent"));
         run.Fact("domains.clientVt", field("2", "vt_rva"));
-        if (!c.inWorld && !p0) ok = kUnchecked;
-        run.Add(G, "data.domains", "Var domain stores", ok, d, "Clan vars|Group vars|Varbit reads by domain", "", "", "data.varps");
+        if (!p0 || !p2) d = "GONE: " + d + " (a var store reads empty at its offset)";
+        else if (!vt2) d = "FORMAT: " + d;
+        // in a clan both the clan vars and the clan settings are present; one without the other is
+        // a store that moved, or a clan state the reader does not model: named, not failed
+        else if (clan != clanSet && c.inWorld) {
+            ok = kWarn;
+            d = std::string("UNVERIFIED: ") + (clanSet ? "clan settings at [MainData+" + hx(kOffClanSettings) + "] present" : "clan vars at [[MainData+" + hx(kOffVarcStore) + "]+0x77B0] present") +
+                " but the " + (clan ? "clan settings store at MainData+" + hx(kOffClanSettings) : "clan var store at [MainData+" + hx(kOffVarcStore) + "]+0x77B0") + " reads empty (a moved store, or a clan state the reader does not model); " + d;
+        }
+        if (!c.inWorld && !p0) { ok = kUnchecked; d = "player store empty before login"; }
+        run.Add(G, "data.domains", "Var domain stores", ok, d, "Clan vars|Group vars|Varbit reads by domain", "player and client stores live, clan vars and clan settings both present or both absent",
+                std::string("player ") + (p0 ? "live" : "absent") + ", client " + (p2 ? "live" : "absent") + ", clan " + (clan ? "live" : "absent") + ", clan settings " + (clanSet ? "live" : "absent"), "data.varps").need = ok == kUnchecked ? "log in" : "";
     }
     // containers
     {
         const std::uint64_t mgr = rpm<std::uint64_t>(h, root + kOffInvData).value_or(0);
         const std::uint64_t cs = mgr > 0x10000 ? rpm<std::uint64_t>(h, mgr + 0x8).value_or(0) : 0;
         const std::uint64_t ce = mgr > 0x10000 ? rpm<std::uint64_t>(h, mgr + 0x10).value_or(0) : 0;
-        int ok = kPass; std::string d;
-        if (cs <= 0x10000 || ce < cs) { ok = c.inWorld ? kFail : kUnchecked; d = "container list not readable"; }
-        else if ((ce - cs) % kContainerStride) { ok = kFail; d = "list span not a multiple of the 0x48 stride"; }
+        int ok = kPass; std::string d; std::string got;
+        if (cs <= 0x10000 || ce < cs) { ok = c.inWorld ? kFail : kUnchecked; d = c.inWorld ? "GONE: container list not readable at [MainData+" + hx(kOffInvData) + "]+8/+0x10" : "container list not set before login"; }
+        else if ((ce - cs) % kContainerStride) { ok = kFail; d = "FORMAT: list span " + hx(ce - cs) + " not a multiple of the 0x48 stride"; }
         else {
             const std::uint64_t n = (ce - cs) / kContainerStride;
             std::set<int> ids; bool dup = false; int named = 0, items = 0, size93 = -1, size94 = -1;
@@ -9581,25 +9671,28 @@ void health_data(HCtx& c, rtx::health::Run& run) {
             auto invSize = [](int id) { return std::atoi(rtx::pins::Field(rtx::cache::PinFingerprint("inv", std::to_string(id), ""), "size").c_str()); };
             const int def93 = invSize(93), def94 = invSize(94);
             d = std::to_string(n) + " containers";
-            if (n > (std::uint64_t)kMaxContainers) { ok = kFail; d += " (more than the 64 the reader takes)"; }
-            if (dup) { ok = kFail; d += "; repeated ids (stride or id offset moved)"; }
+            got = std::to_string(n) + " containers, backpack " + std::to_string(size93) + ", equipment " + std::to_string(size94) + ", " + std::to_string(named) + "/" + std::to_string(items) + " named";
+            std::string word;
+            if (n > (std::uint64_t)kMaxContainers) { ok = kFail; word = "NEW"; d += " (more than the 64 the reader takes)"; }
+            if (dup) { ok = kFail; if (word.empty()) word = "FORMAT"; d += "; repeated ids (stride or id offset moved)"; }
             if (size93 >= 0) {
                 d += "; backpack " + std::to_string(size93) + " slots (def " + std::to_string(def93) + ")";
-                if (def93 > 0 && size93 != def93) { ok = kFail; d += " mismatch"; }
-            } else if (c.inWorld) { ok = kFail; d += "; no backpack (93)"; }
-            if (size94 >= 0 && def94 > 0 && size94 != def94) { ok = kFail; d += "; equipment " + std::to_string(size94) + " slots, def " + std::to_string(def94); }
-            if (items) { d += "; " + std::to_string(named) + "/" + std::to_string(items) + " items name in the cache"; if (named * 10 < items * 9) ok = kFail; }
+                if (def93 > 0 && size93 != def93) { ok = kFail; if (word.empty()) word = "FORMAT"; d += " mismatch"; }
+            } else if (c.inWorld) { ok = kFail; if (word.empty()) word = "GONE"; d += "; no backpack (93)"; }
+            if (size94 >= 0 && def94 > 0 && size94 != def94) { ok = kFail; if (word.empty()) word = "FORMAT"; d += "; equipment " + std::to_string(size94) + " slots, def " + std::to_string(def94); }
+            if (items) { d += "; " + std::to_string(named) + "/" + std::to_string(items) + " items name in the cache"; if (named * 10 < items * 9) { ok = kFail; if (word.empty()) word = "FORMAT"; } }
+            if (!word.empty()) d = word + ": " + d;
         }
-        run.Add(G, "data.containers", "Containers", ok, d, "Backpack|Equipment|Bank|Storages", "", "", "data.root");
+        run.Add(G, "data.containers", "Containers", ok, d, "Backpack|Equipment|Bank|Storages", "<= 64 containers, unique ids, backpack and equipment sizes as their inv defs, 90 % of items named", got, "data.root").need = ok == kUnchecked ? "log in" : "";
     }
     // Grand Exchange slots
     {
         const std::uint64_t box = rpm<std::uint64_t>(h, root + kOffGE).value_or(0);
-        int ok = kPass, bad = 0, active = 0; std::string d;
-        if (box <= 0x10000) { ok = c.inWorld ? kFail : kUnchecked; d = "slot block not readable"; }
+        int ok = kPass, bad = 0, active = 0; std::string d, need;
+        if (box <= 0x10000) { ok = c.inWorld ? kFail : kUnchecked; d = c.inWorld ? "GONE: slot block pointer at MainData+" + hx(kOffGE) + " not readable" : "slot block not set before login"; need = c.inWorld ? "" : "log in"; }
         else {
             alignas(8) std::uint8_t gb[kGESlotCount * kGESlotSize];
-            if (!rpm_bytes(h, box + kGEArrayPad, gb, sizeof(gb))) { ok = kFail; d = "slot block not readable"; }
+            if (!rpm_bytes(h, box + kGEArrayPad, gb, sizeof(gb))) { ok = kFail; d = "GONE: slot block at " + hx(box + kGEArrayPad) + " not readable"; }
             else {
                 for (int i = 0; i < kGESlotCount; ++i) {
                     const std::uint8_t* b = gb + (std::size_t)i * kGESlotSize;
@@ -9611,84 +9704,93 @@ void health_data(HCtx& c, rtx::health::Run& run) {
                     if (status < 0 || status > 7 || item <= 0 || rtx::cache::ItemName(item).empty() || price <= 0 || qty < filled || filled < 0) ++bad;
                 }
                 d = std::to_string(active) + " active offers" + (bad ? ", " + std::to_string(bad) + " implausible" : "");
-                if (bad) ok = kFail;
+                if (bad) { ok = kFail; d = "FORMAT: " + d + " (status, item, price or quantity fields do not read as an offer)"; }
+                else if (!active) { ok = kUnchecked; d = "no active offer to judge the slot layout (empty slots read as empty)"; need = "open a Grand Exchange offer"; }
             }
         }
-        run.Add(G, "data.ge", "Grand Exchange slots", ok, d, "Grand Exchange panel|GE alerts", "", "", "calib.kOffGE");
+        run.Add(G, "data.ge", "Grand Exchange slots", ok, d, "Grand Exchange panel|GE alerts", "active slots: status 1..7, a named item, price > 0, filled <= quantity",
+                std::to_string(active) + " active, " + std::to_string(bad) + " implausible", "calib.kOffGE").need = need;
     }
     // input reporter, cutscene, options, mouse, map, friends, chat store, hover, cooldowns, destination
     {
-        const std::uint64_t rep = rpm<std::uint64_t>(h, root + rtx::md::kInputReport).value_or(0);
-        int ok = kPass; std::string d;
-        if (rep <= 0x10000) { ok = c.inWorld ? kFail : kUnchecked; d = "reporter not readable"; }
+        const std::uint64_t rep = rpm<std::uint64_t>(h, root + kOffInputReporter).value_or(0);
+        int ok = kPass; std::string d, got;
+        if (rep <= 0x10000) { ok = c.inWorld ? kFail : kUnchecked; d = c.inWorld ? "GONE: reporter pointer at MainData+" + hx(kOffInputReporter) + " not readable" : "reporter not set before login"; }
         else {
             const std::uint64_t a = rpm<std::uint64_t>(h, rep + kOffRepPointerA).value_or(0), b = rpm<std::uint64_t>(h, rep + kOffRepPointerB).value_or(0);
             const std::uint64_t now = ecB;
             const std::uint64_t last = std::max(a, b);
-            if (last > now + 2000 || (last && now - last > 24ull * 3600 * 1000)) { ok = kFail; d = "pointer stamps not on the engine clock (" + std::to_string(a) + ", " + std::to_string(b) + ")"; }
+            got = std::to_string(a) + ", " + std::to_string(b) + " vs clock " + std::to_string(now);
+            if (last > now + 2000 || (last && now - last > 24ull * 3600 * 1000)) { ok = kFail; d = "FORMAT: pointer stamps not on the engine clock (" + std::to_string(a) + ", " + std::to_string(b) + ")"; }
             else d = "last pointer activity " + std::to_string((long long)(now - last) / 1000) + " s ago";
         }
-        run.Add(G, "data.input", "Input reporter", ok, d, "Idle timer|AFK alerts", "", "", "data.clock.engine");
+        run.Add(G, "data.input", "Input reporter", ok, d, "Idle timer|AFK alerts", "pointer stamps within a day of the engine clock", got, "data.clock.engine").need = ok == kUnchecked ? "log in" : "";
     }
     {
         int cut = -2;
-        if (auto cs = rpm<std::uint64_t>(h, root + rtx::md::kCutscene); cs && *cs > 0x10000) cut = rpm<std::int32_t>(h, *cs + 0x150).value_or(-2);
+        if (auto cs = rpm<std::uint64_t>(h, root + kOffCutscene); cs && *cs > 0x10000) cut = rpm<std::int32_t>(h, *cs + 0x150).value_or(-2);
         const bool ok = cut == -1 || (cut >= 0 && cut <= 65535);
-        run.Add(G, "data.cutscene", "Cutscene state", ok ? kPass : (c.inWorld ? kFail : kUnchecked), std::to_string(cut), "Cutscene hide", "-1 or an id", std::to_string(cut), "data.root");
+        run.Add(G, "data.cutscene", "Cutscene state", ok ? kPass : (c.inWorld ? kFail : kUnchecked),
+                ok ? std::to_string(cut) : c.inWorld ? "FORMAT: " + std::to_string(cut) + " at [MainData+" + hx(kOffCutscene) + "]+0x150 is neither -1 nor an id" : "cutscene object not set before login",
+                "Cutscene hide", "-1 or an id", std::to_string(cut), "data.root").need = ok || c.inWorld ? "" : "log in";
         int heap = 0;
-        if (auto opt = rpm<std::uint64_t>(h, root + rtx::md::kOptions); opt && *opt > 0x10000)
+        if (auto opt = rpm<std::uint64_t>(h, root + kOffOptions); opt && *opt > 0x10000)
             for (int i = 0; i < 44; ++i) if (rpm<std::uint64_t>(h, *opt + 0x2DA8 + (std::uint64_t)i * 8).value_or(0) > 0x10000) ++heap;
-        run.Add(G, "data.options", "Client options", heap == 44 ? kPass : kFail, std::to_string(heap) + "/44 option objects", "Settings readouts|Layout detection", "44", std::to_string(heap), "data.root");
+        run.Add(G, "data.options", "Client options", heap == 44 ? kPass : kFail, std::string(heap == 44 ? "" : "GONE: ") + std::to_string(heap) + "/44 option objects" + (heap == 44 ? "" : " at [[MainData+" + hx(kOffOptions) + "]+0x2DA8]"), "Settings readouts|Layout detection", "44", std::to_string(heap), "data.root");
     }
     {
         const std::uint64_t st = rpm<std::uint64_t>(h, root + kOffVarcStore).value_or(0);
-        int ok = kPass; std::string d;
-        if (st <= 0x10000) { ok = kFail; d = "store not readable"; }
+        int ok = kPass; std::string d, word;
+        if (st <= 0x10000) { ok = kFail; d = "store not readable at MainData+" + hx(kOffVarcStore); word = "GONE"; }
         else {
             const float mx = rpm<float>(h, st + 0x46D8).value_or(-9), my = rpm<float>(h, st + 0x46DC).value_or(-9);
             const std::uint32_t mods = rpm<std::uint32_t>(h, st + 0x4F0).value_or(0xFFFFFFFFu);
             int lw = 0, lh = 0, gx = 0, gy = 0, gw = 0, gh = 0;
             read_gameview_rect(h, root, gx, gy, gw, gh, &lw, &lh);
             d = "mouse " + std::to_string((int)mx) + "," + std::to_string((int)my) + ", modifiers " + std::to_string(mods);
-            if (!(mx >= -1.f && my >= -1.f && mx < 32768.f && my < 32768.f) || (lw > 0 && (mx > lw + 4 || my > lh + 4))) { ok = kFail; d += " (outside the window)"; }
-            if (mods > 0xF) { ok = kFail; d += " (modifier word)"; }
+            if (!(mx >= -1.f && my >= -1.f && mx < 32768.f && my < 32768.f) || (lw > 0 && (mx > lw + 4 || my > lh + 4))) { ok = kFail; word = "FORMAT"; d += " (outside the window)"; }
+            if (mods > 0xF) { ok = kFail; word = "FORMAT"; d += " (modifier word)"; }
         }
-        const std::uint64_t mm = rpm<std::uint64_t>(h, root + rtx::md::kMapMgr).value_or(0);
+        const std::uint64_t mm = rpm<std::uint64_t>(h, root + kOffMapMgr).value_or(0);
         if (mm > 0x10000) {
             const int a = rpm<std::int32_t>(h, mm + 0x710).value_or(-1), b = rpm<std::int32_t>(h, mm + 0x714).value_or(-1);
             const int ls = rpm<std::uint8_t>(h, mm + 0x71C).value_or(0);
             d += ", map load " + std::to_string(std::min(a, b)) + "%";
-            if (a < 0 || a > 100 || b < 0 || b > 100) { ok = kFail; d += " (out of range)"; }
-            else if (!ls && c.inWorld && std::min(a, b) != 100) { if (ok == kPass) ok = kWarn; d += " while not loading"; }
+            if (a < 0 || a > 100 || b < 0 || b > 100) { ok = kFail; if (word.empty()) word = "FORMAT"; d += " (out of range)"; }
+            else if (!ls && c.inWorld && std::min(a, b) != 100) { if (ok == kPass) { ok = kWarn; word = "MOVED"; } d += " while not loading (progress fields +0x710/+0x714 or the loading flag moved)"; }
         }
-        run.Add(G, "data.input2", "Mouse, keys, map load", ok, d, "Player State mouse and keys|Loading detection", "", "", "data.root");
+        if (!word.empty()) d = word + ": " + d;
+        run.Add(G, "data.input2", "Mouse, keys, map load", ok, d, "Player State mouse and keys|Loading detection", "mouse inside the window, modifiers <= 0xF, map load 0..100 % (100 when not loading)", d.substr(d.find("mouse ") == std::string::npos ? 0 : d.find("mouse ")), "data.root");
     }
     {
-        const std::uint64_t mm = rpm<std::uint64_t>(h, root + rtx::md::kMapMgr).value_or(0);
-        int ok = kPass; std::string d;
-        if (mm <= 0x10000) { ok = c.inWorld ? kFail : kUnchecked; d = "map manager not readable"; }
+        const std::uint64_t mm = rpm<std::uint64_t>(h, root + kOffMapMgr).value_or(0);
+        int ok = kPass; std::string d, got;
+        if (mm <= 0x10000) { ok = c.inWorld ? kFail : kUnchecked; d = c.inWorld ? "GONE: map manager pointer at MainData+" + hx(kOffMapMgr) + " not readable" : "map manager not set before login"; }
         else {
             const int bx = rpm<std::int32_t>(h, mm + 0x698).value_or(-1), by = rpm<std::int32_t>(h, mm + 0x69C).value_or(-1);
             d = "base " + std::to_string(bx) + "," + std::to_string(by);
-            if (bx < 0 || by < 0 || (bx % 8) || (by % 8)) { ok = kFail; d += " (not on a zone boundary)"; }
+            got = d;
+            if (bx < 0 || by < 0 || (bx % 8) || (by % 8)) { ok = kFail; d = "FORMAT: " + d + " (not on a zone boundary: +0x698/+0x69C are not the base tile)"; }
             if (c.localSec) {
                 const int tx = (int)(rpm<float>(h, c.localSec + rtx::scn::kPosX).value_or(0) / 512.f), ty = (int)(rpm<float>(h, c.localSec + rtx::scn::kPosY).value_or(0) / 512.f);
-                if (tx - bx < 0 || tx - bx >= 256 || ty - by < 0 || ty - by >= 256) { ok = kFail; d += "; player tile " + std::to_string(tx) + "," + std::to_string(ty) + " outside the loaded map"; }
+                got += ", player " + std::to_string(tx) + "," + std::to_string(ty);
+                if (tx - bx < 0 || tx - bx >= 256 || ty - by < 0 || ty - by >= 256) { ok = kFail; if (d.rfind("FORMAT", 0) != 0) d = "MOVED: " + d; d += "; player tile " + std::to_string(tx) + "," + std::to_string(ty) + " outside the loaded map"; }
                 else d += ", player at +" + std::to_string(tx - bx) + ",+" + std::to_string(ty - by);
             }
         }
-        run.Add(G, "data.mapbase", "Map base", c.inWorld ? ok : kUnchecked, d, "Zone events|Ground items|Loc changes", "", "", "data.root");
+        run.Add(G, "data.mapbase", "Map base", c.inWorld ? ok : kUnchecked, c.inWorld ? d : "map base is read in the world", "Zone events|Ground items|Loc changes", "base on a zone boundary, the player within 256 tiles of it", got, "data.root").need = c.inWorld ? "" : "log in";
     }
     {
-        const std::uint64_t fr = rpm<std::uint64_t>(h, root + rtx::md::kFriends).value_or(0);
-        int ok = kPass; std::string d;
-        if (fr <= 0x10000) { ok = c.inWorld ? kFail : kUnchecked; d = "friends list not readable"; }
+        const std::uint64_t fr = rpm<std::uint64_t>(h, root + kOffFriends).value_or(0);
+        int ok = kPass; std::string d, got, need;
+        if (fr <= 0x10000) { ok = c.inWorld ? kFail : kUnchecked; d = c.inWorld ? "GONE: friends list pointer at MainData+" + hx(kOffFriends) + " not readable" : "friends list not set before login"; need = c.inWorld ? "" : "log in"; }
         else {
             const int state = rpm<std::int32_t>(h, fr + 0x10).value_or(-1);
             const std::uint64_t b0 = rpm<std::uint64_t>(h, fr + 0x18).value_or(0), e0 = rpm<std::uint64_t>(h, fr + 0x20).value_or(0);
-            if (state != 2) { ok = kUnchecked; d = "list state " + std::to_string(state) + " (not loaded)"; }
+            got = "state " + std::to_string(state);
+            if (state != 2) { ok = kUnchecked; d = "list state " + std::to_string(state) + " (not loaded)"; need = "the friends list loaded (state 2)"; }
             else if (b0 <= 0x10000 && e0 == b0) d = "empty list";
-            else if (b0 <= 0x10000 || e0 < b0 || (e0 - b0) % 0x78) { ok = kFail; d = "span not a multiple of the 0x78 stride"; }
+            else if (b0 <= 0x10000 || e0 < b0 || (e0 - b0) % 0x78) { ok = kFail; d = "FORMAT: span " + hx(e0 - b0) + " not a multiple of the 0x78 stride"; }
             else {
                 const int n = (int)((e0 - b0) / 0x78); int good = 0;
                 for (int i = 0; i < n && i < 400; ++i) {
@@ -9697,55 +9799,60 @@ void health_data(HCtx& c, rtx::health::Run& run) {
                     if (printable_name(nm) && w >= 0 && w <= 300) ++good;
                 }
                 d = std::to_string(good) + "/" + std::to_string(n) + " friends read cleanly";
-                if (good * 10 < n * 9) ok = kFail;
+                got += ", " + d;
+                if (good * 10 < n * 9) { ok = kFail; d = "FORMAT: " + d + " (name at +0 or world at +0x30 do not read as such)"; }
             }
         }
-        run.Add(G, "data.friends", "Friends", ok, d, "Friends panel|Hiscores lookups", "", "", "data.root");
+        run.Add(G, "data.friends", "Friends", ok, d, "Friends panel|Hiscores lookups", "state 2, entries of 0x78 with a printable name and a world 0..300", got, "data.root").need = need;
     }
     {
-        const std::uint64_t store = rpm<std::uint64_t>(h, root + rtx::md::kChatStore).value_or(0);
-        int ok = kPass; std::string d;
-        if (store <= 0x10000) { ok = c.inWorld ? kFail : kUnchecked; d = "chat store not readable"; }
+        const std::uint64_t store = rpm<std::uint64_t>(h, root + kOffChatStore).value_or(0);
+        int ok = kPass; std::string d, got, need;
+        if (store <= 0x10000) { ok = c.inWorld ? kFail : kUnchecked; d = c.inWorld ? "GONE: chat store pointer at MainData+" + hx(kOffChatStore) + " not readable" : "chat store not set before login"; need = c.inWorld ? "" : "log in"; }
         else {
             const std::string arr = chat_store_json(h, root, 8);
             rtx::health::JVal v;
-            if (!rtx::health::ParseJson(arr, v) || v.a.empty()) { ok = c.inWorld ? kWarn : kUnchecked; d = "no record for the newest id (empty chat or store layout moved)"; }
+            if (!rtx::health::ParseJson(arr, v) || v.a.empty()) { ok = c.inWorld ? kWarn : kUnchecked; d = "UNVERIFIED: no record for the newest id (empty chat, or the store layout moved)"; need = "a chat line"; }
             else {
                 int sane = 0;
                 for (const auto& r : v.a) { const long long t = r.num("type", -1); if (t >= 0 && t < 200) ++sane; }
                 d = std::to_string(sane) + "/" + std::to_string(v.a.size()) + " newest records with a known type";
-                if (sane * 10 < (int)v.a.size() * 8) ok = kFail;
+                got = d;
+                if (sane * 10 < (int)v.a.size() * 8) { ok = kFail; d = "FORMAT: " + d + " (type field +0x20 does not read as a message type)"; }
             }
         }
-        run.Add(G, "data.chat", "Chat store", ok, d, "Chat log|Chat alerts", "", "", "data.root");
+        run.Add(G, "data.chat", "Chat store", ok, d, "Chat log|Chat alerts", "80 % of the newest records with a type < 200", got, "data.root").need = need;
     }
     {
-        const std::uint64_t ip = rpm<std::uint64_t>(h, root + rtx::md::kInputProc).value_or(0);
-        int ok = kPass; std::string d;
-        if (ip <= 0x10000) { ok = c.inWorld ? kFail : kUnchecked; d = "input processor not readable"; }
+        const std::uint64_t ip = rpm<std::uint64_t>(h, root + kOffInputProc).value_or(0);
+        int ok = kPass; std::string d, got, need;
+        if (ip <= 0x10000) { ok = c.inWorld ? kFail : kUnchecked; d = c.inWorld ? "GONE: input processor pointer at MainData+" + hx(kOffInputProc) + " not readable" : "input processor not set before login"; need = c.inWorld ? "" : "log in"; }
         else {
             const std::uint64_t slot = rpm<std::uint64_t>(h, ip + 0x13F8).value_or(1);
-            if (slot != 0 && (slot <= 0x10000 || slot > 0x00007FFFFFFFFFFFull)) { ok = kFail; d = "hover slot " + hx(slot) + " is not a pointer"; }
-            else d = slot ? "hovering " + hx(slot) : "nothing hovered";
+            got = hx(slot);
+            if (slot != 0 && (slot <= 0x10000 || slot > 0x00007FFFFFFFFFFFull)) { ok = kFail; d = "FORMAT: hover slot " + hx(slot) + " at +0x13F8 is not a pointer"; }
+            else if (slot) d = "hovering " + hx(slot);
+            else { ok = kUnchecked; d = "nothing hovered: the slot reads 0 whether or not it moved"; need = "hover an item or entity"; }
         }
-        run.Add(G, "data.hover", "Hover slot", ok, d, "Hover tooltips|Entity hover", "", "", "data.root");
+        run.Add(G, "data.hover", "Hover slot", ok, d, "Hover tooltips|Entity hover", "0 or a heap pointer", got, "data.root").need = need;
     }
     {
-        const std::uint64_t mgr = root + rtx::md::kVarpMgr;
+        const std::uint64_t mgr = root + kOffVarpMgr;
         const std::uint64_t bk = rpm<std::uint64_t>(h, mgr + 0x38178).value_or(0);
         const std::uint32_t cap = rpm<std::uint32_t>(h, mgr + 0x38180).value_or(0);
         const bool ok = bk > 0x10000 && cap >= 1 && cap <= 100000;
         run.Add(G, "data.cooldowns", "Cooldown map", ok ? kPass : (c.inWorld ? kFail : kUnchecked),
-                ok ? std::to_string(cap) + " buckets" : "buckets " + hx(bk) + ", cap " + std::to_string(cap),
-                "Ability cooldowns", "", "", "data.root");
+                ok ? std::to_string(cap) + " buckets" : c.inWorld ? "FORMAT: buckets " + hx(bk) + ", cap " + std::to_string(cap) + " at MainData+" + hx(kOffVarpMgr) + "+0x38178 do not read as a hash map" : "cooldown map empty before login",
+                "Ability cooldowns", "a bucket pointer and 1..100000 buckets", "buckets " + hx(bk) + ", cap " + std::to_string(cap), "data.root").need = ok || c.inWorld ? "" : "log in";
     }
     {
         const std::uint64_t mm = rpm<std::uint64_t>(h, root + rtx::scn::kMiniMap).value_or(0);
-        int ok = kPass; std::string d;
-        if (mm <= 0x10000) { ok = c.inWorld ? kFail : kUnchecked; d = "minimap not readable"; }
+        int ok = kPass; std::string d, got, need;
+        if (mm <= 0x10000) { ok = c.inWorld ? kFail : kUnchecked; d = c.inWorld ? "GONE: minimap pointer at MainData+" + hx(rtx::scn::kMiniMap) + " not readable" : "minimap not set before login"; need = c.inWorld ? "" : "log in"; }
         else {
             const int dx = rpm<std::int32_t>(h, mm + rtx::scn::kDestX).value_or(-1), dy = rpm<std::int32_t>(h, mm + rtx::scn::kDestY).value_or(-1);
-            if (dx <= 0 || dy <= 0) d = "no destination";
+            got = std::to_string(dx) + "," + std::to_string(dy);
+            if (dx <= 0 || dy <= 0) { ok = kUnchecked; d = "no destination set: the fields read 0 whether or not they moved"; need = "click a tile to walk to"; }
             else {
                 d = "destination " + std::to_string(dx / 512) + "," + std::to_string(dy / 512);
                 const bool centred = (dx % 512) == 256 && (dy % 512) == 256;
@@ -9754,10 +9861,10 @@ void health_data(HCtx& c, rtx::health::Run& run) {
                     const float px = rpm<float>(h, c.localSec + rtx::scn::kPosX).value_or(0), py = rpm<float>(h, c.localSec + rtx::scn::kPosY).value_or(0);
                     inReach = std::fabs(px - dx) < 104 * 512 && std::fabs(py - dy) < 104 * 512;
                 }
-                if (!centred || !inReach) { ok = kFail; d += centred ? " (not near the player)" : " (not a tile centre)"; }
+                if (!centred || !inReach) { ok = kFail; d = "FORMAT: " + d + (centred ? " (not near the player)" : " (not a tile centre: +0x14/+0x18 are not fine coordinates)"); }
             }
         }
-        run.Add(G, "data.dest", "Walk destination", ok, d, "Destination marker", "", "", "data.root");
+        run.Add(G, "data.dest", "Walk destination", ok, d, "Destination marker", "fine coordinates on a tile centre within 104 tiles of the player", got, "data.root").need = need;
     }
 }
 
@@ -9766,13 +9873,13 @@ void health_player(HCtx& c, rtx::health::Run& run) {
     const char* G = "Player";
     HANDLE h = c.h;
     if (!c.inWorld) {
-        run.Add(G, "player.account", "Account", kUnchecked, "not in the world", "Account|Member state", "", "", "data.root");
+        run.Add(G, "player.account", "Account", kUnchecked, "not in the world", "Account|Member state", "", "", "data.root").need = "log in";
         return;
     }
     const std::uint64_t acct = rpm<std::uint64_t>(h, c.root + kOffAccount).value_or(0);
     {
-        int ok = kPass; std::string d;
-        if (acct <= 0x10000) { ok = kFail; d = "account object not readable"; }
+        int ok = kPass; std::string d, word, got;
+        if (acct <= 0x10000) { ok = kFail; word = "GONE"; d = "account object pointer at MainData+" + hx(kOffAccount) + " not readable"; }
         else {
             std::string name = read_jagstring(h, acct + 0x68);
             if (name.empty()) if (auto pl = rpm<std::uint64_t>(h, acct + 0x58); pl && *pl > 0x10000) name = read_jagstring(h, *pl + 0xF8);
@@ -9780,18 +9887,20 @@ void health_player(HCtx& c, rtx::health::Run& run) {
             const std::uint64_t expiry = rpm<std::uint64_t>(h, acct + kOffAcctExpiry).value_or(0);
             const int uid = c.localUid;
             d = "uid " + std::to_string(uid) + ", member " + std::to_string(member);
-            if (name.empty()) { ok = kFail; d += ", no name"; }
-            if (member != 0 && member != 1) { ok = kFail; d += " (member byte not 0/1)"; }
-            if (uid < 1 || uid > 2047) { ok = kFail; d += " (uid out of range)"; }
+            got = d + (name.empty() ? ", no name" : ", named");
+            if (name.empty()) { ok = kFail; word = "GONE"; d += ", no name"; }
+            if (member != 0 && member != 1) { ok = kFail; if (word.empty()) word = "FORMAT"; d += " (member byte not 0/1)"; }
+            if (uid < 1 || uid > 2047) { ok = kFail; if (word.empty()) word = "FORMAT"; d += " (uid out of range)"; }
             if (c.localSec) {
                 const int secUid = rpm<std::int32_t>(h, c.localSec + rtx::scn::kUid).value_or(-1);
                 const std::string sn = sec_name(h, c.localSec);
-                if (secUid != uid) { ok = kFail; d += "; actor uid " + std::to_string(secUid); }
-                if (!name.empty() && norm_name(sn) != norm_name(name)) { ok = kFail; d += "; actor name differs from the account name"; }
+                if (secUid != uid) { ok = kFail; if (word.empty()) word = "MOVED"; d += "; actor uid " + std::to_string(secUid); }
+                if (!name.empty() && norm_name(sn) != norm_name(name)) { ok = kFail; if (word.empty()) word = "MOVED"; d += "; actor name differs from the account name"; }
             }
             run.Fact("account.expiryRaw", std::to_string(expiry));
         }
-        run.Add(G, "player.account", "Account", ok, d, "Account key (bank cache)|Member state|Premier", "", "", "calib.kOffAccount");
+        if (!word.empty()) d = word + ": " + d;
+        run.Add(G, "player.account", "Account", ok, d, "Account key (bank cache)|Member state|Premier", "a name, member 0/1, uid 1..2047 equal to the actor's", got, "calib.kOffAccount");
     }
     {
         int ok = kPass; std::string d;
@@ -9800,17 +9909,18 @@ void health_player(HCtx& c, rtx::health::Run& run) {
         std::vector<std::pair<std::uint64_t, std::uint64_t>> secs; scene_secs(c, secs);
         for (const auto& es : secs)
             if (rpm<std::uint8_t>(h, es.second + rtx::scn::kType).value_or(0xFF) == 2 && rpm<std::int32_t>(h, es.second + rtx::scn::kUid).value_or(-1) == c.localUid) { viaScan = es.second; break; }
-        if (!viaReg) { ok = kFail; d = "registry at MainData+" + hx(rtx::md::kPlayers) + " does not give the local player"; }
-        else if (viaScan && viaReg != viaScan) { ok = kFail; d = "registry and scene disagree"; }
+        if (!viaReg) { ok = kFail; d = "GONE: registry at MainData+" + hx(kOffPlayers) + " does not give the local player"; }
+        else if (viaScan && viaReg != viaScan) { ok = kFail; d = "MOVED: registry and scene disagree on the local player's actor"; }
         else d = "registry and scene agree";
-        if (!viaScan) { if (ok == kPass) ok = kWarn; d += "; local player not in the actor vector"; }
-        run.Add(G, "player.registry", "Player registry", ok, d, "Terrain heights|In-frame labels|Player State", "", "", "data.root");
+        if (!viaScan) { if (ok == kPass) { ok = kWarn; d = "GONE: " + d; } d += "; local player not in the actor vector"; }
+        run.Add(G, "player.registry", "Player registry", ok, d, "Terrain heights|In-frame labels|Player State", "registry entry == the scene's actor with the local uid",
+                "registry " + hx(viaReg) + ", scene " + hx(viaScan), "data.root");
     }
     {
         const std::uint64_t stats = rpm<std::uint64_t>(h, c.root + kOffStats).value_or(0);
         const std::uint64_t block = stats > 0x10000 ? rpm<std::uint64_t>(h, stats + kStatsInner).value_or(0) : 0;
-        int ok = kPass; std::string d;
-        if (block <= 0x10000) { ok = kFail; d = "skill block not readable"; }
+        int ok = kPass; std::string d, word;
+        if (block <= 0x10000) { ok = kFail; word = "GONE"; d = "skill block at [MainData+" + hx(kOffStats) + "]+" + hx(kStatsInner) + " not readable"; }
         else {
             const int count = rpm<std::uint8_t>(h, block + 8).value_or(0);
             const std::uint64_t arr = rpm<std::uint64_t>(h, block + 0x10).value_or(0);
@@ -9831,20 +9941,21 @@ void health_player(HCtx& c, rtx::health::Run& run) {
                 }
             }
             d = std::to_string(count) + " skills, " + std::to_string(agree) + "/" + std::to_string(n) + " levels match their xp, energy " + std::to_string(energy) + ", weight " + std::to_string(weight);
-            if (count > 29) { ok = kFail; d += " (a new skill)"; }
-            else if (count != 29) { ok = kFail; d += " (count byte moved?)"; }
-            if (n && agree < n) { ok = kFail; d += "; off:" + bad; }
-            if (energy < 0 || energy > 100) { ok = kFail; d += "; energy out of range"; }
-            if (weight < -100 || weight > 300) { ok = kFail; d += "; weight out of range"; }
+            if (count > 29) { ok = kFail; word = "NEW"; d += " (a new skill)"; }
+            else if (count != 29) { ok = kFail; word = "MOVED"; d += " (count byte moved?)"; }
+            if (n && agree < n) { ok = kFail; if (word.empty()) word = "FORMAT"; d += "; off:" + bad; }
+            if (energy < 0 || energy > 100) { ok = kFail; if (word.empty()) word = "FORMAT"; d += "; energy out of range"; }
+            if (weight < -100 || weight > 300) { ok = kFail; if (word.empty()) word = "FORMAT"; d += "; weight out of range"; }
         }
-        run.Add(G, "player.skills", "Skills", ok, d, "Skills panel|XP tracker|Run energy|Weight", "29",
-                block > 0x10000 ? std::to_string(rpm<std::uint8_t>(h, block + 8).value_or(0)) : std::string(), "calib.kStatsInner");
+        if (!word.empty()) d = word + ": " + d;
+        run.Add(G, "player.skills", "Skills", ok, d, "Skills panel|XP tracker|Run energy|Weight", "29 skills, every level on its xp curve, energy 0..100, weight -100..300",
+                block > 0x10000 ? d.substr(d.find_first_of("0123456789")) : std::string("no block"), "calib.kStatsInner");
     }
     {
         const std::string pj = PlayerInfoJson(c.pid);
         const bool in = pj.find("\"in\":true") != std::string::npos;
-        run.Add(G, "player.state", "Player state", in ? kPass : kFail, in ? "local player found" : "local player not found in the scene",
-                "Player State|Tasks|Overlays", "", "", "player.registry");
+        run.Add(G, "player.state", "Player state", in ? kPass : kFail, in ? "local player found" : "GONE: local player not found in the scene",
+                "Player State|Tasks|Overlays", "in: true", in ? "in: true" : "in: false", "player.registry");
     }
 }
 
@@ -9860,9 +9971,11 @@ void health_scene(HCtx& c, rtx::health::Run& run) {
         if (wo != rtx::scn::kWorkerOffDefault) { ok = kWarn; d += "; worker moved from " + hx(rtx::scn::kWorkerOffDefault); }
         if (mo != rtx::scn::kMatrixOffDefault) { ok = kWarn; d += "; matrix moved from " + hx(rtx::scn::kMatrixOffDefault); }
         if (cr != rtx::scn::kCamPosRelDefault) { ok = kWarn; d += "; camera position moved from " + std::to_string(rtx::scn::kCamPosRelDefault); }
-        if (!c.worker) { ok = c.inWorld ? kFail : kUnchecked; d = "scene worker not found"; }
+        if (ok == kWarn) d = "MOVED: " + d + " (the scan found them, the compiled defaults are behind)";
+        if (!c.worker) { ok = c.inWorld ? kFail : kUnchecked; d = c.inWorld ? "GONE: scene worker not found from the worldView (worker offset scan failed)" : "scene worker is read in the world"; }
         run.Fact("scene.workerOff", hx(wo)); run.Fact("scene.matrixOff", hx(mo)); run.Fact("scene.camRel", std::to_string(cr));
-        run.Add(G, "scene.offsets", "Scene offsets", ok, d, "Scene|Overlays|Camera", hx(rtx::scn::kWorkerOffDefault), hx(wo), "data.root");
+        run.Add(G, "scene.offsets", "Scene offsets", ok, d, "Scene|Overlays|Camera", "worker " + hx(rtx::scn::kWorkerOffDefault) + ", matrix " + hx(rtx::scn::kMatrixOffDefault) + ", camera " + std::to_string(rtx::scn::kCamPosRelDefault),
+                "worker " + hx(wo) + ", matrix " + hx(mo) + ", camera " + std::to_string(cr), "data.root").need = ok == kUnchecked ? "log in" : "";
     }
     if (!c.inWorld || !c.worker) return;
     std::vector<std::pair<std::uint64_t, std::uint64_t>> secs; scene_secs(c, secs);
@@ -9957,33 +10070,40 @@ void health_scene(HCtx& c, rtx::health::Run& run) {
             if (!(kv.first <= 5 || (kv.first >= 10 && kv.first <= 13))) unknown = true;
         }
         const bool self = c.localSec != 0;
-        run.Add(G, "scene.types", "Actor types", (!unknown && self) ? kPass : kFail, "types " + hist + (self ? "" : "; no player with the local uid") + (unknown ? "; unknown type codes (type byte moved?)" : ""),
-                "Scene panel|Overlays|Plugins scene API", "", "", "scene.offsets");
+        const int tok = (!unknown && self) ? kPass : kFail;
+        run.Add(G, "scene.types", "Actor types", tok, std::string(tok == kPass ? "" : unknown ? "FORMAT: " : "GONE: ") + "types " + hist + (self ? "" : "; no player with the local uid") + (unknown ? "; unknown type codes (type byte moved?)" : ""),
+                "Scene panel|Overlays|Plugins scene API", "type codes in 1..5 and 10..13, a player with the local uid", "types " + hist, "scene.offsets");
     }
-    run.Add(G, "scene.npcs", "NPC names", npcs == 0 ? kUnchecked : (npcNamed * 10 >= npcs * 9 ? kPass : kFail),
-            npcs == 0 ? "no NPCs nearby" : std::to_string(npcNamed) + "/" + std::to_string(npcs) + " config ids name the live NPC" + (npcBad.empty() ? "" : "; e.g." + npcBad),
-            "NPC labels|Boss info|Slayer|Plugins", "90 %", "", "scene.types");
+    {
+        const int ok = npcs == 0 ? kUnchecked : (npcNamed * 10 >= npcs * 9 ? kPass : kFail);
+        run.Add(G, "scene.npcs", "NPC names", ok,
+                npcs == 0 ? "no NPCs nearby" : std::string(ok == kFail ? "MOVED: " : "") + std::to_string(npcNamed) + "/" + std::to_string(npcs) + " config ids name the live NPC" + (ok == kFail ? " (the config id at sec+" + hx(rtx::scn::kConfig) + " or the name buffer moved)" : "") + (npcBad.empty() ? "" : "; e.g." + npcBad),
+                "NPC labels|Boss info|Slayer|Plugins", "90 % named", std::to_string(npcNamed) + "/" + std::to_string(npcs), "scene.types").need = npcs == 0 ? "an NPC nearby" : "";
+    }
     {
         const bool curPass = curOk * 10 >= npcs * 9;
         run.Add(G, "scene.npctype", "NPC current type", npcs == 0 ? kUnchecked : (curPass ? kPass : kWarn),
-                npcs == 0 ? std::string("no NPCs nearby") :
+                npcs == 0 ? std::string("no NPCs nearby") : std::string(curPass ? "" : "MOVED: ") +
                 std::to_string(curOk) + "/" + std::to_string(npcs) + " current type ids at sec+" + hx(rtx::scn::kNpcCur) + " agree with the morph evaluation, " +
                 std::to_string(curMorphed) + " differ from the base id" + (curPass ? "" : " (sec+" + hx(rtx::scn::kNpcCur) + " disagrees with the morph evaluation)") +
                 (curBad.empty() ? "" : "; e.g." + curBad),
-                "NPC hover ids|Interactable NPCs|Interaction target", "90 %", std::to_string(curOk) + "/" + std::to_string(npcs), "scene.types");
+                "NPC hover ids|Interactable NPCs|Interaction target", "90 %", std::to_string(curOk) + "/" + std::to_string(npcs), "scene.types").need = npcs == 0 ? "an NPC nearby" : "";
     }
     run.Add(G, "scene.players", "Players", players == 0 ? kUnchecked : (playersOk == players ? kPass : kFail),
-            std::to_string(playersOk) + "/" + std::to_string(players) + " with a clean name, combat level and plane", "Player labels|Nameplates", "", "", "scene.types");
+            players == 0 ? std::string("no other players nearby") : std::string(playersOk == players ? "" : "FORMAT: ") + std::to_string(playersOk) + "/" + std::to_string(players) + " with a clean name, combat level and plane",
+            "Player labels|Nameplates", "every player: printable name, combat 3..152 twice, plane 0..3", std::to_string(playersOk) + "/" + std::to_string(players), "scene.types").need = players == 0 ? "another player nearby" : "";
     run.Add(G, "scene.motion", "Animation and facing", motionN == 0 ? kUnchecked : (motionOk * 10 >= motionN * 9 ? kPass : kFail),
-            std::to_string(motionOk) + "/" + std::to_string(motionN) + " actors with a valid animation and a unit facing (turn target and entity node)", "Tick timers by animation|Facing arrows", "", "", "scene.types");
+            motionN == 0 ? std::string("no players or NPCs nearby") : std::string(motionOk * 10 >= motionN * 9 ? "" : "FORMAT: ") + std::to_string(motionOk) + "/" + std::to_string(motionN) + " actors with a valid animation and a unit facing (turn target and entity node)",
+            "Tick timers by animation|Facing arrows", "90 %", std::to_string(motionOk) + "/" + std::to_string(motionN), "scene.types").need = motionN == 0 ? "an actor nearby" : "";
     run.Add(G, "scene.npccombat", "NPC life points", combatN == 0 ? kUnchecked : (combatOk * 10 >= combatN * 9 ? kPass : kFail),
-            combatN == 0 ? "no NPC with a health bar" : std::to_string(combatOk) + "/" + std::to_string(combatN) + " health bars agree with life points",
-            "Boss HP|Combat log|NPC HP labels", "", "", "scene.types");
+            combatN == 0 ? "no NPC with a health bar" : std::string(combatOk * 10 >= combatN * 9 ? "" : "FORMAT: ") + std::to_string(combatOk) + "/" + std::to_string(combatN) + " health bars agree with life points",
+            "Boss HP|Combat log|NPC HP labels", "90 %", std::to_string(combatOk) + "/" + std::to_string(combatN), "scene.types").need = combatN == 0 ? "an NPC with a health bar nearby" : "";
     run.Add(G, "scene.overhead", "Overhead objects", ovN == 0 ? kUnchecked : (ovOk == ovN ? kPass : kFail),
-            std::to_string(ovOk) + "/" + std::to_string(ovN) + " with a 0x1B0-stride bar vector and at most 6 splats", "Combat log|Head bars", "", "", "scene.types");
+            ovN == 0 ? std::string("no actor with an overhead object") : std::string(ovOk == ovN ? "" : "FORMAT: ") + std::to_string(ovOk) + "/" + std::to_string(ovN) + " with a 0x1B0-stride bar vector and at most 6 splats",
+            "Combat log|Head bars", "every overhead object", std::to_string(ovOk) + "/" + std::to_string(ovN), "scene.types").need = ovN == 0 ? "an actor with a head bar nearby" : "";
     run.Add(G, "scene.effects", "Effects and projectiles", fxN == 0 ? kUnchecked : (fxOk == fxN ? kPass : kFail),
-            fxN == 0 ? "none nearby" : std::to_string(fxOk) + "/" + std::to_string(fxN) + " near the player with a cache graphic" + (fxBad.empty() ? "" : ";" + fxBad),
-            "Specials: graphic highlights|Clue scan ring|Projectiles", "", "", "scene.types");
+            fxN == 0 ? "none nearby" : std::string(fxOk == fxN ? "" : "FORMAT: ") + std::to_string(fxOk) + "/" + std::to_string(fxN) + " near the player with a cache graphic" + (fxBad.empty() ? "" : ";" + fxBad),
+            "Specials: graphic highlights|Clue scan ring|Projectiles", "every effect", std::to_string(fxOk) + "/" + std::to_string(fxN), "scene.types").need = fxN == 0 ? "an effect or projectile nearby" : "";
     // movement route: every player and NPC carries a 21-entry route at sec+0x268, and a moving
     // actor's newest entry (its true tile) sits near where it is drawn. A runner covers 2 tiles a tick
     // and is drawn up to 2 ticks behind, so 4 tiles; a moved layout reads tiles far off or none. Fewer
@@ -10021,7 +10141,7 @@ void health_scene(HCtx& c, rtx::health::Run& run) {
         const bool ok = moveOk && queuesOk;
         const int st = total == 0 ? kUnchecked : !ok ? kFail : (routesOk && few) ? kUnchecked : kPass;
         run.Add(G, "scene.route", "Actor true tile", st,
-                total == 0 ? std::string("no players or NPCs in the scene") :
+                total == 0 ? std::string("no players or NPCs in the scene") : std::string(st == kFail ? "MOVED: " : "") +
                 std::to_string(routes) + "/" + std::to_string(total) + " actors carry a movement route at sec+" + hx(rtx::scn::kMoveMgr) + ", " +
                 std::to_string(queueOk) + "/" + std::to_string(routes) + " queues consistent, " +
                 std::to_string(close) + "/" + std::to_string(moving) + " moving within 4 tiles of where they are drawn" +
@@ -10029,28 +10149,28 @@ void health_scene(HCtx& c, rtx::health::Run& run) {
                 (queuesOk ? "" : " (read cursor or count moved?)"),
                 "True tile overlay|Plugins scene API", "90 %",
                 std::to_string(routes) + "/" + std::to_string(total) + " routes, " + std::to_string(queueOk) + "/" + std::to_string(routes) + " queues, " +
-                std::to_string(close) + "/" + std::to_string(moving) + " near", "scene.types");
+                std::to_string(close) + "/" + std::to_string(moving) + " near", "scene.types").need = total == 0 ? "an actor nearby" : st == kUnchecked ? "three or more actors moving nearby" : "";
     }
     // projection: the local player lands near the middle of the view
     {
         CamProbes probes; float m[16] = {};
-        int ok = kUnchecked; std::string d = "camera not readable";
+        int ok = kUnchecked; std::string d = "camera matrix not readable", got;
         if (c.wv && read_view_matrix(h, c.pid, c.root, c.wv, probes, m) && c.localSec) {
             const float x = rpm<float>(h, c.localSec + rtx::scn::kPosX).value_or(0), y = rpm<float>(h, c.localSec + rtx::scn::kPosY).value_or(0), z = rpm<float>(h, c.localSec + rtx::scn::kPosZ).value_or(0);
             const float w = m[3] * x + m[11] * y + m[7] * z + m[15];
             if (w > 1.f) {
                 const float nx = (m[0] * x + m[8] * y + m[4] * z + m[12]) / w, ny = (m[1] * x + m[9] * y + m[5] * z + m[13]) / w;
                 char b[96]; std::snprintf(b, sizeof(b), "local player at %.2f, %.2f of the view", nx, ny);
-                d = b;
+                d = b; got = b;
                 ok = (std::fabs(nx) < 0.5f && std::fabs(ny) < 0.5f) ? kPass : kWarn;
-                if (ok == kWarn) d += " (expected near the centre; camera may be panned)";
-            } else { ok = kFail; d = "local player behind the camera"; }
+                if (ok == kWarn) d = "UNVERIFIED: " + d + " (expected near the centre; the camera may be panned)";
+            } else { ok = kFail; d = "FORMAT: local player behind the camera (the matrix at the camera offset does not project the scene)"; got = "w <= 1"; }
         }
-        run.Add(G, "scene.projection", "Projection", ok, d, "Overlays|Markers|In-frame labels", "", "", "scene.offsets");
+        run.Add(G, "scene.projection", "Projection", ok, d, "Overlays|Markers|In-frame labels", "local player within 0.5 of the view centre", got, "scene.offsets").need = ok == kUnchecked ? "the camera matrix (in the world with a scene)" : ok == kWarn ? "the camera centred on the player" : "";
     }
     // terrain: the actor stands on the live height grid (+5)
     {
-        int ok = kUnchecked; std::string d = "no local player";
+        int ok = kUnchecked; std::string d = "no local player", got;
         if (c.localSec) {
             const float x = rpm<float>(h, c.localSec + rtx::scn::kPosX).value_or(0), y = rpm<float>(h, c.localSec + rtx::scn::kPosY).value_or(0), z = rpm<float>(h, c.localSec + rtx::scn::kPosZ).value_or(0);
             const int plane = rpm<std::int32_t>(h, c.localSec + rtx::scn::kPlane).value_or(0);
@@ -10058,19 +10178,20 @@ void health_scene(HCtx& c, rtx::health::Run& run) {
             if (LiveTerrainSnapshot(c.pid, tx, ty, plane)) {
                 const std::int32_t h00 = LiveCornerHeight(c.pid, tx, ty, plane), h10 = LiveCornerHeight(c.pid, tx + 1, ty, plane);
                 const std::int32_t h01 = LiveCornerHeight(c.pid, tx, ty + 1, plane), h11 = LiveCornerHeight(c.pid, tx + 1, ty + 1, plane);
-                if (h00 == INT32_MIN || h10 == INT32_MIN || h01 == INT32_MIN || h11 == INT32_MIN) { ok = kFail; d = "height grid not readable at the player"; }
+                if (h00 == INT32_MIN || h10 == INT32_MIN || h01 == INT32_MIN || h11 == INT32_MIN) { ok = kFail; d = "GONE: height grid not readable at the player's tile"; got = "no corner heights"; }
                 else {
                     const float fx = x / 512.f - tx, fy = y / 512.f - ty;
                     const float hb = (h00 * (1 - fx) + h10 * fx) * (1 - fy) + (h01 * (1 - fx) + h11 * fx) * fy;
                     const std::int32_t lift = LiveTileLift(c.pid, tx, ty, plane);
                     const float want = hb + (lift == INT32_MIN ? 0 : lift) + 5.f;
                     char b[120]; std::snprintf(b, sizeof(b), "actor height %.1f, grid %.1f (off by %.1f)", z, want, z - want);
-                    d = b;
+                    d = b; got = b;
                     ok = std::fabs(z - want) <= 1.5f ? kPass : (std::fabs(z - want) <= 64.f ? kWarn : kFail);
+                    if (ok != kPass) d = "FORMAT: " + d + (ok == kWarn ? " (the grid or the lift reads a nearby field)" : " (the height grid chain does not land on the actor)");
                 }
-            } else { ok = kFail; d = "terrain snapshot failed"; }
+            } else { ok = kFail; d = "GONE: terrain snapshot failed (the scene's height grid chain did not resolve)"; got = "no snapshot"; }
         }
-        run.Add(G, "scene.terrain", "Terrain heights", ok, d, "Tile markers|Ground overlays|In-frame markers", "within 1 unit", "", "player.registry");
+        run.Add(G, "scene.terrain", "Terrain heights", ok, d, "Tile markers|Ground overlays|In-frame markers", "actor height within 1.5 of grid + lift + 5", got, "player.registry").need = ok == kUnchecked ? "a local player in the scene" : "";
     }
     // world grid: the worldView owns it on the static map, which spans the whole world, and the
     // player's region object points back at its worldView and its own mapsquare
@@ -10083,7 +10204,7 @@ void health_scene(HCtx& c, rtx::health::Run& run) {
                 ok = kUnchecked;
                 d = "instanced worldView, grid owner " + (mgr == wv ? std::string("self") : hx(mgr)) + " (instance layout not verified)";
             }
-            else if (mgr != wv) { ok = kFail; d = "grid owner [wv+" + hx(rtx::scn::kWvGrid) + "] is " + hx(mgr) + ", not the worldView (grid moved?)"; }
+            else if (mgr != wv) { ok = kFail; d = "MOVED: grid owner [wv+" + hx(rtx::scn::kWvGrid) + "] is " + hx(mgr) + ", not the worldView (grid moved?)"; }
             else {
                 ok = kPass;
                 std::int32_t b[4] = { -1, -1, -1, -1 };
@@ -10093,30 +10214,30 @@ void health_scene(HCtx& c, rtx::health::Run& run) {
                 const int rx = (int)(rpm<float>(h, c.localSec + rtx::scn::kPosX).value_or(0) / 512.f) >> 6;
                 const int ry = (int)(rpm<float>(h, c.localSec + rtx::scn::kPosY).value_or(0) / 512.f) >> 6;
                 const std::string ms = std::to_string(rx) + "," + std::to_string(ry);
-                if (b[0] != 0 || b[1] != 0 || b[2] != 98 || b[3] != 198) { ok = kFail; d += " (expected 0,0..98,198)"; }
-                else if (rx < b[0] || rx > b[2] || ry < b[1] || ry > b[3]) { ok = kFail; d += ", player mapsquare " + ms + " outside the grid"; }
+                if (b[0] != 0 || b[1] != 0 || b[2] != 98 || b[3] != 198) { ok = kFail; d = "FORMAT: " + d + " (expected 0,0..98,198: the bounds at +" + hx(rtx::scn::kGridMin) + " moved)"; }
+                else if (rx < b[0] || rx > b[2] || ry < b[1] || ry > b[3]) { ok = kFail; d = "FORMAT: " + d + ", player mapsquare " + ms + " outside the grid"; }
                 else {
                     const std::uint64_t rows = rpm<std::uint64_t>(h, mgr + rtx::scn::kGridRows).value_or(0);
                     const std::uint64_t col = rows > 0x10000 ? rpm<std::uint64_t>(h, rows + (std::uint64_t)(rx - b[0]) * 0x18).value_or(0) : 0;
                     const std::uint64_t region = col > 0x10000 ? rpm<std::uint64_t>(h, col + (std::uint64_t)(ry - b[1]) * 0x18 + 8).value_or(0) : 0;
-                    if (region <= 0x10000) { ok = kFail; d += ", no region object at mapsquare " + ms; }
+                    if (region <= 0x10000) { ok = kFail; d = "GONE: " + d + ", no region object at mapsquare " + ms; }
                     else {
                         const std::uint64_t back = rpm<std::uint64_t>(h, region + rtx::scn::kRegionWv).value_or(0);
                         const int qx = rpm<std::int32_t>(h, region + rtx::scn::kRegionRx).value_or(-1), qy = rpm<std::int32_t>(h, region + rtx::scn::kRegionRy).value_or(-1);
                         if (back != wv || qx != rx || qy != ry) {
                             ok = kFail;
-                            d += ", region at " + ms + " names worldView " + hx(back) + ", mapsquare " + std::to_string(qx) + "," + std::to_string(qy) + " (region layout moved?)";
+                            d = "MOVED: " + d + ", region at " + ms + " names worldView " + hx(back) + ", mapsquare " + std::to_string(qx) + "," + std::to_string(qy) + " (region layout moved?)";
                         } else d += ", region back reference";
                     }
                 }
                 d += "; +" + hx(rtx::scn::kMapDef) + " = 0 (not instanced)";
                 if (rpm<std::uint64_t>(h, wv + rtx::scn::kWvBox).value_or(0) != wv) {
-                    if (ok == kPass) ok = kWarn;
+                    if (ok == kPass) { ok = kWarn; d = "MOVED: " + d; }
                     d += "; [wv+" + hx(rtx::scn::kWvBox) + "] is not the worldView (loc menu box moved?)";
                 }
             }
         }
-        run.Add(G, "scene.grid", "World grid", ok, d, "Terrain heights|Tile markers", "0,0..98,198", got, "scene.offsets");
+        run.Add(G, "scene.grid", "World grid", ok, d, "Terrain heights|Tile markers", "0,0..98,198, region at the player's mapsquare pointing back", got, "scene.offsets").need = ok == kUnchecked ? (c.localSec ? "the static map (not an instance)" : "a local player in the scene") : "";
     }
     // live scenery against the cache's map placements (reader side, works from the command line)
     {
@@ -10141,8 +10262,9 @@ void health_scene(HCtx& c, rtx::health::Run& run) {
             }
             d = std::to_string(matched) + "/" + std::to_string(total) + " live scenery ids sit on a cache placement of that id";
             ok = matched * 10 >= total ? kPass : kFail;
+            if (ok == kFail) d = "MOVED: " + d + " (the loc id or tile field in the scenery object moved)";
         }
-        run.Add(G, "scene.locs", "Live scenery", ok, d, "Loc labels|Obelisk tracker|Tree timers", "10 %", "", "scene.offsets");
+        run.Add(G, "scene.locs", "Live scenery", ok, d, "Loc labels|Obelisk tracker|Tree timers", "10 % on a placement", ok == kUnchecked ? std::string() : d.substr(d.find_first_of("0123456789")), "scene.offsets").need = ok == kUnchecked ? "scenery in view" : "";
     }
 }
 
@@ -10159,10 +10281,14 @@ void health_interfaces(HCtx& c, rtx::health::Run& run) {
         }
     const bool frame = std::find(open.begin(), open.end(), 1477) != open.end();
     int maxGroup = 0; for (int g : open) maxGroup = std::max(maxGroup, g);
-    run.Add(G, "iface.groups", "Open interfaces", open.empty() ? (c.inWorld ? kFail : kUnchecked) : (frame ? (maxGroup > 3500 ? kWarn : kPass) : kFail),
-            open.empty() ? "interface list not readable" : std::to_string(open.size()) + " open" + (frame ? "" : ", game frame 1477 missing") +
-            ", largest group " + std::to_string(maxGroup) + (maxGroup > 3500 ? " (near the 4096 hover cap)" : ""),
-            "Every interface read", "", "", "data.root");
+    {
+        const int ok = open.empty() ? (c.inWorld ? kFail : kUnchecked) : (frame ? (maxGroup > 3500 ? kWarn : kPass) : kFail);
+        run.Add(G, "iface.groups", "Open interfaces", ok,
+                open.empty() ? (c.inWorld ? "GONE: interface list not readable at [MainData+" + hx(kOffIfaceOwner) + "]" : std::string("no interfaces before login")) :
+                std::string(!frame ? "GONE: " : maxGroup > 3500 ? "NEW: " : "") + std::to_string(open.size()) + " open" + (frame ? "" : ", game frame 1477 missing") +
+                ", largest group " + std::to_string(maxGroup) + (maxGroup > 3500 ? " (near the 4096 hover cap)" : ""),
+                "Every interface read", "game frame 1477 open, groups < 3500", std::to_string(open.size()) + " open, largest " + std::to_string(maxGroup), "data.root").need = ok == kUnchecked ? "log in" : "";
+    }
     if (!frame) return;
     // game frame walk against its cache definitions
     {
@@ -10203,11 +10329,12 @@ void health_interfaces(HCtx& c, rtx::health::Run& run) {
         std::string d = std::to_string(statics) + " static comps (" + std::to_string(known) + " in the cache), parents " + std::to_string(parentOk) + "/" + std::to_string(parentN) +
                         ", sprites " + std::to_string(spriteOk) + "/" + std::to_string(spriteN) + ", sized " + std::to_string(sizeOk) + "/" + std::to_string(sizeN) +
                         ", texts " + std::to_string(textOk) + "/" + std::to_string(textN);
-        if (statics == 0 || known * 10 < statics * 9) { ok = kFail; d += "; comp ids do not match the definitions (node id field moved?)"; }
-        else if (parentN && parentOk * 10 < parentN * 9) { ok = kFail; d += "; parent field disagrees"; }
-        else if (mixed) { ok = kFail; d += "; " + std::to_string(mixed) + " component classes map to several types"; }
-        else if ((spriteN && spriteOk * 2 < spriteN) || (sizeN && sizeOk * 10 < sizeN * 8)) { ok = kWarn; d += "; sprite or size fields disagree with the definitions"; }
-        run.Add(G, "iface.frame", "Game frame layout", ok, d, "Panel positions|Gameview rect|Overlays|Hover", "", "", "iface.groups");
+        const std::string got = d;
+        if (statics == 0 || known * 10 < statics * 9) { ok = kFail; d = "MOVED: " + d + "; comp ids do not match the definitions (node id field moved?)"; }
+        else if (parentN && parentOk * 10 < parentN * 9) { ok = kFail; d = "MOVED: " + d + "; parent field disagrees"; }
+        else if (mixed) { ok = kFail; d = "FORMAT: " + d + "; " + std::to_string(mixed) + " component classes map to several types"; }
+        else if ((spriteN && spriteOk * 2 < spriteN) || (sizeN && sizeOk * 10 < sizeN * 8)) { ok = kWarn; d = "FORMAT: " + d + "; sprite or size fields disagree with the definitions"; }
+        run.Add(G, "iface.frame", "Game frame layout", ok, d, "Panel positions|Gameview rect|Overlays|Hover", "90 % of static comps in the cache with their parent, one type per class, sprites and sizes as defined", got, "iface.groups");
     }
     // sub-interface table: every open group mounted on a live parent component
     {
@@ -10225,8 +10352,9 @@ void health_interfaces(HCtx& c, rtx::health::Run& run) {
         }
         int ok = mounted == 0 ? kFail : (parentOk * 10 >= mounted * 9 ? kPass : kWarn);
         run.Add(G, "iface.mounts", "Sub-interface table", ok,
-                std::to_string(mounted) + "/" + std::to_string(n) + " open groups mounted, " + std::to_string(parentOk) + " on a live parent comp" + (bad.empty() ? "" : "; odd:" + bad),
-                "Panel positions (automatic origins)", "", "", "iface.groups");
+                std::string(ok == kFail ? "GONE: " : ok == kWarn ? "MOVED: " : "") + std::to_string(mounted) + "/" + std::to_string(n) + " open groups mounted, " + std::to_string(parentOk) + " on a live parent comp" + (bad.empty() ? "" : "; odd:" + bad) +
+                (ok == kFail ? " (the owner's sub table at +0xE0 reads empty)" : ""),
+                "Panel positions (automatic origins)", "open groups mounted on an open parent comp (90 %)", std::to_string(mounted) + "/" + std::to_string(n) + " mounted, " + std::to_string(parentOk) + " on a parent", "iface.groups");
     }
     // the fallback origins against the engine's own answer: every open, attached group of the manual table,
     // and the window rule for every window whose content comp holds an attached group. The fallback is meant
@@ -10262,11 +10390,12 @@ void health_interfaces(HCtx& c, rtx::health::Run& run) {
             else note("w" + std::to_string(w.slot), ok, fx - ax, fy - ay);
         }
         const int n = compared + wins;
-        run.Add(G, "iface.origins", "Manual panel origins", n == 0 ? kUnchecked : (agree == compared && winsOk == wins ? kPass : kWarn),
+        const bool agreeAll = agree == compared && winsOk == wins;
+        run.Add(G, "iface.origins", "Manual panel origins", n == 0 ? kUnchecked : (agreeAll ? kPass : kWarn),
                 n == 0 ? "no listed panel or window open and attached"
-                       : std::to_string(agree) + "/" + std::to_string(compared) + " fallback origins and " + std::to_string(winsOk) + "/" +
+                       : std::string(agreeAll ? "" : "MOVED: ") + std::to_string(agree) + "/" + std::to_string(compared) + " fallback origins and " + std::to_string(winsOk) + "/" +
                          std::to_string(wins) + " window content origins match the engine" + (stale.empty() ? "" : "; stale:" + stale),
-                "Panel positions (fallback)", "", "", "iface.mounts");
+                "Panel positions (fallback)", "every fallback origin within 2 px of the engine's", std::to_string(agree + winsOk) + "/" + std::to_string(n), "iface.mounts").need = n == 0 ? "a listed panel or window open" : "";
     }
     // backpack drawn against container 93
     {
@@ -10293,9 +10422,9 @@ void health_interfaces(HCtx& c, rtx::health::Run& run) {
             for (const auto& kv : held) { auto f = drawn.find(kv.first); if (f != drawn.end() && f->second == kv.second) ++match; }
             d = std::to_string(match) + "/" + std::to_string(held.size()) + " held slots drawn with their item (" + std::to_string(drawn.size()) + " cells with an item)";
             ok = held.empty() ? (drawn.empty() ? kPass : kFail) : (match * 10 >= (int)held.size() * 9 ? kPass : kFail);
-            if (ok == kFail) d += "; the grid at 1473:5 and container 93 disagree (cell or item field moved)";
+            if (ok == kFail) d = "MOVED: " + d + "; the grid at 1473:5 and container 93 disagree (cell or item field moved)";
         }
-        run.Add(G, "iface.backpack", "Backpack cells", ok, d, "Inventory highlights|Item overlays", "", "", "data.containers");
+        run.Add(G, "iface.backpack", "Backpack cells", ok, d, "Inventory highlights|Item overlays", "90 % of held slots drawn with their item", ok == kUnchecked ? std::string() : d.substr(d.find_first_of("0123456789")), "data.containers").need = ok == kUnchecked ? "open the backpack" : "";
     }
     // buff bar: icons the bar draws against the effects the reader emits
     {
@@ -10328,11 +10457,11 @@ void health_interfaces(HCtx& c, rtx::health::Run& run) {
                 for (const auto& k : kids) stack.push_back(k);
             }
             d = std::to_string(drawn) + " icons drawn, " + std::to_string(emitted) + " effects read (" + std::to_string(named) + " named)";
-            if (drawn > 0 && emitted == 0) { ok = kFail; d += ": the bar draws buffs the reader does not see (slot struct param 8106 or icon fields moved)"; }
-            else if (emitted > 0) ok = named == emitted ? kPass : kWarn;
+            if (drawn > 0 && emitted == 0) { ok = kFail; d = "MOVED: " + d + ": the bar draws buffs the reader does not see (slot struct param 8106 or icon fields moved)"; }
+            else if (emitted > 0) { ok = named == emitted ? kPass : kWarn; if (ok == kWarn) d = "GONE: " + d + ": " + std::to_string(emitted - named) + " buffs without a name (struct param or game text moved)"; }
             else { ok = kUnchecked; d += ": no buffs active to check against"; }
         }
-        run.Add(G, "iface.buffs", "Buff bar", ok, d, "Buffs panel|Buff alerts|Buff timers", "", "", "iface.groups");
+        run.Add(G, "iface.buffs", "Buff bar", ok, d, "Buffs panel|Buff alerts|Buff timers", "icons drawn == effects read, every effect named", ok == kUnchecked && !b284 ? std::string() : d.substr(d.find_first_of("0123456789")), "iface.groups").need = ok == kUnchecked ? (b284 ? "a buff active" : "open the buff bar") : "";
     }
     // chat: interface lines, store records, packet lines
     {
@@ -10342,13 +10471,14 @@ void health_interfaces(HCtx& c, rtx::health::Run& run) {
         const rtx::health::JVal* ph = cj.get("phook");
         const bool open137 = std::find(open.begin(), open.end(), 137) != open.end();
         run.Add(G, "iface.chatlines", "Chat lines (interface)", !open137 ? kUnchecked : (lines > 0 ? kPass : kFail),
-                !open137 ? "chatbox not open" : std::to_string(lines) + " lines on the chatbox", "Chat log", "", "", "iface.groups");
+                !open137 ? "chatbox not open" : std::string(lines > 0 ? "" : "GONE: ") + std::to_string(lines) + " lines on the chatbox" + (lines > 0 ? "" : " (the line comps of group 137 read empty)"),
+                "Chat log", "> 0 lines", std::to_string(lines), "iface.groups").need = !open137 ? "open the chatbox" : "";
         run.Add(G, "iface.chatstore", "Chat records (store)", store > 0 ? kPass : (c.inWorld ? kWarn : kUnchecked),
-                std::to_string(store) + " recent records", "Chat log|Chat alerts", "", "", "data.chat");
-        if (c.cli) run.Add(G, "iface.chatpackets", "Chat lines (packets)", kUnchecked, "launcher only", "Chat log (packet lines)", "", "", "comp.boot");
+                std::string(store > 0 || !c.inWorld ? "" : "GONE: ") + std::to_string(store) + " recent records", "Chat log|Chat alerts", "> 0 records", std::to_string(store), "data.chat").need = store > 0 || c.inWorld ? "" : "log in";
+        if (c.cli) run.Add(G, "iface.chatpackets", "Chat lines (packets)", kUnchecked, "launcher only", "Chat log (packet lines)", "hook feeding, packets seen", "not read from the command line", "comp.boot").need = "a launcher run";
         else run.Add(G, "iface.chatpackets", "Chat lines (packets)", ph && ph->s == "true" ? (cj.num("pseen") > 0 ? kPass : kWarn) : kFail,
-                     ph && ph->s == "true" ? std::to_string(cj.num("pseen")) + " message_game packets seen" : "framer not feeding chat (hook or opcode moved)",
-                     "Chat log (packet lines)", "", "", "comp.boot");
+                     ph && ph->s == "true" ? std::string(cj.num("pseen") > 0 ? "" : "UNVERIFIED: ") + std::to_string(cj.num("pseen")) + " message_game packets seen" : "GONE: framer not feeding chat (hook or opcode moved)",
+                     "Chat log (packet lines)", "hook feeding, packets seen", ph ? ph->s + ", " + std::to_string(cj.num("pseen")) : std::string("no hook state"), "comp.boot").need = ph && ph->s == "true" && cj.num("pseen") == 0 ? "a chat message" : "";
     }
     // action bar: at least one slot with a cache-known ability and a name
     {
@@ -10374,16 +10504,17 @@ void health_interfaces(HCtx& c, rtx::health::Run& run) {
                 }
             }
             d = std::to_string(named) + "/" + std::to_string(slots) + " slots read with an id and name; the bar holds " + std::to_string(filled) + " item slots";
-            if (slots == 0 && filled > 0) { ok = kFail; d += " (the slot reader finds none: label or id field moved)"; }
+            if (slots == 0 && filled > 0) { ok = kFail; d = "MOVED: " + d + " (the slot reader finds none: label or id field moved)"; }
             else if (slots == 0) { ok = kUnchecked; d = "no filled slots to check"; }
-            else ok = named > 0 ? kPass : kFail;
+            else { ok = named > 0 ? kPass : kFail; if (ok == kFail) d = "GONE: " + d + " (no slot resolves an ability name)"; }
         }
-        run.Add(G, "iface.actionbar", "Action bar", ok, d, "Ability Bar panel|Cooldown overlays", "", "", "iface.groups");
+        run.Add(G, "iface.actionbar", "Action bar", ok, d, "Ability Bar panel|Cooldown overlays", "filled slots read with an id and a name", ok == kUnchecked ? std::string() : d.substr(d.find_first_of("0123456789")), "iface.groups").need = ok == kUnchecked ? "open the action bar with abilities on it" : "";
     }
     {
         const bool dlg = std::find(open.begin(), open.end(), 1188) != open.end() || std::find(open.begin(), open.end(), 1184) != open.end();
-        run.Add(G, "iface.dialog", "Dialogs", dlg ? (DialogJson(c.pid).size() > 4 ? kPass : kFail) : kUnchecked,
-                dlg ? "dialog read" : "no dialog open", "Dialog detection|Quest helper", "", "", "iface.groups");
+        const bool read = dlg && DialogJson(c.pid).size() > 4;
+        run.Add(G, "iface.dialog", "Dialogs", dlg ? (read ? kPass : kFail) : kUnchecked,
+                dlg ? (read ? "dialog read" : "FORMAT: dialog open (1188/1184) but its text comps do not read") : "no dialog open", "Dialog detection|Quest helper", "dialog text read while open", dlg ? (read ? "read" : "empty") : std::string(), "iface.groups").need = dlg ? "" : "open a dialog";
     }
 }
 
@@ -10413,6 +10544,216 @@ std::uint32_t handler_fingerprint(HANDLE h, std::uint64_t fn) {
     return hsh;
 }
 
+// ---- Packets: live layouts ----
+// One row per expected opcode seen at least 20 times in the event ring: records the decoder read,
+// and records whose decoded values the game state and the cache do not allow. A layout that kept
+// its length but moved its fields shows up here, not in the length rows. Var sets are judged on the
+// last packet per id against the store, read after the ring (the store holds the latest value).
+void health_packets_live(HCtx& c, rtx::health::Run& run) {
+    const char* G = "Packets: live layouts";
+    const char* kFeat = "Packet decoders|Events channel|Zone events|Var updates|GE offers";
+    if (c.cli) { run.Add(G, "pkt.live", "Live layouts", kUnchecked, "launcher only (the event ring is read in the launcher)", kFeat, "", "", "pkt.events").need = "a launcher run"; return; }
+    wchar_t name[rtx::ipc::kNameChars]; rtx::events::MakeSectionName(c.pid, name);
+    ShareMap<rtx::events::Share> ev;
+    if (!ev.open(name) || ev.sh->magic != rtx::events::kMagic || ev.sh->version != rtx::events::kVersion) {
+        run.Add(G, "pkt.live", "Live layouts", kUnchecked, "event ring not mapped", kFeat, "", "", "pkt.events").need = "the companion's event ring";
+        return;
+    }
+    HANDLE h = c.h;
+    {   // map origin for the zone-relative packets
+        const std::uint64_t mm = rpm<std::uint64_t>(h, c.root + kOffMapMgr).value_or(0);
+        if (mm > 0x10000) { rtx::evzone::g_mapBaseX = rpm<std::int32_t>(h, mm + 0x698).value_or(0); rtx::evzone::g_mapBaseY = rpm<std::int32_t>(h, mm + 0x69C).value_or(0); }
+    }
+    const int mapX = rtx::evzone::g_mapBaseX, mapY = rtx::evzone::g_mapBaseY;
+    const int itemCap = rtx::cache::MaxId("item") > 0 ? rtx::cache::MaxId("item") + 1 : 0;
+    const int locCap = rtx::cache::MaxId("loc") > 0 ? rtx::cache::MaxId("loc") + 1 : 0;
+    const int gfxCap = rtx::cache::IndexInfo(21).maxArchive >= 0 ? (rtx::cache::IndexInfo(21).maxArchive + 1) * 256 : 0;
+    const int scriptCap = rtx::cache::IndexInfo(12).open ? rtx::cache::IndexInfo(12).archives : 0;
+    struct Stat { int seen = 0, decoded = 0, bad = 0; std::string first, features; bool rawOk = false; std::uint32_t lastWall = 0; std::vector<int> gaps; };
+    std::map<std::string, Stat> st;
+    auto nameOf = [](int op) -> const char* { for (const auto& e : rtx::sops::kExpected) if (e.op == op) return e.name; return nullptr; };
+    auto featOf = [](int op) -> const char* {
+        switch (op) {
+            case rtx::sops::kSkillUpdate: return "Skills panel|XP tracker";
+            case rtx::sops::kContainerUpdate: return "Backpack|Bank|Storages|Events channel";
+            case rtx::sops::kRunClientScript: return "Events channel|Buff updates";
+            case rtx::sops::kRunEnergy: case rtx::sops::kRunWeight: return "Run energy|Weight";
+            case rtx::sops::kPingEcho: case rtx::sops::kServerTick: return "Ticks|Tick timers";
+            case rtx::sops::kVarpInt: case rtx::sops::kVarpByte: case rtx::sops::kVarpLong: case rtx::sops::kVarcInt: case rtx::sops::kVarcByte: case rtx::sops::kVarbitVarint: return "Var updates|Live variable changes";
+            case rtx::sops::kGeOffer: return "GE offers|GE alerts";
+            case rtx::sops::kSound: case rtx::sops::kAreaSound: case rtx::sops::kAreaSoundAbs: return "Sounds";
+            case rtx::sops::kHintArrow: return "Engine markers: hint arrows";
+            case rtx::sops::kSpotAnim: case rtx::sops::kSpotAnim2: case rtx::sops::kSpotAnimActor: case rtx::sops::kSpotAnimActor2:
+            case rtx::sops::kProjectile: case rtx::sops::kProjectile20: case rtx::sops::kProjectile28: case rtx::sops::kProjectile29: return "Spot animations|Projectiles|Specials: graphic highlights";
+            default: return "Zone events|Ground items|Loc changes";
+        }
+    };
+    struct Last { long long value = 0; std::string name; };
+    std::map<int, Last> lastVarp, lastVarc;
+    std::map<int, int> lastGe;   // slot -> item
+    const std::uint64_t written = ev.sh->written;
+    const std::uint64_t from = written > (std::uint64_t)rtx::events::kMaxRecords ? written - rtx::events::kMaxRecords : 0;
+    rtx::events::Record r;
+    auto bad = [&](Stat& s, const std::string& why) { ++s.bad; if (s.first.empty()) s.first = why; };
+    for (std::uint64_t i = from; i < written; ++i) {
+        const rtx::events::Record& slot = ev.sh->recs[i % rtx::events::kMaxRecords];
+        const std::uint32_t want = (std::uint32_t)((i + 1) * 2);
+        if (slot.seq != want) continue;
+        MemoryBarrier();
+        std::memcpy(&r, &slot, sizeof(r));
+        MemoryBarrier();
+        if (slot.seq != want) continue;
+        const char* nm = nameOf(r.opcode);
+        if (!nm) continue;
+        std::uint32_t n = r.length < 0 ? 0 : (std::uint32_t)r.length;
+        if (n > (std::uint32_t)rtx::events::kPayload) n = rtx::events::kPayload;
+        Stat& s = st[nm];
+        if (s.features.empty()) s.features = featOf(r.opcode);
+        ++s.seen;
+        const int op = r.opcode;
+        if (op == rtx::sops::kServerTick) { if (s.lastWall) s.gaps.push_back((int)(r.wallMs - s.lastWall)); s.lastWall = r.wallMs; ++s.decoded; continue; }
+        if (op == rtx::sops::kGeOffer) {
+            s.rawOk = true;
+            if (n >= 7 && r.payload[4] < kGESlotCount) { ++s.decoded; lastGe[r.payload[4]] = ((int)r.payload[5] << 8) | r.payload[6]; if (itemCap && lastGe[r.payload[4]] >= itemCap) bad(s, "item " + std::to_string(lastGe[r.payload[4]]) + " past the item ceiling"); }
+            else bad(s, "slot byte " + std::to_string(n >= 5 ? r.payload[4] : 255) + " not a slot");
+            continue;
+        }
+        if (op == rtx::sops::kHintArrow) { s.rawOk = true; ++s.decoded; continue; }
+        std::string body;
+        if (!ev_decode(body, op, r.payload, n, r.length)) { if (op == rtx::sops::kRunClientScript) bad(s, "signature or terminator not readable"); continue; }
+        ++s.decoded;
+        rtx::health::JVal j;
+        if (!rtx::health::ParseJson("{" + body + "}", j)) continue;
+        const long long id = j.num("id", -1), value = j.num("value", 0);
+        auto planeOk = [&]() { const rtx::health::JVal* p = j.get("plane"); return !p || p->t == rtx::health::JVal::Null || (p->s != "" && std::atoi(p->s.c_str()) >= 0 && std::atoi(p->s.c_str()) <= 3); };
+        auto zoneOk = [&]() { const long long x = j.num("x", -1), y = j.num("y", -1); return x >= mapX - 104 && x < mapX + 256 + 104 && y >= mapY - 104 && y < mapY + 256 + 104; };
+        auto gfxOk = [&]() { const long long g = j.num("gfx", -1); return g == -1 || !gfxCap || g < gfxCap; };
+        switch (op) {
+            case rtx::sops::kSkillUpdate: {
+                const long long sk = j.num("skill", -1), lv = j.num("level", -1), xp = j.num("xp", -1);
+                if (sk < 0 || sk >= 29 || lv < 1 || lv > 150 || xp < 0 || xp > 200000000) bad(s, "skill " + std::to_string(sk) + " level " + std::to_string(lv) + " xp " + std::to_string(xp));
+                break;
+            }
+            case rtx::sops::kVarpInt: case rtx::sops::kVarpByte: case rtx::sops::kVarpLong:
+                if (c.varpMaxId > 0 && id > c.varpMaxId) bad(s, "id " + std::to_string(id) + " past the store's largest " + std::to_string(c.varpMaxId));
+                else lastVarp[(int)id] = { value, nm };
+                break;
+            case rtx::sops::kVarcInt: case rtx::sops::kVarcByte:
+                lastVarc[(int)id] = { value, nm };
+                break;
+            case rtx::sops::kVarbitVarint: {
+                int vp = -1, lo = 0, hi = 0;
+                if (!rtx::cache::GetVarbit((int)id, vp, lo, hi)) bad(s, "varbit " + std::to_string(id) + " has no definition");
+                else if (hi >= lo && hi - lo < 31 && (unsigned long long)(std::uint32_t)value >= (1ull << (hi - lo + 1))) bad(s, "value " + std::to_string(value) + " wider than varbit " + std::to_string(id));
+                break;
+            }
+            case rtx::sops::kContainerUpdate: {
+                const long long cont = j.num("container", -1);
+                const int size = std::atoi(rtx::pins::Field(rtx::cache::PinFingerprint("inv", std::to_string(cont), ""), "size").c_str());
+                if (size <= 0) { bad(s, "container " + std::to_string(cont) + " has no inv definition"); break; }
+                if (j.str("partial") == "true") { bad(s, "container " + std::to_string(cont) + " not consumed to its length"); break; }
+                if (const rtx::health::JVal* slots = j.get("slots"))
+                    for (const auto& sl : slots->a) {
+                        const long long slotNo = sl.num("slot", -1), item = sl.num("item", -1), qty = sl.num("qty", 0);
+                        if (slotNo < 0 || slotNo >= size || (itemCap && item >= itemCap) || (item >= 0 && qty <= 0)) { bad(s, "container " + std::to_string(cont) + " slot " + std::to_string(slotNo) + " item " + std::to_string(item) + " x" + std::to_string(qty)); break; }
+                    }
+                break;
+            }
+            case rtx::sops::kRunClientScript: {
+                const long long script = j.num("script", -1);
+                if (j.str("partial") != "true" && (script < 0 || (scriptCap && script >= scriptCap))) bad(s, "script " + std::to_string(script) + " outside index 12");
+                break;
+            }
+            case rtx::sops::kRunEnergy: if (value < 0 || value > 100) bad(s, "energy " + std::to_string(value)); break;
+            case rtx::sops::kRunWeight: if (value < -200 || value > 500) bad(s, "weight " + std::to_string(value)); break;
+            case rtx::sops::kZoneBase: case rtx::sops::kZoneClear:
+                if (!planeOk() || !zoneOk()) bad(s, "zone " + j.str("x") + "," + j.str("y") + " plane " + j.str("plane") + " off the loaded map " + std::to_string(mapX) + "," + std::to_string(mapY));
+                break;
+            case rtx::sops::kZoneUpdate:
+                if (!planeOk() || !zoneOk()) bad(s, "zone " + j.str("x") + "," + j.str("y") + " plane " + j.str("plane") + " off the loaded map");
+                else if (j.str("partial") == "true") bad(s, "item walk did not end at the length (unknown sub id or short body)");
+                break;
+            case rtx::sops::kObjAdd: case rtx::sops::kObjDel: case rtx::sops::kObjCount: {
+                const long long item = j.num("item", -1);
+                if (item < 0 || (itemCap && item >= itemCap)) bad(s, "item " + std::to_string(item) + " past the item ceiling");
+                else if (op == rtx::sops::kObjCount && j.num("from", -1) == j.num("qty", -2)) bad(s, "count change with equal quantities");
+                break;
+            }
+            case rtx::sops::kLocAdd: case rtx::sops::kLocDel: {
+                const long long loc = j.num("loc", 0), type = j.num("type", -1), rot = j.num("rot", -1);
+                if ((locCap && loc >= locCap) || type < 0 || type > 22 || rot < 0 || rot > 3) bad(s, "loc " + std::to_string(loc) + " type " + std::to_string(type) + " rot " + std::to_string(rot));
+                break;
+            }
+            case rtx::sops::kSpotAnim: case rtx::sops::kSpotAnim2: case rtx::sops::kSpotAnimActor: case rtx::sops::kSpotAnimActor2: {
+                const std::string target = j.str("target");
+                if (!gfxOk()) bad(s, "graphic " + j.str("gfx") + " past the spot animation ceiling");
+                else if ((target == "player" || target == "npc") && j.num("index", 0) >= 0x800) bad(s, target + " index " + j.str("index"));
+                else if (!planeOk()) bad(s, "plane " + j.str("plane"));
+                break;
+            }
+            case rtx::sops::kProjectile: case rtx::sops::kProjectile29:
+                if (!gfxOk()) bad(s, "graphic " + j.str("gfx") + " past the spot animation ceiling");
+                else if (j.num("t0", 0) > j.num("t1", 0)) bad(s, "start " + j.str("t0") + " after end " + j.str("t1"));
+                break;
+            case rtx::sops::kProjectile20: case rtx::sops::kProjectile28:
+                if (!gfxOk()) bad(s, "graphic " + j.str("gfx") + " past the spot animation ceiling");
+                break;
+            case rtx::sops::kAreaSound: case rtx::sops::kAreaSoundAbs:
+                if (!planeOk()) bad(s, "plane " + j.str("plane"));
+                break;
+            default: break;
+        }
+    }
+    // the stores after the ring: the last value set per id is the one they hold (one tick of grace:
+    // a value set again after the ring was read disagrees without a moved layout, so a few are allowed)
+    for (const auto& kv : lastVarp) {
+        Stat& s = st[kv.second.name];
+        int now = 0;
+        if (!read_varp_found(h, c.root, kv.first, now)) continue;
+        if ((long long)now != (long long)(std::int32_t)kv.second.value) bad(s, "varp " + std::to_string(kv.first) + " set to " + std::to_string(kv.second.value) + ", the store holds " + std::to_string(now));
+    }
+    for (const auto& kv : lastVarc) {
+        Stat& s = st[kv.second.name];
+        int now = 0;
+        if (!read_varc_found(h, c.root, kv.first, now)) { bad(s, "varc " + std::to_string(kv.first) + " not in the store"); continue; }
+        if ((long long)now != kv.second.value) bad(s, "varc " + std::to_string(kv.first) + " set to " + std::to_string(kv.second.value) + ", the store holds " + std::to_string(now));
+    }
+    if (!lastGe.empty()) {
+        Stat& s = st["ge_offer"];
+        const std::uint64_t box = rpm<std::uint64_t>(h, c.root + kOffGE).value_or(0);
+        for (const auto& kv : lastGe) {
+            const int item = box > 0x10000 ? rpm<std::int32_t>(h, box + kGEArrayPad + (std::uint64_t)kv.first * kGESlotSize + 8).value_or(-1) : -1;
+            if (item >= 0 && item != kv.second) bad(s, "slot " + std::to_string(kv.first) + " item " + std::to_string(kv.second) + ", the slot holds " + std::to_string(item));
+        }
+    }
+    int rows = 0, records = 0;
+    for (const auto& e : rtx::sops::kExpected) {
+        auto it = st.find(e.name);
+        if (it == st.end()) continue;
+        Stat& s = it->second;
+        if (s.seen < 20) { records += s.seen; s.seen = 0; continue; }   // one row per name: a second opcode of the same name adds to it
+        rows++;
+        std::string d = std::to_string(s.seen) + " seen, " + std::to_string(s.decoded) + " decoded, " + std::to_string(s.bad) + " implausible";
+        int ok = kPass;
+        if (!s.gaps.empty()) {
+            std::vector<int> g = s.gaps; std::sort(g.begin(), g.end());
+            const int median = g[g.size() / 2];
+            int off = 0; for (int x : g) if (x < 400 || x > 900) ++off;
+            s.bad += off;
+            d += ", tick interval median " + std::to_string(median) + " ms, " + std::to_string(off) + " outside 400..900";
+            if (s.first.empty() && off) s.first = "an interval of " + std::to_string(g.back()) + " ms";
+        }
+        const int pct = s.seen ? (int)((long long)s.bad * 100 / s.seen) : 0;
+        if (s.bad * 20 > s.seen) { ok = kFail; d = "FORMAT: " + std::to_string(pct) + " % of " + e.name + " records implausible (" + s.first + "); " + d; }
+        else if (!s.rawOk && s.decoded * 4 < s.seen * 3) { ok = kWarn; d = "FORMAT: " + std::to_string(s.seen - s.decoded) + " of " + std::to_string(s.seen) + " " + e.name + " records did not decode; " + d; }
+        else if (s.bad) d += " (" + s.first + ")";
+        run.Add(G, std::string("pkt.live.") + e.name, std::string("Live: ") + e.name, ok, d, s.features, "< 5 % implausible", std::to_string(s.bad) + "/" + std::to_string(s.seen), "pkt.opcodes");
+        run.Fact(std::string("op.") + e.name + ".live", std::to_string(s.seen) + "/" + std::to_string(s.decoded) + "/" + std::to_string(s.bad));
+        s.seen = 0;
+    }
+    if (!rows) run.Add(G, "pkt.live", "Live layouts", kUnchecked, "fewer than 20 records of any expected opcode in the ring (" + std::to_string(records) + " seen)", kFeat, "", "", "pkt.events").need = "a few minutes in the world with skilling, containers and movement";
+}
+
 void health_packets(HCtx& c, rtx::health::Run& run) {
     const char* G = "Packets";
     HANDLE h = c.h;
@@ -10421,15 +10762,24 @@ void health_packets(HCtx& c, rtx::health::Run& run) {
         std::uint64_t modSize = c.size;
         tbl = (c.base && modSize) ? cached_optable(c.pid, h, c.base, modSize) : 0;
     }
-    if (!tbl) { run.Add(G, "pkt.table", "Packet table", kFail, "descriptor table not found", "Every packet decoder", "", "", "code.packets"); return; }
+    if (!tbl) { run.Add(G, "pkt.table", "Packet table", kFail, "GONE: descriptor table not found (no table global reads as a descriptor vector)", "Every packet decoder", "", "", "code.packets"); return; }
     {
+        // the table is an inline-buffer vector {begin, end, capacity, .., buffer at +0x28}: begin
+        // names the buffer the reads go through, so the object sits 0x28 before it, and the
+        // descriptor count is (capacity - begin) / 8, read instead of probed past the end
+        const std::uint64_t self = tbl - 0x28;
+        const std::uint64_t vb = rpm<std::uint64_t>(h, self).value_or(0), vc = rpm<std::uint64_t>(h, self + 0x10).value_or(0);
+        const bool shape = vb == tbl && vc >= vb && ((vc - vb) % 8) == 0 && (vc - vb) / 8 <= 4096;
+        const int count = shape ? (int)((vc - vb) / 8) : -1;
         const std::uint64_t dMax = rpm<std::uint64_t>(h, tbl + (std::uint64_t)rtx::sops::kOpMax * 8).value_or(0);
-        const std::uint64_t dPast = rpm<std::uint64_t>(h, tbl + (std::uint64_t)(rtx::sops::kOpMax + 1) * 8).value_or(0);
         const bool atMax = dMax > 0x10000 && rpm<std::int32_t>(h, dMax).value_or(-1) == rtx::sops::kOpMax;
-        const bool past = dPast > 0x10000 && rpm<std::int32_t>(h, dPast).value_or(-1) == rtx::sops::kOpMax + 1;
-        run.Add(G, "pkt.table", "Packet table", atMax && !past ? kPass : kFail,
-                atMax && !past ? "opcodes 0.." + hx(rtx::sops::kOpMax) + ", nothing past" : (atMax ? "a descriptor past " + hx(rtx::sops::kOpMax) + ": more opcodes" : "no descriptor at " + hx(rtx::sops::kOpMax)),
-                "Every packet decoder", hx(rtx::sops::kOpMax), "", "code.packets");
+        run.Fact("packets.live.descriptors", std::to_string(count));
+        int ok = kPass; std::string d;
+        if (!shape) { ok = atMax ? kWarn : kFail; d = std::string(atMax ? "FORMAT: " : "GONE: ") + "the table global is not an inline-buffer vector (begin " + hx(vb) + " vs buffer " + hx(tbl) + ")" + (atMax ? "; a descriptor still sits at " + hx(rtx::sops::kOpMax) : ""); }
+        else if (count != rtx::sops::kOpMax + 1) { ok = kFail; d = "FORMAT: descriptor vector holds " + std::to_string(count) + ", compiled bound " + hx(rtx::sops::kOpMax) + " (opcodes renumbered: re-pin ServerOps.h)"; }
+        else if (!atMax) { ok = kFail; d = "FORMAT: " + std::to_string(count) + " descriptors but the one at " + hx(rtx::sops::kOpMax) + " does not carry its opcode (descriptor layout moved)"; }
+        else d = std::to_string(count) + " descriptors, opcodes 0.." + hx(rtx::sops::kOpMax);
+        run.Add(G, "pkt.table", "Packet table", ok, d, "Every packet decoder", std::to_string(rtx::sops::kOpMax + 1) + " descriptors", count < 0 ? std::string("no vector") : std::to_string(count), "code.packets");
     }
     // lengths and handler fingerprints of every opcode the reader decodes
     {
@@ -10444,7 +10794,7 @@ void health_packets(HCtx& c, rtx::health::Run& run) {
             fps[(std::size_t)op] = fp;
             if (fp) fpOp[fp] = op;
         }
-        int okc = 0, total = 0; std::string bad;
+        int okc = 0, total = 0, pinned = 0; std::string bad; bool moved = false;
         for (const auto& e : rtx::sops::kExpected) {
             ++total;
             const std::uint64_t d = rpm<std::uint64_t>(h, tbl + (std::uint64_t)e.op * 8).value_or(0);
@@ -10458,10 +10808,11 @@ void health_packets(HCtx& c, rtx::health::Run& run) {
             const rtx::pins::Line pin = rtx::pins::Find("op", std::string(e.name) + "." + hx((std::uint32_t)e.op));
             const std::string want = pin.kind.empty() ? std::string() : rtx::pins::StampValue(pin.expect, c.stamp);
             if (!want.empty()) {
+                ++pinned;
                 const std::size_t hp = want.find("h=");
                 const std::uint32_t wantFp = hp == std::string::npos ? 0 : (std::uint32_t)std::strtoul(want.c_str() + hp + 2, nullptr, 16);
                 if (wantFp && wantFp != fps[(std::size_t)e.op]) {
-                    good = false;
+                    good = false; moved = true;
                     auto it = fpOp.find(wantFp);
                     why += std::string(why.empty() ? "" : ", ") + "handler changed" + (it != fpOp.end() ? " (the recorded handler is now op " + hx((std::uint32_t)it->second) + ")" : "");
                 }
@@ -10469,45 +10820,59 @@ void health_packets(HCtx& c, rtx::health::Run& run) {
             if (good) ++okc;
             else bad += std::string(bad.empty() ? "" : "; ") + e.name + " " + hx((std::uint32_t)e.op) + ": " + why;
         }
-        run.Add(G, "pkt.opcodes", "Server opcodes", okc == total ? kPass : kFail,
-                okc == total ? std::to_string(total) + " opcodes carry their wire length" : std::to_string(okc) + "/" + std::to_string(total) + " match; " + bad,
-                "Chat capture|Events channel|Zone events|Var updates|GE offers", std::to_string(total), std::to_string(okc), "pkt.table");
+        char stampHex[16]; std::snprintf(stampHex, sizeof(stampHex), "%08x", c.stamp);
+        run.Fact("packets.pinnedOps", std::to_string(pinned) + "/" + std::to_string(total));
+        if (okc == total && pinned == 0) {
+            // lengths alone pass a renumbering that keeps a length: without the handler fingerprints
+            // of this exe the compare says nothing
+            run.Add(G, "pkt.opcodes", "Server opcodes", kFail,
+                    std::string("UNVERIFIED: handler fingerprints not recorded for this build (") + stampHex + "): " + std::to_string(total) + " lengths match, a renumbered opcode with the same length would too; record op lines for this exe with the pins generator",
+                    "Chat capture|Events channel|Zone events|Var updates|GE offers", std::to_string(total) + " fingerprints", "0 recorded", "pkt.table").kind = "unrecorded";
+        } else {
+            std::string d = okc == total ? std::to_string(total) + " opcodes carry their wire length" + (pinned < total ? ", " + std::to_string(pinned) + " with a recorded handler" : " and handler") : std::to_string(okc) + "/" + std::to_string(total) + " match; " + bad;
+            if (okc != total) d = std::string(moved ? "MOVED: " : "FORMAT: ") + d;
+            run.Add(G, "pkt.opcodes", "Server opcodes", okc == total ? kPass : kFail, d,
+                    "Chat capture|Events channel|Zone events|Var updates|GE offers", std::to_string(total) + " lengths and handlers", std::to_string(okc) + " match, " + std::to_string(pinned) + " recorded", "pkt.table");
+        }
     }
     // zone sub-packets: the table the zone update dispatches through
     {
         const std::uint32_t pinned = rtx::pins::PinnedRva("zoneSub", c.stamp);
-        int ok = kUnchecked; std::string d = "no zone sub table pinned for this exe";
+        char stampHex[16]; std::snprintf(stampHex, sizeof(stampHex), "%08x", c.stamp);
+        int ok = kFail; std::string d = std::string("UNVERIFIED: no zone sub table pinned for this exe (") + stampHex + "): pin rva zoneSub for it", word;
         if (pinned) {
             int agree = 0, n = 0; std::string bad;
-            for (int sub = 0; sub <= 0x12; ++sub) {
+            for (int sub = 0; sub <= rtx::evzone::kSubCount; ++sub) {
                 const std::uint64_t d0 = rpm<std::uint64_t>(h, c.base + pinned + (std::uint64_t)sub * 8).value_or(0);
                 const bool desc = d0 > 0x10000 && rpm<std::int32_t>(h, d0).value_or(-1) == sub;
-                if (sub == 0x12) { if (desc) { bad += " a sub-packet past 0x11"; ++n; } break; }
+                if (sub == rtx::evzone::kSubCount) { if (desc) { word = "NEW"; bad += " a sub-packet past " + hx((std::uint32_t)(rtx::evzone::kSubCount - 1)); ++n; } break; }
                 const int want = rtx::evzone::subLen(sub);
                 const int len = desc ? rpm<std::int32_t>(h, d0 + 4).value_or(-100) : -100;
                 ++n;
-                if (len == want) ++agree; else if (bad.size() < 60) bad += " sub " + std::to_string(sub) + " " + std::to_string(len) + "/" + std::to_string(want);
+                if (len == want) ++agree; else { if (word.empty()) word = desc ? "FORMAT" : "GONE"; if (bad.size() < 60) bad += " sub " + std::to_string(sub) + " " + std::to_string(len) + "/" + std::to_string(want); }
             }
             ok = n && agree == n ? kPass : kFail;
             d = std::to_string(agree) + "/" + std::to_string(n) + " zone sub-packet lengths agree" + (bad.empty() ? "" : ";" + bad);
+            if (ok != kPass) d = (word.empty() ? std::string("GONE") : word) + ": " + d;
         }
-        run.Add(G, "pkt.zone", "Zone sub-packets", ok, d, "Ground items|Loc changes|Spot animations|Projectiles|Sounds", "", "", "pkt.table");
+        run.Add(G, "pkt.zone", "Zone sub-packets", ok, d, "Ground items|Loc changes|Spot animations|Projectiles|Sounds", std::to_string(rtx::evzone::kSubCount) + " subs with their lengths", pinned ? d.substr(d.find_first_of("0123456789")) : std::string("no table"), "pkt.table").kind = pinned ? std::string() : "unrecorded";
     }
     // the event ring the launcher reads: mask as asked, message_game left to the chat ring
     if (c.cli) {
-        run.Add(G, "pkt.events", "Event channel", kUnchecked, "launcher only", "Events channel (plugins)", "", "", "comp.boot");
+        run.Add(G, "pkt.events", "Event channel", kUnchecked, "launcher only", "Events channel (plugins)", "", "", "comp.boot").need = "a launcher run";
     } else {
         wchar_t name[rtx::ipc::kNameChars]; rtx::events::MakeSectionName(c.pid, name);
         ShareMap<rtx::events::Share> ev;
-        if (!ev.open(name) || ev.sh->magic != rtx::events::kMagic) run.Add(G, "pkt.events", "Event channel", kFail, "event ring not mapped", "Events channel (plugins)", "", "", "comp.boot");
+        if (!ev.open(name) || ev.sh->magic != rtx::events::kMagic) run.Add(G, "pkt.events", "Event channel", kFail, "GONE: event ring not mapped (the companion did not create it)", "Events channel (plugins)", "", "", "comp.boot");
         else {
             const bool hook = (ev.sh->flags & 1) != 0;
             const bool chatOff = !(ev.sh->mask[rtx::sops::kMessageGame >> 5] & (1u << (rtx::sops::kMessageGame & 31)));
             run.Add(G, "pkt.events", "Event channel", hook && chatOff ? kPass : kFail,
-                    std::string(hook ? "hook feeding" : "hook not feeding") + ", " + std::to_string(ev.sh->written) + " records, message_game " + (chatOff ? "left to the chat ring" : "in the mask"),
-                    "Events channel (plugins)", "", "", "comp.boot");
+                    std::string(hook && chatOff ? "" : hook ? "FORMAT: " : "GONE: ") + (hook ? "hook feeding" : "hook not feeding") + ", " + std::to_string(ev.sh->written) + " records, message_game " + (chatOff ? "left to the chat ring" : "in the mask"),
+                    "Events channel (plugins)", "hook feeding, message_game masked out", std::string(hook ? "feeding" : "not feeding") + ", " + std::to_string(ev.sh->written) + " records", "comp.boot");
         }
     }
+    health_packets_live(c, run);
 }
 
 // ---- Content ----
@@ -10538,9 +10903,9 @@ void health_dailies(HCtx& c, rtx::health::Run& run) {
         slots += (slots.empty() ? "" : "; ") + std::to_string(vb) + " -> varp " + std::to_string(vp) + " [" + std::to_string(lsb) + ".." + std::to_string(msb) + "] raw " + std::to_string(raw);
     }
     int ok;
-    std::string d;
-    if (defsBad) { ok = kFail; d = std::to_string(defsBad) + (defsBad == 1 ? " slot definition changed: " : " slot definitions changed: ") + changed + "; now " + slots; }
-    else if (!c.inWorld) { ok = kUnchecked; d = "not in the world; " + slots; }
+    std::string d, need;
+    if (defsBad) { ok = kFail; d = std::string(changed.empty() ? "GONE: " : "MOVED: ") + std::to_string(defsBad) + (defsBad == 1 ? " slot definition changed: " : " slot definitions changed: ") + changed + "; now " + slots; }
+    else if (!c.inWorld) { ok = kUnchecked; d = "not in the world; " + slots; need = "log in"; }
     else if (assigned) { ok = kPass; d = std::to_string(assigned) + " slots assigned; " + slots; }
     else {
         ok = kUnchecked;
@@ -10549,8 +10914,9 @@ void health_dailies(HCtx& c, rtx::health::Run& run) {
         const long long today = (long long)((std::time(nullptr) - 1014768000LL) / 86400);   // runeday 0 = 2002-02-27
         d = (day > 0 && day >= today - 1) ? "set of runeday " + std::to_string(day) + " is current: challenges completed; " + slots
                                           : "no challenges assigned; " + slots;
+        need = "a daily challenge assigned";
     }
-    run.Add("Content", "content.dailies.slots", "Daily challenge slots", ok, d, "D&D Tracker: daily challenges", exp, got, "content.cache");
+    run.Add("Content", "content.dailies.slots", "Daily challenge slots", ok, d, "D&D Tracker: daily challenges", exp, got, "content.cache").need = need;
 }
 
 // ---- Live values (manifest "live" lines) ----
@@ -10567,7 +10933,8 @@ void health_live(HCtx& c, rtx::health::Run& run) {
         const std::string gate = rtx::pins::Field(l.expect, "gate");
         const std::string rid = "live." + vk + "." + std::to_string(id);
         const std::string key = (vk == "varp" ? "Varp " : vk == "varc" ? "Varc " : "Varbit ") + std::to_string(id);
-        if (gate == "world" && !c.inWorld) { run.Add(G, rid, key, kUnchecked, "not in the world", l.features); continue; }
+        const std::string hint = rtx::pins::Field(l.expect, "need");
+        if (gate == "world" && !c.inWorld) { run.Add(G, rid, key, kUnchecked, "not in the world", l.features).need = hint.empty() ? "log in" : hint; continue; }
         long long v = 0; bool found = true;
         if (vk == "varp") v = read_varp(c.h, c.root, id);
         else if (vk == "varc") { int x = 0; found = read_varc_found(c.h, c.root, id, x); v = x; }
@@ -10576,7 +10943,7 @@ void health_live(HCtx& c, rtx::health::Run& run) {
             found = rtx::cache::GetVarbit(id, vp, lo, hi);
             if (found) v = (read_varp(c.h, c.root, vp) >> lo) & (long long)((1ull << (hi - lo + 1)) - 1);
         }
-        if (!found) { run.Add(G, rid, key, kFail, "not present", l.features, l.expect, "absent", "data.varps"); continue; }
+        if (!found) { run.Add(G, rid, key, kFail, "GONE: not present in the store" + (vk == "varbit" ? std::string(" (no definition for the varbit)") : std::string()), l.features, l.expect, "absent", "data.varps"); continue; }
         long long x = v;
         const std::string field = rtx::pins::Field(l.expect, "field");
         if (!field.empty()) {
@@ -10626,31 +10993,56 @@ void health_live(HCtx& c, rtx::health::Run& run) {
             if (mx <= 0 || x < 0 || x > 3 * mx) { ok = false; why = "not within 0..3 x the maximum " + std::to_string(mx) + " (varp " + std::to_string(maxVarp) + ")"; }
         }
         if (ok) ++good;
-        run.Add(G, rid, key, ok ? kPass : kFail, std::to_string(x) + (ok ? "" : " (" + why + ")"), l.features, l.expect, std::to_string(x), "data.varps");
+        run.Add(G, rid, key, ok ? kPass : kFail, std::string(ok ? "" : "FORMAT: ") + std::to_string(x) + (ok ? "" : " (" + why + ")"), l.features, l.expect, std::to_string(x), "data.varps");
     }
-    if (total == 0) run.Add(G, "live.none", "Live values", kUnchecked, "no live lines in the manifest", "", "", "", "content.pins");
+    if (total == 0) run.Add(G, "live.none", "Live values", kUnchecked, "UNVERIFIED: no live lines in the manifest", "", "", "", "content.pins").kind = "unrecorded";
 }
 
 // ---- Cache format ----
 void health_cache(HCtx& c, rtx::health::Run& run) {
     (void)c;
     const char* G = "Cache format";
+    // the full sweep started with the run; once done its rows and opcode counts replace the sampled
+    // pass, so give it a moment rather than report a sample
+    for (int i = 0; i < 300 && !rtx::cache::CacheFullSweepReady() && rtx::cache::CacheFullSweepRunning(); ++i) Sleep(50);
+    const bool sweepDone = rtx::cache::CacheFullSweepReady();
     rtx::pins::CheckCacheFormat(run);
+    // one row per decoder: records read to their end marker, how the others ended (stop code, the
+    // opcode before it, the first id), implausible values, and whether the full sweep has finished
     for (const auto& r : rtx::cache::CacheParseHealth()) {
-        std::string note; int status;
-        if (r.total == 0) { status = kUnchecked; note = "no data (cache not open yet?)"; }
+        std::string note, word, got; int status;
+        const std::string feats = r.features.empty() ? "Everything that reads " + r.name : r.features;
+        if (r.total == 0) { status = kUnchecked; note = "no data (cache not open yet)"; }
         else {
-            note = std::to_string(r.ok) + "/" + std::to_string(r.total) + (r.sampled ? " sampled" : " parsed");
+            note = std::to_string(r.ok) + "/" + std::to_string(r.total) + (r.full ? " parsed" : r.sampled ? (sweepDone ? " sampled" : " sampled, full sweep running") : " parsed");
+            got = std::to_string(r.ok) + "/" + std::to_string(r.total);
             if (r.stop_n > 0) {
-                if (r.stop_op == 256)      note += ", " + std::to_string(r.stop_n) + " overrun mid-record";
-                else if (r.stop_op == 257) note += ", " + std::to_string(r.stop_n) + " schema mismatch";
-                else if (r.stop_op == 258) note += ", " + std::to_string(r.stop_n) + " ended with bytes unread";
-                else                       note += ", " + std::to_string(r.stop_n) + " break at opcode " + std::to_string(r.stop_op) + " (a new opcode)";
+                const std::string n = std::to_string(r.stop_n) + " of " + std::to_string(r.total);
+                const std::string after = !r.first_detail.empty() ? " " + r.first_detail : r.stop_last >= 0 ? " after opcode " + std::to_string(r.stop_last) : std::string();
+                const std::string first = r.first_id >= 0 ? " (first id " + std::to_string(r.first_id) + ")" : std::string();
+                switch (r.stop_op) {
+                    case 256: word = "FORMAT"; note += ", " + n + " records ran past their end" + after + first; break;
+                    case 257: word = "FORMAT"; note += ", " + n + " records disagree with their table schema" + first; break;
+                    case 258: word = "FORMAT"; note += ", " + n + " records ended with bytes unread" + after + first; break;
+                    case 259: word = "FORMAT"; note += ", " + n + " records with a length-prefixed block that did not fit" + after + first; break;
+                    default:  word = "NEW"; note += ", " + n + " records break at opcode " + std::to_string(r.stop_op) + " (not in the decoder's table)" + first; break;
+                }
+                got += ", " + std::to_string(r.stop_n) + " stopped on " + std::to_string(r.stop_op);
             }
-            status = (r.ok == r.total) ? kPass : (r.ok * 20 >= r.total * 19 ? kWarn : kFail);
+            if (r.implausible > 0) {
+                if (word.empty()) word = "FORMAT";
+                note += "; " + std::to_string(r.implausible) + " implausible" + (r.implausible_rule.empty() ? "" : " (rule " + r.implausible_rule + (r.implausible_id >= 0 ? ", first id " + std::to_string(r.implausible_id) : "") + ")");
+                got += ", " + std::to_string(r.implausible) + " implausible";
+            }
+            const bool clean = r.ok == r.total && r.implausible * 1000 <= r.total;   // one odd record in a thousand is data, not a format change
+            const bool nearly = r.ok * 20 >= r.total * 19 && r.implausible * 100 <= r.total;
+            status = clean ? kPass : nearly ? kWarn : kFail;
+            if (status != kPass && !word.empty()) note = word + ": " + note;
         }
         std::string slug = r.name; for (char& ch : slug) if (ch == ' ' || ch == '(' || ch == ')') ch = '-';
-        run.Add(G, "cache.parse." + slug, "Decode: " + r.name, status, note, "Everything that reads " + r.name, "", "", "");
+        rtx::health::Row& row = run.Add(G, "cache.parse." + slug, "Decode: " + r.name, status, note, feats, std::to_string(r.total) + " clean", got, "content.cache");
+        if (status == kUnchecked) row.need = "an open cache";
+        run.Fact("cache.parse." + slug, std::to_string(r.ok) + "/" + std::to_string(r.total) + (r.full ? " full" : " sampled"));
     }
     {   // var domains and quest tracking, kept from the earlier checks
         std::string cen = rtx::cache::VarbitDomainsJson();
@@ -10658,19 +11050,23 @@ void health_cache(HCtx& c, rtx::health::Run& run) {
         for (int dom = 0; dom <= 8; ++dom) if (cen.find("\"" + std::to_string(dom) + "\":{") != std::string::npos) ++doms;
         auto unknownOf = [](const std::string& j) { auto p = j.find("\"unknown\":"); return p == std::string::npos ? -1 : std::atoi(j.c_str() + p + 10); };
         const int u60 = unknownOf(rtx::cache::VarDefsJson(60)), u62 = unknownOf(rtx::cache::VarDefsJson(62));
-        run.Add(G, "cache.vardomains", "Var domains", (doms == 9 && u60 == 0 && u62 == 0) ? kPass : (doms == 0 ? kUnchecked : kFail),
-                std::to_string(doms) + "/9 domains defined; unknown var-config opcodes: player " + std::to_string(u60) + ", client " + std::to_string(u62), "Every varbit read");
+        const int dok = (doms == 9 && u60 == 0 && u62 == 0) ? kPass : (doms == 0 ? kUnchecked : kFail);
+        run.Add(G, "cache.vardomains", "Var domains", dok,
+                std::string(dok == kFail ? (doms < 9 ? "GONE: " : "NEW: ") : "") + std::to_string(doms) + "/9 domains defined; unknown var-config opcodes: player " + std::to_string(u60) + ", client " + std::to_string(u62) + (dok == kFail && doms == 9 ? " (a var-config opcode the reader does not know)" : ""),
+                "Every varbit read", "9 domains, 0 unknown opcodes", std::to_string(doms) + " domains, " + std::to_string(u60 + u62) + " unknown", "content.cache").need = dok == kUnchecked ? "an open cache" : "";
         const std::string j = rtx::cache::QuestHealthJson();
         auto num = [&](const char* k) { auto p2 = j.find(std::string("\"") + k + "\":"); return p2 == std::string::npos ? -1 : std::atoi(j.c_str() + p2 + std::strlen(k) + 3); };
         const int quests = num("quests"), tracked = num("tracked"), failed = num("failedArchives");
-        run.Add(G, "cache.quests", "Quest tracking", quests <= 0 ? kUnchecked : (tracked == quests && failed <= 0 ? kPass : kFail),
-                quests <= 0 ? "cache not open yet" : std::to_string(tracked) + "/" + std::to_string(quests) + " quests resolve a progress tracker" + (failed > 0 ? "; " + std::to_string(failed) + " config archives failed" : ""),
-                "Quests panel|Quest helper");
+        const int qok = quests <= 0 ? kUnchecked : (tracked == quests && failed <= 0 ? kPass : kFail);
+        run.Add(G, "cache.quests", "Quest tracking", qok,
+                quests <= 0 ? "cache not open yet" : std::string(qok == kFail ? (failed > 0 ? "GONE: " : "MOVED: ") : "") + std::to_string(tracked) + "/" + std::to_string(quests) + " quests resolve a progress tracker" + (qok == kFail && failed <= 0 ? " (the tracker opcode moved or changed shape)" : "") + (failed > 0 ? "; " + std::to_string(failed) + " config archives failed" : ""),
+                "Quests panel|Quest helper", "every quest with a tracker", std::to_string(tracked) + "/" + std::to_string(quests), "content.cache").need = qok == kUnchecked ? "an open cache" : "";
         const PerkFieldLayout& L = perk_field_layout();
         const int talking = rtx::cache::PerkRankCount(23), honed = rtx::cache::PerkRankCount(5);
-        run.Add(G, "cache.perks", "Perk layout", (L.from_cache && talking == 1 && honed == 6) ? kPass : kFail,
-                std::string(L.from_cache ? (L.drift ? std::to_string(L.drift) + " fields differ from the built-in layout, cache layout in use" : "9 fields match the cache") : "perk varbits not all resolved, built-in layout in use") +
-                "; rank counts Talking=" + std::to_string(talking) + " Honed=" + std::to_string(honed), "Perks panel");
+        const bool pok = L.from_cache && talking == 1 && honed == 6;
+        run.Add(G, "cache.perks", "Perk layout", pok ? kPass : kFail,
+                std::string(pok ? "" : "FORMAT: ") + std::string(L.from_cache ? (L.drift ? std::to_string(L.drift) + " fields differ from the built-in layout, cache layout in use" : "9 fields match the cache") : "perk varbits not all resolved, built-in layout in use") +
+                "; rank counts Talking=" + std::to_string(talking) + " Honed=" + std::to_string(honed), "Perks panel", "Talking 1, Honed 6 from the cache layout", "Talking " + std::to_string(talking) + ", Honed " + std::to_string(honed), "content.cache");
     }
 }
 
@@ -10678,8 +11074,9 @@ void health_cache(HCtx& c, rtx::health::Run& run) {
 void health_companion(HCtx& c, rtx::health::Run& run) {
     const char* G = "Companion";
     const rtx::bootlog::Boot b = rtx::bootlog::Read(c.pid);
+    c.bootFound = b.found;
     if (!b.found) {
-        run.Add(G, "comp.boot", "Boot record", kFail, "no companion boot record for this client (the companion did not load)", "Everything the companion does");
+        run.Add(G, "comp.boot", "Boot record", kFail, "GONE: no companion boot record for this client (the companion did not load)", "Everything the companion does");
     } else {
         int attached = 0; std::string missing, refused;
         for (const auto& hk : b.hooks) {
@@ -10690,19 +11087,69 @@ void health_companion(HCtx& c, rtx::health::Run& run) {
         std::string d = std::to_string(attached) + " attached" + (missing.empty() ? "" : "; " + missing) +
                         (refused.empty() ? "" : "; held back: " + refused) +
                         (b.attached < 0 ? " (record predates the hook summary)" : "");
-        run.Add(G, "comp.boot", "Boot record", missing.empty() ? kPass : kFail, d, "Everything the companion does", "", "", "");
+        if (!missing.empty()) d = "GONE: " + d;
+        run.Add(G, "comp.boot", "Boot record", missing.empty() ? kPass : kFail, d, "Everything the companion does", "every hook attached", std::to_string(attached) + " attached", "");
+        auto sigFeatures = [](const std::string& n) -> std::string {
+            for (const auto& sg : rtx::sig::kTable) if (n == sg.name) return sg.features;
+            return "Companion: " + n;
+        };
         for (const auto& hk : b.hooks) {
             const int sig = run.StatusOf("code.sig." + hk.name);
             std::string dd = hk.state + (hk.rva ? " at " + hx(hk.rva) : std::string()) + (hk.note.empty() || hk.rva ? std::string() : " " + hk.note);
             int ok = hk.state == "ATTACHED" ? kPass : hk.state == "REFUSED" ? kUnchecked : kFail;
+            std::string need;
             if (hk.state != "ATTACHED" && c.flavour == "vulkan") {
                 for (const auto& sg : rtx::sig::kTable)
                     if (sg.expect == rtx::sig::kOpenGlOnce && hk.name == sg.name) { ok = kPass; dd = "not used on Vulkan"; break; }
             }
+            if (ok == kPass && hk.via == "anchor") { ok = kWarn; dd = "MOVED: found by anchor at " + hx(hk.rva) + ", signature missed" + (hk.sigRva ? " (signature at " + hx(hk.sigRva) + ")" : "") + "; attached there"; }
+            else if (ok == kPass && hk.via == "sig" && hk.anchor.rfind("0x", 0) == 0) { ok = kWarn; dd = "UNVERIFIED: " + dd + "; its anchor names another routine (" + hk.anchor + "): the signature or the anchor is stale"; }
+            else if (ok == kPass && !hk.anchor.empty() && hk.anchor != "agrees" && hk.anchor.rfind("0x", 0) != 0 && hk.anchor != "none" && hk.anchor.rfind("ambiguous", 0) != 0) dd += "; anchor " + hk.anchor;
+            if (ok == kFail) dd = (hk.state == "AMBIGUOUS" ? "NEW: " : "GONE: ") + dd + (hk.state == "AMBIGUOUS" ? " (more than one hit, the hook refuses to guess)" : hk.state == "FAILED" ? " (the detour did not take)" : " (the signature and its anchor found nothing)");
+            if (ok == kUnchecked) { dd = "UNVERIFIED: " + dd; need = "a validated build (the companion holds this hook back until then)"; }
             if (ok == kFail && sig == kPass) dd += "; this build's signature finds it (the companion running now predates it; a companion built from this source attaches it)";
-            if (ok == kPass && sig == kFail) { ok = kWarn; dd += "; its signature row fails for this exe (see Signature " + hk.name + ")"; }
-            run.Fact("hook." + hk.name, hk.state + (hk.rva ? "@" + hx(hk.rva) : std::string()));
-            run.Add(G, "comp.hook." + hk.name, "Hook " + hk.name, ok, dd, "", "ATTACHED", hk.state, "comp.boot");
+            if (ok == kPass && sig == kFail) { ok = kWarn; dd = "MOVED: " + dd + "; its signature row fails for this exe (see Signature " + hk.name + ")"; }
+            run.Fact("hook." + hk.name, hk.state + (hk.rva ? "@" + hx(hk.rva) : std::string()) + (hk.via.empty() ? "" : " via " + hk.via));
+            run.Add(G, "comp.hook." + hk.name, "Hook " + hk.name, ok, dd, sigFeatures(hk.name), "ATTACHED", hk.state + (hk.via.empty() ? "" : " via " + hk.via), "comp.boot").need = need;
+        }
+        // the companion's own self-checks (one line each in the boot record): what it read back
+        // before it writes anywhere, and what it refuses when the read-back is not what it expects
+        {
+            static const struct { const char* name; const char* features; } kCheckFeatures[] = {
+                { "scene-root", "Everything the companion reads" }, { "player-entity", "Local player|In-frame labels|Overhead anchors" },
+                { "ground-stacks", "Ground items" }, { "framer-conn", "Packet capture|Events channel|Chat capture" },
+                { "markers", "Engine markers" }, { "menu-record", "Menu swaps|Menu swaps: left-click option" },
+                { "hover-object", "Tooltip text (item prices, levels)" }, { "highlight", "Native outlines" },
+                { "packets", "Packet decoders|Events channel" }, { "engine-ops", "Asks|Sounds|Camera|In-frame panels" },
+            };
+            for (const std::string& name : rtx::bootlog::ExpectedChecks()) {
+                std::string feats = "Companion: " + name;
+                for (const auto& cf : kCheckFeatures) if (name == cf.name) feats = cf.features;
+                const rtx::bootlog::Check* ck = nullptr;
+                for (const auto& x : b.checks) if (x.name == name) { ck = &x; break; }
+                const std::string rid = "comp.check." + name, key = "Check " + name;
+                if (!ck) {
+                    rtx::health::Row& row = run.Add(G, rid, key, kUnchecked, "UNVERIFIED: companion did not report " + name + " (an older companion, or the module never got that far)", feats, "a check line", "none", "comp.boot");
+                    row.kind = "unrecorded"; row.need = "a companion built from this source running in the client";
+                    continue;
+                }
+                if (!ck->features.empty()) feats = ck->features;
+                run.Fact("check." + name, ck->state + (ck->kind.empty() ? "" : " " + ck->kind));
+                std::string dd = ck->text;
+                int ok = ck->state == "OK" ? kPass : ck->state == "SKIP" ? kUnchecked : kFail;
+                auto hasWord = [](const std::string& s) { for (const char* w : { "MOVED", "FORMAT", "GONE", "NEW", "UNVERIFIED" }) if (s.rfind(w, 0) == 0) return true; return false; };
+                auto upper = [](std::string w) { for (char& ch : w) ch = (char)std::toupper((unsigned char)ch); return w; };
+                if (ok == kPass && !ck->kind.empty()) {   // works after adopting a moved value
+                    ok = kWarn;
+                    if (dd.empty()) dd = "adopted a moved value";
+                    if (!hasWord(dd)) dd = upper(ck->kind) + ": " + dd;
+                } else if (ok == kFail) {
+                    if (dd.empty()) dd = "the companion's read-back was not what it expects; the module refuses its writes";
+                    if (!hasWord(dd)) dd = upper(ck->kind.empty() ? std::string("GONE") : ck->kind) + ": " + dd;
+                } else if (ok == kUnchecked && dd.empty()) dd = "the companion could not judge this yet";
+                if (ok == kPass && dd.empty()) dd = "ok" + (ck->got.empty() ? std::string() : " (" + ck->got + ")");
+                run.Add(G, rid, key, ok, dd, feats, ck->exp, ck->got, "comp.boot").need = ok == kUnchecked ? (ck->need.empty() ? "the state the companion names in its boot record" : ck->need) : "";
+            }
         }
         // heartbeat: a graphic id that never changes reads the wrong field, unless every effect around
         // the player shows that graphic; the reader's own scene read tells the two apart. The companion
@@ -10730,75 +11177,75 @@ void health_companion(HCtx& c, rtx::health::Run& run) {
                     beatOk = kWarn;
                     std::string seen; int n = 0;
                     for (const auto& kv : c.t4Gfx) { if (++n > 4) { seen += " ..."; break; } seen += " " + std::to_string(kv.first); }
-                    beatD += "the reader's scene read sees " + std::to_string(c.t4Seen) + " type-4 effects and none with it (" +
+                    beatD = "FORMAT: " + beatD + "the reader's scene read sees " + std::to_string(c.t4Seen) + " type-4 effects and none with it (" +
                              (seen.empty() ? std::string("none validated") : "validated:" + seen) + "): graphic field offset wrong in the running companion";
                 }
             }
-            run.Add(G, "comp.heartbeat", "Heartbeat", beatOk, beatD, "Specials: clue scan ring", "", "", "comp.boot");
+            run.Add(G, "comp.heartbeat", "Heartbeat", beatOk, beatD, "Specials: clue scan ring", "a changing graphic, or one the scene holds", gfx.empty() ? std::string() : *gfx.begin(), "comp.boot").need = beatOk == kUnchecked ? "a type-4 effect in view" : "";
         }
         for (const auto& n : b.notes)
             if (n.find("are from game build") != std::string::npos || n.find("not extracted") != std::string::npos)
-                run.Add(G, "comp.engineops", "Engine ops names", kFail, n, "Asks|Sounds|Camera|In-frame panels", "", "", "comp.boot");
+                run.Add(G, "comp.engineops", "Engine ops names", kFail, "GONE: " + n, "Asks|Sounds|Camera|In-frame panels", "", "", "comp.boot");
     }
     if (c.cli) {
-        run.Add(G, "comp.channels", "Live channels", kUnchecked, "launcher only (channel names are per session)", "Overlays|Specials|Live variables|Packets|Menus|Sounds|Chat mute", "", "", "comp.boot");
+        run.Add(G, "comp.channels", "Live channels", kUnchecked, "launcher only (channel names are per session)", "Overlays|Specials|Live variables|Packets|Menus|Sounds|Chat mute", "", "", "comp.boot").need = "a launcher run";
         return;
     }
     {
         wchar_t name[rtx::ipc::kNameChars]; rtx::frame::MakeSectionName(c.pid, name);
         ShareMap<rtx::frame::Share> f;
-        int ok = kFail; std::string d = "frame channel not mapped";
+        int ok = kFail; std::string d = "GONE: frame channel not mapped";
         if (f.open(name) && f.sh->magic == rtx::frame::kMagic) {
             if (f.sh->module_seq > 0 && f.sh->client_w > 0 && f.sh->client_h > 0) { ok = kPass; d = "compositing at " + std::to_string(f.sh->client_w) + "x" + std::to_string(f.sh->client_h) + ", " + std::to_string(f.sh->module_seq) + " presents"; }
-            else d = "mapped, the game never presented through it";
+            else d = "GONE: mapped, the game never presented through it (the present entry was not found)";
         }
-        run.Add(G, "comp.frame", "In-game UI frame", ok, d, "In-game panels|Overlays", "", "", "comp.boot");
+        run.Add(G, "comp.frame", "In-game UI frame", ok, d, "In-game panels|Overlays", "presents through the channel", d.substr(d.find(": ") == std::string::npos ? 0 : d.find(": ") + 2), "comp.boot");
     }
     {
         wchar_t name[rtx::ipc::kNameChars]; rtx::render::MakeSectionName(c.pid, name);
         ShareMap<rtx::render::Share> r;
-        int ok = kFail; std::string d = "render channel not mapped";
+        int ok = kFail; std::string d = "GONE: render channel not mapped";
         if (r.open(name) && r.sh->magic == rtx::render::kMagic) {
             const std::uint32_t in = r.sh->installed;
             const bool vk = c.flavour == "vulkan";
             const bool want = (in & 3) == 3 && (vk || (in & 4));
             ok = want ? kPass : kFail;
-            d = std::string((in & 1) ? "NPC hide" : "no NPC hide") + ", " + ((in & 2) ? "player hide" : "no player hide") + ", " + ((in & 4) ? "scene blank" : vk ? "no scene blank (Vulkan)" : "no scene blank");
+            d = std::string(want ? "" : "GONE: ") + ((in & 1) ? "NPC hide" : "no NPC hide") + ", " + ((in & 2) ? "player hide" : "no player hide") + ", " + ((in & 4) ? "scene blank" : vk ? "no scene blank (Vulkan)" : "no scene blank");
         }
-        run.Add(G, "comp.render", "Rendering toggles", ok, d, "Rendering panel", "", "", "comp.boot");
+        run.Add(G, "comp.render", "Rendering toggles", ok, d, "Rendering panel", "NPC hide, player hide, scene blank on OpenGL", d.substr(d.find(": ") == std::string::npos ? 0 : d.find(": ") + 2), "comp.boot");
     }
     {
         wchar_t name[rtx::ipc::kNameChars]; rtx::special::MakeSectionName(c.pid, name);
         ShareMap<rtx::special::Share> s;
-        int ok = kFail; std::string d = "specials channel not mapped";
+        int ok = kFail; std::string d = "GONE: specials channel not mapped";
         if (s.open(name) && s.sh->magic == rtx::special::kMagic) {
             ok = (s.sh->flags & 1) ? kPass : kFail;
-            d = std::string((s.sh->flags & 1) ? "spawn observer installed" : "spawn observer missing") + ", tracked " + std::to_string(s.sh->diag[6]) + ", last graphic " + std::to_string(s.sh->diag[2]);
+            d = std::string((s.sh->flags & 1) ? "spawn observer installed" : "GONE: spawn observer missing") + ", tracked " + std::to_string(s.sh->diag[6]) + ", last graphic " + std::to_string(s.sh->diag[2]);
         }
-        run.Add(G, "comp.specials", "Specials", ok, d, "Specials: graphic highlights|Clue scan", "", "", "comp.boot");
+        run.Add(G, "comp.specials", "Specials", ok, d, "Specials: graphic highlights|Clue scan", "spawn observer installed", d.substr(d.find(": ") == std::string::npos ? 0 : d.find(": ") + 2), "comp.boot");
     }
     {
         wchar_t name[rtx::ipc::kNameChars]; rtx::varc::MakeSectionName(c.pid, name);
         ShareMap<rtx::varc::Share> v;
-        int ok = kFail; std::string d = "variables channel not mapped";
+        int ok = kFail; std::string d = "GONE: variables channel not mapped";
         if (v.open(name) && v.sh->magic == rtx::varc::kMagic && v.sh->version == rtx::varc::kVersion) {
             const std::uint32_t f = v.sh->flags;
             ok = (f & 1) && (f & 2) ? kPass : kFail;
-            d = std::string((f & 1) ? "var observers installed" : "var observers missing") + ", " + ((f & 2) ? "drag observer installed" : "drag observer missing");
+            d = std::string(ok == kPass ? "" : "GONE: ") + ((f & 1) ? "var observers installed" : "var observers missing") + ", " + ((f & 2) ? "drag observer installed" : "drag observer missing");
         }
-        run.Add(G, "comp.vars", "Live variables", ok, d, "Live variable changes|Interface drag", "", "", "comp.boot");
+        run.Add(G, "comp.vars", "Live variables", ok, d, "Live variable changes|Interface drag", "var and drag observers installed", d.substr(d.find(": ") == std::string::npos ? 0 : d.find(": ") + 2), "comp.boot");
     }
     {
         wchar_t name[rtx::ipc::kNameChars]; rtx::netprobe::MakeSectionName(c.pid, name);
         ShareMap<rtx::netprobe::Share> n;
-        int ok = kFail; std::string d = "packet channel not mapped";
+        int ok = kFail; std::string d = "GONE: packet channel not mapped";
         if (n.open(name) && n.sh->magic == rtx::netprobe::kMagic) {
             const bool hooked = (n.sh->flags & 1) != 0;
             ok = hooked ? (n.sh->diag[2] ? kWarn : kPass) : kFail;
-            d = std::string(hooked ? "framer hooked at " + hx(n.sh->framerRva) : "framer not hooked") + ", " + std::to_string(n.sh->chatSeen) + " chat packets" +
-                (n.sh->diag[2] ? ", " + std::to_string(n.sh->diag[2]) + " opcodes above the bound dropped" : "");
+            d = std::string(ok == kFail ? "GONE: " : ok == kWarn ? "NEW: " : "") + (hooked ? "framer hooked at " + hx(n.sh->framerRva) : "framer not hooked") + ", " + std::to_string(n.sh->chatSeen) + " chat packets" +
+                (n.sh->diag[2] ? ", " + std::to_string(n.sh->diag[2]) + " opcodes above the bound dropped (the bound or the opcode byte moved)" : "");
         }
-        run.Add(G, "comp.netprobe", "Packet capture", ok, d, "Chat capture|Events channel|Packet feed", "", "", "comp.boot");
+        run.Add(G, "comp.netprobe", "Packet capture", ok, d, "Chat capture|Events channel|Packet feed", "framer hooked, nothing above the bound", d.substr(d.find(": ") == std::string::npos ? 0 : d.find(": ") + 2), "comp.boot");
     }
     {   // runtime scenery the companion publishes: loc ids on a cache placement of that id and tile
         std::vector<RuntimeObj> objs;
@@ -10821,11 +11268,11 @@ void health_companion(HCtx& c, rtx::health::Run& run) {
                 if (it->second.count(((long long)r.config_id << 28) | ((long long)r.x << 14) | (long long)r.y)) ++matched;
             }
             ok = (total == 0 || matched * 10 >= total) ? kPass : kFail;   // 10 % leaves room for dynamic areas
-            d = std::to_string(matched) + "/" + std::to_string(total) + " loc ids sit on a map placement of that id, " +
+            d = std::string(ok == kPass ? "" : "MOVED: ") + std::to_string(matched) + "/" + std::to_string(total) + " loc ids sit on a map placement of that id, " +
                 std::to_string(rendered) + " with a live model" + (ok == kPass ? "" : " (companion loc id or tile field moved?)");
         }
-        run.Add(G, "comp.objects", "Scene objects", ok, d, "Scene objects|Loc labels|Tree timers|Plugins scene API", "10 %",
-                std::to_string(matched) + "/" + std::to_string(total), "comp.boot");
+        run.Add(G, "comp.objects", "Scene objects", ok, d, "Scene objects|Loc labels|Tree timers|Plugins scene API", "10 % on a placement",
+                std::to_string(matched) + "/" + std::to_string(total), "comp.boot").need = ok == kUnchecked ? "scenery published (in the world with the companion)" : "";
     }
 }
 
@@ -10833,7 +11280,7 @@ void health_companion(HCtx& c, rtx::health::Run& run) {
 
 void SetHealthHeadless(bool headless) { g_healthHeadless.store(headless); }
 
-std::string ReaderHealthJson(std::uint32_t pid, const std::string& runtimePinsJson) {
+std::string ReaderHealthJson(std::uint32_t pid, const std::string& runtimePinsJson, const std::string& trigger) {
     static std::mutex runMu;   // one run at a time: the build record and the history are per run
     std::lock_guard<std::mutex> runLock(runMu);
     const ULONGLONG t0 = GetTickCount64();
@@ -10842,6 +11289,9 @@ std::string ReaderHealthJson(std::uint32_t pid, const std::string& runtimePinsJs
     c.pid = pid;
     c.cli = g_healthHeadless.load();
     c.runtimePins = runtimePinsJson;
+    c.trigger = !trigger.empty() ? trigger : c.cli ? "cli" : "manual";
+    run.SetTrigger(c.trigger);
+    rtx::cache::CacheFullSweepStart();   // the parse rows and opcode counts come from it; it runs while the other groups are read
     {
         std::lock_guard<std::mutex> lk(g_mu);
         auto it = g_states.find((DWORD)pid);
@@ -10849,10 +11299,11 @@ std::string ReaderHealthJson(std::uint32_t pid, const std::string& runtimePinsJs
     }
     auto ps = snap_proc(pid);
     if (!ps) {
-        run.Add("Context", "context.client", "Game client", kFail, "not connected (no rs2client.exe with this pid, or MainData not resolved)", "Everything");
-        run.Section("context", std::string("{\"process\":\"") + (c.cli ? "cli" : "launcher") + "\"}");
+        run.Add("Context", "context.client", "Game client", kFail, "GONE: not connected (no rs2client.exe with this pid, or MainData not resolved)", "Everything");
+        run.Section("context", context_json(c));
         const std::string json = run.Json(c.version, (long long)(GetTickCount64() - t0));
         if (!rtx::pins::Overridden()) rtx::health::SaveHistory(json, "");
+        rtx::log::Launcher("health: " + c.trigger + " run without a client (pid " + std::to_string(pid) + ")");
         return json;
     }
     c.h = ps.h; c.mgva = ps.mgva; c.base = ps.mod_base; c.size = ps.mod_size;
@@ -10895,11 +11346,11 @@ std::string ReaderHealthJson(std::uint32_t pid, const std::string& runtimePinsJs
         // the anchor is found and the root is empty: the lobby or a load, not a moved layout
         const bool anchored = run.StatusOf("code.sig.main-anchor") == kPass;
         run.Add("Game data", "data.root", "Root and status", anchored ? kUnchecked : kFail,
-                anchored ? "MainData root not set (lobby or loading)" : "MainData root not readable", "Everything", "", "", "code.sig.main-anchor");
+                anchored ? "MainData root not set (lobby or loading)" : "GONE: MainData root not readable", "Everything", "", "", "code.sig.main-anchor").need = anchored ? "log in" : "";
     }
     {
         run.Add("Content", "content.cache", "Cache open", rtx::cache::IndexInfo(2).open ? kPass : kFail,
-                rtx::cache::IndexInfo(2).open ? rtx::cache::CacheRoot() : "config index not readable", "Every cache read");
+                rtx::cache::IndexInfo(2).open ? rtx::cache::CacheRoot() : "GONE: config index not readable", "Every cache read");
         rtx::pins::CheckContent(run, c.runtimePins, c.cli ? 15000 : 0);
         if (c.root > 0x10000) health_dailies(c, run);
     }
@@ -10907,13 +11358,19 @@ std::string ReaderHealthJson(std::uint32_t pid, const std::string& runtimePinsJs
     health_cache(c, run);
     health_companion(c, run);
 
+    // complete: every group judged a logged-in client with its companion
+    c.complete = c.inWorld && c.bootFound && c.root > 0x10000;
+    run.SetComplete(c.complete);
+    run.Section("context", context_json(c));
+
     const long long ms = (long long)(GetTickCount64() - t0);
     char st[16]; std::snprintf(st, sizeof(st), "%08x", c.stamp);
     const std::string json = run.Json(c.version, ms);
     if (!rtx::pins::Overridden()) {   // a test manifest: not a verdict on this build
         rtx::health::SaveHistory(json, st);
-        rtx::health::BuildsRecord(c.version, st, c.flavour, g_buildRevs, run.Count(kFail), g_buildCarried);
+        rtx::health::BuildsRecord(c.version, st, c.flavour, g_buildRevs, run.Count(kFail), g_buildCarried, c.complete);
     }
+    rtx::log::Launcher("health: " + c.trigger + " " + st + " " + run.ImpactLine() + " (" + std::to_string(ms) + " ms)");
     return json;
 }
 

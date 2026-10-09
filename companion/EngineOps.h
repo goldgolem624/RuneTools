@@ -14,6 +14,9 @@ namespace rtx::marker { struct Anchor; struct Ask; }
 namespace rtx::engineops {
 
 bool Ready();                                   // handlers found and the name table read
+// The MainData shift the scene module adopted (0 when the compiled offsets hold): applied to the
+// root fields read here (game state, player registry).
+void SetRootShift(std::int64_t delta);
 // Calls `name` with the given ints (and optional strings) and returns the ints it left on the
 // stack in `out` (up to `cap`); -1 when the operation is unknown or the call faulted.
 int Call(std::uint8_t* root, const char* name, const std::int32_t* ints, int nInts,

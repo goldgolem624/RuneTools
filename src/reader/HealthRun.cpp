@@ -31,13 +31,34 @@ std::string Hex(std::uint64_t v) {
     return b;
 }
 
-void Run::Add(const char* group, const std::string& id, const std::string& key, int ok, const std::string& detail,
+namespace {
+
+// The word a non-pass detail starts with, as the row's kind; empty when it starts with none.
+std::string KindWord(const std::string& detail) {
+    static const struct { const char* word; const char* kind; } kWords[] = {
+        { "MOVED", "moved" }, { "FORMAT", "format" }, { "GONE", "gone" }, { "NEW", "new" }, { "UNVERIFIED", "unverified" } };
+    for (const auto& w : kWords) {
+        const std::size_t n = std::strlen(w.word);
+        if (detail.compare(0, n, w.word) == 0 && detail.size() > n && (detail[n] == ':' || detail[n] == ' ')) return w.kind;
+    }
+    return {};
+}
+
+}  // namespace
+
+Row& Run::Add(const char* group, const std::string& id, const std::string& key, int ok, const std::string& detail,
               const std::string& features, const std::string& exp, const std::string& got, const std::string& dep) {
     Row r;
     r.group = group ? group : "";
     r.id = id; r.key = key; r.ok = ok; r.detail = detail;
     r.features = features; r.exp = exp; r.got = got; r.dep = dep;
+    if (ok != kPass) {
+        r.kind = KindWord(detail);
+        if (ok == kUnchecked && r.kind.empty()) { r.detail = "UNVERIFIED: " + detail; r.kind = "precondition"; }
+        else if (ok == kUnchecked && r.kind == "unverified") r.kind = "precondition";
+    }
     rows_.push_back(std::move(r));
+    return rows_.back();
 }
 
 void Run::Fact(const std::string& key, const std::string& value) { facts_[key] = value; }
@@ -99,9 +120,12 @@ std::string Run::Json(const std::string& version, long long ms) const {
         }
         if (!r.exp.empty()) o += ",\"exp\":\"" + Escape(r.exp) + "\"";
         if (!r.got.empty()) o += ",\"got\":\"" + Escape(r.got) + "\"";
+        if (!r.kind.empty()) o += ",\"kind\":\"" + Escape(r.kind) + "\"";
+        if (!r.need.empty()) o += ",\"need\":\"" + Escape(r.need) + "\"";
         o += "}";
     }
-    o += "],\"facts\":{";
+    o += "],\"impact\":" + ImpactJson();
+    o += ",\"facts\":{";
     first = true;
     for (const auto& f : facts_) {
         if (!first) o.push_back(',');
@@ -109,6 +133,117 @@ std::string Run::Json(const std::string& version, long long ms) const {
         o += "\"" + Escape(f.first) + "\":\"" + Escape(f.second) + "\"";
     }
     o += "}}";
+    return o;
+}
+
+// ---- impact: the rows by feature and class ----
+namespace {
+
+struct Impact {
+    struct Entry { std::string feature, why, need; std::vector<std::string> rows; };
+    std::vector<Entry> broken, moved, format, unverified;
+    int ok = 0, unchecked = 0;
+};
+
+std::string PanelOf(const std::string& feature) {
+    const std::size_t c = feature.find(": ");
+    return c == std::string::npos ? feature : feature.substr(0, c);
+}
+
+std::string OneLine(const std::string& d) {
+    std::string s = d;
+    for (char& c : s) if (c == '\n' || c == '\t') c = ' ';
+    if (s.size() > 220) { s.resize(217); s += "..."; }
+    return s;
+}
+
+void Put(std::vector<Impact::Entry>& list, const std::string& feature, const Row& r) {
+    for (auto& e : list) if (e.feature == feature) { e.rows.push_back(r.id.empty() ? r.key : r.id); if (e.need.empty()) e.need = r.need; return; }
+    Impact::Entry e; e.feature = feature; e.why = OneLine(r.detail); e.need = r.need; e.rows.push_back(r.id.empty() ? r.key : r.id);
+    list.push_back(std::move(e));
+}
+
+// broken = fail; moved = warn (a moved value, a fallback, a stale table); format = a warn whose kind
+// is format; unverified = unchecked with nothing recorded for this exe, and every unchecked row when
+// the exe or the cache changed (that is where a silent break hides); the rest of the unchecked rows
+// are only counted.
+Impact Classify(const std::vector<Row>& rows, const BuildChange& b) {
+    Impact im;
+    const bool changed = b.exe != "same" || b.cache != "same";
+    for (const Row& r : rows) {
+        if (r.ok == kPass) { ++im.ok; continue; }
+        std::vector<Impact::Entry>* list = nullptr;
+        if (r.ok == kFail) list = &im.broken;
+        else if (r.ok == kWarn) list = r.kind == "format" ? &im.format : r.kind == "unverified" ? &im.unverified : &im.moved;
+        else { ++im.unchecked; if (r.kind == "unrecorded" || changed) list = &im.unverified; }
+        if (!list) continue;
+        std::set<std::string> panels;
+        std::size_t at = 0;
+        const std::string f = r.features.empty() ? std::string("Other") : r.features;
+        while (at <= f.size()) {
+            std::size_t e = f.find('|', at);
+            if (e == std::string::npos) e = f.size();
+            if (e > at) panels.insert(PanelOf(f.substr(at, e - at)));
+            at = e + 1;
+        }
+        for (const auto& p : panels) Put(*list, p, r);
+    }
+    return im;
+}
+
+std::string ListJson(const std::vector<Impact::Entry>& list) {
+    std::string o = "[";
+    bool first = true;
+    for (const auto& e : list) {
+        o += first ? "{" : ",{"; first = false;
+        o += "\"feature\":\"" + Escape(e.feature) + "\",\"why\":\"" + Escape(e.why) + "\"";
+        if (!e.need.empty()) o += ",\"need\":\"" + Escape(e.need) + "\"";
+        o += ",\"rows\":[";
+        for (std::size_t i = 0; i < e.rows.size(); ++i) o += (i ? ",\"" : "\"") + Escape(e.rows[i]) + "\"";
+        o += "]}";
+    }
+    return o + "]";
+}
+
+std::string Names(const std::vector<Impact::Entry>& list, bool withRow) {
+    std::string o;
+    for (std::size_t i = 0; i < list.size() && i < 8; ++i) {
+        o += (i ? ", " : "") + list[i].feature;
+        if (withRow && !list[i].rows.empty()) o += " (" + list[i].rows[0] + ")";
+    }
+    if (list.size() > 8) o += ", +" + std::to_string(list.size() - 8) + " more";
+    return o;
+}
+
+}  // namespace
+
+std::string Run::ImpactJson() const {
+    const Impact im = Classify(rows_, build_);
+    std::string o = "{\"build\":{\"exe\":\"" + Escape(build_.exe) + "\",\"cache\":\"" + Escape(build_.cache) +
+                    "\",\"from\":\"" + Escape(build_.from) + "\",\"to\":\"" + Escape(build_.to) + "\",\"archives\":[";
+    {
+        std::size_t at = 0; bool first = true;
+        while (at <= build_.archives.size() && !build_.archives.empty()) {
+            std::size_t e = build_.archives.find('|', at);
+            if (e == std::string::npos) e = build_.archives.size();
+            if (e > at) { o += (first ? "\"" : ",\"") + Escape(build_.archives.substr(at, e - at)) + "\""; first = false; }
+            at = e + 1;
+        }
+    }
+    o += "],\"firstSeen\":\"" + Escape(build_.firstSeen) + "\"}";
+    o += std::string(",\"complete\":") + (complete_ ? "true" : "false") + ",\"trigger\":\"" + Escape(trigger_) + "\"";
+    o += ",\"broken\":" + ListJson(im.broken) + ",\"moved\":" + ListJson(im.moved) + ",\"format\":" + ListJson(im.format) +
+         ",\"unverified\":" + ListJson(im.unverified);
+    o += ",\"ok\":" + std::to_string(im.ok) + ",\"unchecked\":" + std::to_string(im.unchecked) + "}";
+    return o;
+}
+
+std::string Run::ImpactLine() const {
+    const Impact im = Classify(rows_, build_);
+    std::string o = "broken: " + (im.broken.empty() ? std::string("none") : Names(im.broken, true));
+    o += "; moved: " + std::to_string(im.moved.size()) + "; format: " + std::to_string(im.format.size()) +
+         "; unverified: " + std::to_string(im.unverified.size()) + "; pass: " + std::to_string(im.ok);
+    if (!complete_) o += "; incomplete";
     return o;
 }
 
@@ -290,11 +425,14 @@ std::string HistoryListJson() {
         if (!ParseJson(ReadAll(dir + L"\\" + f), v)) continue;
         const JVal* s = v.get("summary");
         const JVal* b = v.get("build");
-        char line[256];
-        std::snprintf(line, sizeof(line), "%s{\"name\":\"%s\",\"pass\":%lld,\"fail\":%lld,\"warn\":%lld,\"unchecked\":%lld,\"flavour\":\"%s\",\"version\":\"%s\"}",
+        const JVal* im = v.get("impact");
+        const std::string complete = im ? im->str("complete") : std::string();
+        char line[320];
+        std::snprintf(line, sizeof(line), "%s{\"name\":\"%s\",\"pass\":%lld,\"fail\":%lld,\"warn\":%lld,\"unchecked\":%lld,\"flavour\":\"%s\",\"version\":\"%s\",\"complete\":%s,\"trigger\":\"%s\"}",
                       first ? "" : ",", Narrow(f).c_str(),
                       s ? s->num("pass") : 0, s ? s->num("fail") : 0, s ? s->num("warn") : 0, s ? s->num("unchecked") : 0,
-                      b ? Escape(b->str("flavour")).c_str() : "", Escape(v.str("version")).c_str());
+                      b ? Escape(b->str("flavour")).c_str() : "", Escape(v.str("version")).c_str(),
+                      complete.empty() ? "null" : complete.c_str(), im ? Escape(im->str("trigger")).c_str() : "");
         o += line; first = false;
     }
     return o + "]";
@@ -340,7 +478,7 @@ std::string LastGood(const std::string& flavour, const std::string& skipName, st
             curPrint = BuildPrint(cur);
         }
     }
-    std::string otherBuild, notWorse, newest;
+    std::string otherBuild, notWorse, newest, cleanIncomplete;
     for (const auto& f : files) {
         const std::string name = Narrow(f);
         if (name == skipName) continue;
@@ -353,12 +491,17 @@ std::string LastGood(const std::string& flavour, const std::string& skipName, st
         if (!s) continue;
         if (!flavour.empty() && (!b || b->str("flavour") != flavour)) continue;
         const long long fails = s->num("fail", -1);
-        if (fails == 0) { if (against) *against = "last clean"; return text; }
+        // runs before the impact section carry no complete flag and count as complete
+        const JVal* im = v.get("impact");
+        const bool complete = !im || im->str("complete") != "false";
+        if (fails == 0 && complete) { if (against) *against = "last clean"; return text; }
+        if (fails == 0 && cleanIncomplete.empty()) cleanIncomplete = text;
         const std::string print = BuildPrint(v);
         if (otherBuild.empty() && !curPrint.empty() && !print.empty() && print != curPrint) otherBuild = text;
         if (notWorse.empty() && curFails >= 0 && fails >= 0 && fails <= curFails) notWorse = text;
         if (newest.empty()) newest = text;
     }
+    if (!cleanIncomplete.empty()) { if (against) *against = "last clean, incomplete"; return cleanIncomplete; }
     if (!otherBuild.empty()) { if (against) *against = "previous build"; return otherBuild; }
     if (!notWorse.empty()) { if (against) *against = "previous run"; return notWorse; }
     if (!newest.empty()) { if (against) *against = "earlier run"; return newest; }
@@ -459,6 +602,39 @@ std::string SummaryText(const std::string& json) {
     o += "RuneTools health check  " + v.str("version");
     if (b) o += "  " + b->str("flavour") + " " + b->str("stamp") + (b->str("known") == "true" ? " (validated)" : " (new build)");
     o += "\n";
+    if (const JVal* im = v.get("impact")) {
+        const JVal* bc = im->get("build");
+        std::string game;
+        if (bc) {
+            const std::string exe = bc->str("exe"), cache = bc->str("cache");
+            if (exe != "same") game = (exe == "new" ? "new client " : "client not validated ") + bc->str("to") + (bc->str("from").empty() ? "" : " (was " + bc->str("from") + ")");
+            if (cache == "changed") {
+                std::string names;
+                if (const JVal* a = bc->get("archives")) for (std::size_t i = 0; i < a->a.size() && i < 8; ++i) names += (i ? ", " : "") + a->a[i].s;
+                game += (game.empty() ? "" : "; ") + std::string("cache changed") + (names.empty() ? "" : " (" + names + ")");
+            }
+        }
+        o += "game: " + (game.empty() ? std::string("no change since the last clean run") : game) + "\n";
+        auto count = [&](const char* k) -> std::size_t { const JVal* l = im->get(k); return l ? l->a.size() : 0; };
+        o += "verdict: " + std::to_string(count("broken")) + " broken, " + std::to_string(count("moved")) + " working with a warning, " +
+             std::to_string(count("format")) + " format changes, " + std::to_string(count("unverified")) + " not verifiable here, " +
+             im->str("ok") + " checks pass" + (im->str("complete") == "false" && v.get("context") ? " (incomplete run: not in the world or no companion)" : "") +
+             "; trigger " + im->str("trigger") + "\n";
+        static const struct { const char* key; const char* label; } kLists[] = {
+            { "broken", "broken" }, { "moved", "with a warning (a moved value, a stale table or an id near its ceiling)" },
+            { "format", "format changes" }, { "unverified", "not verifiable here" } };
+        for (const auto& k : kLists) {
+            const JVal* l = im->get(k.key);
+            if (!l || l->a.empty()) continue;
+            o += std::string("  ") + k.label + ":\n";
+            for (const auto& e : l->a) {
+                o += "    " + e.str("feature") + ": " + e.str("why");
+                const std::string need = e.str("need");
+                if (!need.empty()) o += " [" + need + "]";
+                o += "\n";
+            }
+        }
+    }
     if (s) {
         o += "pass " + std::to_string(s->num("pass")) + "  fail " + std::to_string(s->num("fail")) +
              "  warn " + std::to_string(s->num("warn")) + "  not checked " + std::to_string(s->num("unchecked")) +
@@ -579,18 +755,18 @@ BuildState BuildsLookup(const std::string& version, const std::string& stamp, co
 }
 
 void BuildsRecord(const std::string& version, const std::string& stamp, const std::string& flavour,
-                  const std::string& revs, int fails, bool reviewed) {
+                  const std::string& revs, int fails, bool reviewed, bool complete) {
     auto lines = BuildsLoad();
-    const std::string verdict = fails == 0 ? "clean" : ("fails " + std::to_string(fails));
+    const std::string verdict = fails == 0 ? (complete ? "clean" : "clean (incomplete)") : ("fails " + std::to_string(fails));
     for (auto& b : lines) {
         if (b.version == version && b.stamp == stamp && b.flavour == flavour && b.revs == revs) {
             b.verdict = verdict;
-            if (fails == 0) b.reviewed = true;
+            if (fails == 0 && complete) b.reviewed = true;
             BuildsSave(lines);
             return;
         }
     }
-    BuildLine b{ version, stamp, flavour, revs, Today(), verdict, fails == 0 || reviewed };
+    BuildLine b{ version, stamp, flavour, revs, Today(), verdict, (fails == 0 && complete) || reviewed };
     lines.push_back(b);
     BuildsSave(lines);
 }

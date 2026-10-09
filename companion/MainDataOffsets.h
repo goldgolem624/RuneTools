@@ -33,10 +33,12 @@ inline constexpr std::uint32_t kSceneViews   = 0x199D0;
 inline constexpr std::uint32_t kCutscene     = 0x19A18;
 inline constexpr std::uint32_t kSoundCtx     = 0x19A30;
 inline constexpr std::uint32_t kLanguage     = 0x19B10;
-inline constexpr std::uint32_t kStatus       = 0x19FA0;   // i8 login status, 30 = in the world
+inline constexpr std::uint32_t kStatus       = 0x19FA0;   // i32 game state (read as its low byte today), 30 = in the world
 inline constexpr std::uint32_t kAccount      = 0x19FA8;   // account and local player data
-inline constexpr std::uint32_t kVarpMgr      = 0x19FB8;   // varp manager, ability cooldown map
-inline constexpr std::uint32_t kVarpHash     = 0x36080;
+inline constexpr std::uint32_t kVarpMgr      = 0x19FB8;   // player var store, embedded in the root (its vtable pointer sits here); ability cooldown map
+inline constexpr std::uint32_t kVarpHashFromMgr = 0x1C0C8;   // player var store -> its second fixed hash map (the varp values)
+inline constexpr std::uint32_t kVarpHash     = kVarpMgr + kVarpHashFromMgr;   // 0x36080: derived, never pinned apart from the store
+static_assert(kVarpHash == 0x36080, "the varp hash follows the player var store");
 inline constexpr std::uint32_t kOptions      = 0x535D0;   // client options
 
 struct Entry { const char* name; std::uint32_t off; const char* rule; const char* features; };

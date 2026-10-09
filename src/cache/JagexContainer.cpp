@@ -60,20 +60,23 @@ std::uint32_t be32(const std::vector<std::uint8_t>& b, std::size_t o) {
 
 }  // namespace
 
-std::vector<std::uint8_t> Decompress(const std::vector<std::uint8_t>& raw) {
-    if (raw.size() < 9) return {};
+std::vector<std::uint8_t> Decompress(const std::vector<std::uint8_t>& raw, std::string* why) {
+    if (raw.size() < 9) { if (why) *why = "container too short (" + std::to_string(raw.size()) + " bytes)"; return {}; }
     // "ZL" format: bytes 0..1 magic, 4..7 uncompressed size, 8+ zlib stream.
     if (raw[0] == 0x5A && raw[1] == 0x4C) {
-        return InflateImpl(raw.data() + 8, raw.size() - 8, be32(raw, 4), 0);
+        auto out = InflateImpl(raw.data() + 8, raw.size() - 8, be32(raw, 4), 0);
+        if (out.empty() && why) *why = "zl inflate failed";
+        return out;
     }
     // Anything else is the standard container (type byte 0..3). The model index is stored that
     // way, LZMA throughout, and every archive read comes through here.
-    if (raw[0] <= 3) return DecompressStandard(raw);
+    if (raw[0] <= 3) return DecompressStandard(raw, why);
+    if (why) *why = "container type " + std::to_string(raw[0]);
     return {};
 }
 
-std::vector<std::uint8_t> DecompressStandard(const std::vector<std::uint8_t>& raw) {
-    if (raw.size() < 5) return {};
+std::vector<std::uint8_t> DecompressStandard(const std::vector<std::uint8_t>& raw, std::string* why) {
+    if (raw.size() < 5) { if (why) *why = "container too short (" + std::to_string(raw.size()) + " bytes)"; return {}; }
     std::uint8_t  type      = raw[0];
     std::uint32_t comp_size = be32(raw, 1);
     if (type == 0) {
@@ -81,18 +84,25 @@ std::vector<std::uint8_t> DecompressStandard(const std::vector<std::uint8_t>& ra
         if (end > raw.size()) end = raw.size();
         return std::vector<std::uint8_t>(raw.begin() + 5, raw.begin() + end);
     }
-    if (raw.size() < 9) return {};
+    if (raw.size() < 9) { if (why) *why = "container too short (" + std::to_string(raw.size()) + " bytes)"; return {}; }
     std::uint32_t orig_size = be32(raw, 5);
+    std::vector<std::uint8_t> out;
+    const char* codec = nullptr;
     if (type == 1) {
-        return Bzip2Decompress(raw.data() + 9, raw.size() - 9, orig_size);
+        codec = "bzip2";
+        out = Bzip2Decompress(raw.data() + 9, raw.size() - 9, orig_size);
+    } else if (type == 2) {
+        codec = "inflate";
+        out = InflateImpl(raw.data() + 9, raw.size() - 9, orig_size, 47);
+    } else if (type == 3) {
+        codec = "lzma";
+        out = LzmaDecompress(raw.data() + 9, raw.size() - 9, orig_size);
+    } else {
+        if (why) *why = "container type " + std::to_string(type);
+        return {};
     }
-    if (type == 2) {
-        return InflateImpl(raw.data() + 9, raw.size() - 9, orig_size, 47);
-    }
-    if (type == 3) {
-        return LzmaDecompress(raw.data() + 9, raw.size() - 9, orig_size);
-    }
-    return {};
+    if (out.empty() && why) *why = std::string(codec) + " failed";
+    return out;
 }
 
 }  // namespace rtx::cache

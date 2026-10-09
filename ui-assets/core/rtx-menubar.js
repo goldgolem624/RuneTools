@@ -61,6 +61,28 @@
     dd.style.top = y + 'px';
     wmRectsSoon();
   }
+  // Health Check carries a dot while the latest run is red or amber: on its category button and on
+  // its row in the dropdown.
+  function mbHealthLevel() {
+    const h = window.__rtxHealth;
+    return (h && (h.level === 'red' || h.level === 'amber')) ? h.level : '';
+  }
+  function mbHealthCat() {
+    const t = allTabs().find(x => x.id === 'health');
+    return t ? (t.cat || 'General') : '';
+  }
+  function mbBadge(el, level) {
+    if (!level) return;
+    injectStyle('mbHcCss', `
+      .mb-cat.hc-badge::before { content: ''; position: absolute; top: 3px; right: 4px; width: 6px; height: 6px; border-radius: 50%;
+          background: #e05656; box-shadow: 0 0 6px rgba(224,86,86,.6); }
+      .mb-cat.hc-badge.amber::before { background: #e0b457; box-shadow: 0 0 6px rgba(224,180,87,.6); }
+      .tab.hc-badge .tab-label::after { content: ''; display: inline-block; width: 6px; height: 6px; border-radius: 50%; margin-left: 6px;
+          vertical-align: middle; background: #e05656; }
+      .tab.hc-badge.amber .tab-label::after { background: #e0b457; }`);
+    el.classList.add('hc-badge');
+    el.classList.toggle('amber', level === 'amber');
+  }
   function mbCatEntries(catId) {
     const out = [], emitted = {};
     for (const t of allTabs()) {
@@ -165,12 +187,14 @@
     btn.classList.add('open');
     const dd = document.createElement('div');
     dd.id = 'mbdrop';
+    const hcLevel = mbHealthLevel();
     for (const e of mbCatEntries(catId)) {
       const w = e.win, target = e.target;
       const b = document.createElement('button');
       b.className = 'tab' + ((w && !w.min && !w.rolled && target && w.tab === target.id) ? ' is-active' : '');
       b.innerHTML = '<span class="tab-label"></span>' + (w ? '<span class="tab-on"></span>' : '');
       b.querySelector('.tab-label').textContent = e.label;
+      if (hcLevel && e.ids && e.ids.indexOf('health') >= 0) mbBadge(b, hcLevel);
       b.addEventListener('click', () => mbActivate(e));
       dd.appendChild(b);
     }
@@ -239,12 +263,14 @@
       const t = allTabs().find(x => x.id === id);   // every docked tab, not just the shown one
       if (t) openCats.add(t.cat || 'General');
     }
+    const hcLevel = mbHealthLevel(), hcCat = hcLevel ? mbHealthCat() : '';
     for (const c of railCategories()) {
       const b = document.createElement('button');
       b.className = 'mb-cat' + (openCats.has(c.id) ? ' has-open' : '');
       b.title = c.id;
       b.dataset.cat = c.id;
       b.textContent = c.id;          // a legible word beats a 17px line glyph
+      if (hcCat && c.id === hcCat) { mbBadge(b, hcLevel); b.title = c.id + ': the health check found something to look at'; }
       b.addEventListener('click', () => {
         if (wm.mbDrop === c.id) { closeMbDrop(); return; }
         const es = mbCatEntries(c.id);

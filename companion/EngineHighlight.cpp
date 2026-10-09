@@ -1,11 +1,14 @@
 #include "EngineHighlight.h"
 #include "Signatures.h"
+#include "EngineOps.h"
+#include "CodeFind.h"
 
 #include <windows.h>
 #include <cstring>
 #include <cstdarg>
 #include <cstdio>
 #include <mutex>
+#include <string>
 
 namespace rtx::enginehl {
 namespace {
@@ -41,6 +44,7 @@ constexpr std::size_t kCategoryStride = 16, kCategoryWidth = 1, kCategoryColour 
 constexpr std::uint8_t kModeOutline = 0, kModeOff = 3, kModeNone = 0xFF;
 
 std::mutex g_logMu; char g_log[600] = {};
+char g_check[600] = {};                 // the highlight check line, taken before the log (under g_logMu)
 void Say(const char* fmt, ...) {
     std::lock_guard<std::mutex> lk(g_logMu);
     std::size_t used = std::strlen(g_log);
@@ -48,6 +52,13 @@ void Say(const char* fmt, ...) {
     va_list ap; va_start(ap, fmt);
     std::vsnprintf(g_log + used, sizeof(g_log) - used, fmt, ap);
     va_end(ap);
+}
+// Boot record check line (grammar in Signatures.h).
+void SayCheck(const char* status, const char* kind, const char* exp, const char* got, const char* detail) {
+    std::lock_guard<std::mutex> lk(g_logMu);
+    std::snprintf(g_check, sizeof(g_check), "check: highlight %s kind=%s exp=%s got=%s features=%s need=- ; %s", status,
+                  kind && kind[0] ? kind : "-", exp && exp[0] ? exp : "-", got && got[0] ? got : "-",
+                  "Native outlines|Native outlines: colours and modes", detail);
 }
 
 Status        g_status = kUnknown;
@@ -118,6 +129,18 @@ std::uint8_t* RipTarget(const std::uint8_t* match, std::size_t dispAt, std::size
     return const_cast<std::uint8_t*>(match) + insnEnd + disp;
 }
 
+// The eight category records read as the table: modes 0..3, colours three floats in 0..1.
+std::uint8_t* g_tableRefused = nullptr;   // a hit that did not read as the table
+bool TableReads(const std::uint8_t* table) {
+    for (int c = 0; c < 8; ++c) {
+        if (table[c * kCategoryStride] > 3) return false;
+        float col[3];
+        std::memcpy(col, table + c * kCategoryStride + kCategoryColour, sizeof(col));
+        for (float v : col) if (!(v >= 0.0f && v <= 1.0f)) return false;
+    }
+    return true;
+}
+
 void Resolve() {
     g_status = kNotFound;
     Image im;
@@ -144,16 +167,71 @@ void Resolve() {
         Say("outline: colour table at exe+0x%llx is not where writable data is", (unsigned long long)(table - im.base));
         return;
     }
-    for (int c = 0; c < 8; ++c)
-        if (table[c * kCategoryStride] > 3) {                    // modes are 0..3
-            Say("outline: colour table at exe+0x%llx refused, category %d mode %u is not 0 to 3 (modes %u %u %u %u %u %u %u %u)",
-                (unsigned long long)(table - im.base), c, table[c * kCategoryStride],
-                table[0], table[kCategoryStride], table[2 * kCategoryStride], table[3 * kCategoryStride],
-                table[4 * kCategoryStride], table[5 * kCategoryStride], table[6 * kCategoryStride], table[7 * kCategoryStride]);
-            return;
-        }
+    if (!TableReads(table)) {
+        Say("outline: colour table at exe+0x%llx refused, modes %u %u %u %u %u %u %u %u (0 to 3 and colours 0..1 expected)",
+            (unsigned long long)(table - im.base),
+            table[0], table[kCategoryStride], table[2 * kCategoryStride], table[3 * kCategoryStride],
+            table[4 * kCategoryStride], table[5 * kCategoryStride], table[6 * kCategoryStride], table[7 * kCategoryStride]);
+        g_tableRefused = table;
+        return;
+    }
     g_table = table;
     Say("outline: colour table at exe+0x%llx accepted", (unsigned long long)(table - im.base));
+}
+
+// The anchor behind the table: the handler of the op that sets a category's mode names the table
+// with its first lea into writable data. Compared once the op table is ready (or given up after a
+// minute), and the check line written then; a table the signature missed is adopted from the op.
+bool g_checkDone = false;
+ULONGLONG g_checkFrom = 0;
+void AnchorCheck() {
+    if (g_checkDone) return;
+    if (!g_checkFrom) g_checkFrom = GetTickCount64();
+    const bool ready = rtx::engineops::Ready();
+    if (!ready && GetTickCount64() - g_checkFrom < 60000) return;
+    g_checkDone = true;
+    Image im;
+    if (!OpenImage(im)) return;
+    char exp[24], got[24], detail[400];
+    std::snprintf(exp, sizeof(exp), "0x%llx", (unsigned long long)(g_table ? g_table - im.base : 0));
+    if (g_status != kActive) {
+        std::snprintf(got, sizeof(got), "-");
+        SayCheck("FAIL", "gone", exp, got, "GONE: the loc pass outline switch was not recognised in this exe; native outlines off");
+        return;
+    }
+    const void* h = ready ? rtx::engineops::Handler("HIGHLIGHT_SET_CATEGORY_MODE") : nullptr;
+    std::uint64_t opTable = 0;
+    if (h) {
+        rtx::codefind::Image cim;
+        if (rtx::codefind::OpenImage(reinterpret_cast<std::uint64_t>(im.base), reinterpret_cast<std::uint64_t>(im.base), cim))
+            opTable = rtx::codefind::LeaIntoData(cim, reinterpret_cast<std::uint64_t>(h), 0x80);
+    }
+    std::snprintf(got, sizeof(got), "0x%llx", (unsigned long long)(opTable ? opTable - reinterpret_cast<std::uint64_t>(im.base) : (g_table ? g_table - im.base : 0)));
+    if (!g_table && opTable) {
+        std::uint8_t* table = reinterpret_cast<std::uint8_t*>(opTable);
+        if (InWritableData(im, table, 8 * kCategoryStride) && TableReads(table)) {
+            g_table = table;
+            std::snprintf(detail, sizeof(detail), "MOVED: colour table at 0x%llx named by op HIGHLIGHT_SET_CATEGORY_MODE, the signature missed%s; adopted",
+                          (unsigned long long)(opTable - reinterpret_cast<std::uint64_t>(im.base)), g_tableRefused ? " (its hit was refused)" : "");
+            SayCheck("OK", "moved", exp, got, detail);
+        } else {
+            std::snprintf(detail, sizeof(detail), "FORMAT: op HIGHLIGHT_SET_CATEGORY_MODE names 0x%llx, which does not read as the category table; colours and modes off, the switch stays",
+                          (unsigned long long)(opTable - reinterpret_cast<std::uint64_t>(im.base)));
+            SayCheck("FAIL", "format", exp, got, detail);
+        }
+        return;
+    }
+    if (g_table && opTable && opTable != reinterpret_cast<std::uint64_t>(g_table)) {
+        std::snprintf(detail, sizeof(detail), "MOVED: op HIGHLIGHT_SET_CATEGORY_MODE names the table at 0x%llx, the signature 0x%llx; colours and modes off, the switch stays",
+                      (unsigned long long)(opTable - reinterpret_cast<std::uint64_t>(im.base)), (unsigned long long)(g_table - im.base));
+        g_table = nullptr;
+        SayCheck("FAIL", "moved", exp, got, detail);
+        return;
+    }
+    std::snprintf(detail, sizeof(detail), "switch at 0x%llx (the game had it %u)%s%s", (unsigned long long)(g_byte - im.base), (unsigned)g_original,
+                  g_table ? ", colour table: 8 categories, modes 0..3, colours 0..1" : (g_tableRefused ? ", colour table refused: the game's own colours stay" : ", no colour table: the game's own colours stay"),
+                  opTable ? "; op HIGHLIGHT_SET_CATEGORY_MODE names the same table" : ready ? "; the op name is not in this build's table, anchor not compared" : "; op table not ready within a minute, anchor not compared");
+    SayCheck(g_table ? "OK" : "FAIL", g_table ? "" : "format", exp, got, g_table ? detail : (std::string("FORMAT: ") + detail).c_str());
 }
 
 float* Colour(int category) {
@@ -273,6 +351,7 @@ void ApplyScale(int category, std::int32_t scale) {
 
 Status Set(bool on, const std::uint32_t* rgb, const std::int32_t* scale, const std::int32_t* mode) {
     if (g_status == kUnknown) Resolve();
+    AnchorCheck();
     if (g_status != kActive) return g_status;
     const std::uint8_t want = on ? 1 : g_original;
     const std::uint8_t had = *g_byte;
@@ -314,7 +393,9 @@ Status Set(bool on, const std::uint32_t* rgb, const std::int32_t* scale, const s
 
 bool TakeLog(char* out, std::size_t cap) {
     std::lock_guard<std::mutex> lk(g_logMu);
-    if (!g_log[0] || cap == 0) return false;
+    if (cap == 0) return false;
+    if (g_check[0]) { std::snprintf(out, cap, "%s", g_check); g_check[0] = 0; return true; }   // one check line per take
+    if (!g_log[0]) return false;
     std::snprintf(out, cap, "%s", g_log);
     g_log[0] = 0;
     return true;

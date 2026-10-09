@@ -3,7 +3,7 @@
 namespace rtx::cache {
 
 int InputStream::ReadByte() {
-    if (offset_ >= (int)buf_.size()) return 0;
+    if (offset_ >= (int)buf_.size()) { ++overrun_; return 0; }
     return buf_[offset_++];
 }
 
@@ -62,26 +62,26 @@ std::string InputStream::ReadString() {
 }
 
 int InputStream::ReadBigSmart() {
-    if (offset_ >= (int)buf_.size()) return -1;
+    if (offset_ >= (int)buf_.size()) { ++overrun_; return -1; }
     if (buf_[offset_] & 0x80) return (int)((unsigned)ReadInt() & 0x7FFFFFFFu);
     int v = ReadUnsignedShort();
     return (v == 0x7FFF) ? -1 : v;
 }
 
 int InputStream::ReadUnsignedSmart() {
-    if (offset_ >= (int)buf_.size()) return 0;
+    if (offset_ >= (int)buf_.size()) { ++overrun_; return 0; }
     if ((buf_[offset_] & 0xff) >= 128) return ReadUnsignedShort() - 0x8000;
     return ReadUnsignedByte();
 }
 
 int InputStream::ReadSignedSmart() {
-    if (offset_ >= (int)buf_.size()) return 0;
+    if (offset_ >= (int)buf_.size()) { ++overrun_; return 0; }
     if ((buf_[offset_] & 0xff) < 128) return ReadUnsignedByte() - 64;
     return ReadUnsignedShort() - 0xC000;
 }
 
 int InputStream::ReadUnsignedShortSmart() {
-    if (offset_ >= (int)buf_.size()) return 0;
+    if (offset_ >= (int)buf_.size()) { ++overrun_; return 0; }
     if ((buf_[offset_] & 0xff) < 128) return ReadUnsignedByte();
     return ReadUnsignedShort() - 0x8000;
 }

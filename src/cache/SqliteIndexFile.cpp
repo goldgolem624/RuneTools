@@ -233,10 +233,20 @@ SqliteIndexFile::ReadFile(int archive_id, int file_id) {
             slot.retry_at = now + kMissingRowRetry;
             return {};
         }
-        auto decompressed = Decompress(compressed);
-        if (decompressed.empty()) { slot.state = SlotState::Failed; ++failed_count_; return {}; }
+        std::string why;
+        auto decompressed = Decompress(compressed, &why);
+        if (decompressed.empty()) {
+            slot.state = SlotState::Failed; ++failed_count_;
+            if (first_fail_.empty()) first_fail_ = (why.empty() ? std::string("empty payload") : why) + " at archive " + std::to_string(archive_id);
+            return {};
+        }
         const auto& a = ref_table_->entries()[archive_id];
-        auto files = SplitArchive(decompressed, a.valid_file_ids, a.largest_file_id);
+        auto files = SplitArchive(decompressed, a.valid_file_ids, a.largest_file_id, &why);
+        if (files.empty() && !why.empty()) {
+            slot.state = SlotState::Failed; ++failed_count_;
+            if (first_fail_.empty()) first_fail_ = why + " at archive " + std::to_string(archive_id);
+            return {};
+        }
         std::size_t bytes = 0;
         for (const auto& f : files) bytes += f.size();
         EvictToBudget(bytes);
@@ -258,6 +268,11 @@ std::size_t SqliteIndexFile::CachedBytes() const {
 int SqliteIndexFile::FailedArchives() const {
     std::lock_guard<std::mutex> lk(archive_cache_mu_);
     return failed_count_;
+}
+
+std::string SqliteIndexFile::FirstFailure() const {
+    std::lock_guard<std::mutex> lk(archive_cache_mu_);
+    return first_fail_;
 }
 
 }  // namespace rtx::cache

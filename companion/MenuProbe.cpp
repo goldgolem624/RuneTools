@@ -4,6 +4,7 @@
 #include "SceneOffsets.h"
 #include "MenuProbe.h"
 #include "Signatures.h"
+#include "MainDataOffsets.h"
 #include "MenuShare.h"
 
 #include <windows.h>
@@ -32,6 +33,25 @@ std::uint32_t g_lastSig   = 0;
 int           g_dumps     = 0;
 
 constexpr int kMaxDumps = 12;
+
+// Layout self-check (boot record line `check: menu-record`): what the signature hits named against
+// the compiled displacements, then whether the live records read as the layout this file knows.
+// Until the live records pass, nothing is written into the menu (no reorder, no left-click lift).
+std::mutex    g_checkMu;
+char          g_check[700] = {};
+bool          g_recordOk = false;           // the live records decoded on the last judged menus
+bool          g_recordJudged = false;       // at least ten rows seen
+std::uint32_t g_rowsSeen = 0, g_rowsVerb = 0, g_rowsTag = 0, g_menusSeen = 0;
+std::int32_t  g_lastBadOrd = -1;
+char          g_static[400] = {};           // what the hits named
+const char*   g_staticKind = "";            // "moved" when a hit named another displacement than compiled
+std::uint32_t g_tgtBegin = rtx::sig::kMenuTargetsBegin, g_tgtEnd = rtx::sig::kMenuTargetsEnd;   // the hover-target vector, from the menu-clear hit
+void SayCheck(const char* status, const char* kind, const char* exp, const char* got, const char* need, const char* detail) {
+    std::lock_guard<std::mutex> lk(g_checkMu);
+    std::snprintf(g_check, sizeof(g_check), "check: menu-record %s kind=%s exp=%s got=%s features=%s need=%s ; %s", status,
+                  kind && kind[0] ? kind : "-", exp && exp[0] ? exp : "-", got && got[0] ? got : "-",
+                  "Menu swaps|Menu swaps: reordering|Menu swaps: left-click option|Menu panel", need && need[0] ? need : "-", detail);
+}
 
 constexpr std::uint64_t kTargetStride = 0x2E8;
 struct Vec { std::uint64_t begin, end; std::uint64_t stride; const char* name; };
@@ -243,7 +263,7 @@ bool EntryVec(std::uint64_t mgr, std::uint64_t& begin, std::uint64_t& count) {
 
 void HoverDump(std::uint64_t mgr) {
     std::uint64_t b = 0, e = 0;
-    if (!Rd(mgr + 0x1380, &b, 8) || !Rd(mgr + 0x1388, &e, 8)) return;
+    if (!Rd(mgr + g_tgtBegin, &b, 8) || !Rd(mgr + g_tgtEnd, &e, 8)) return;
     if (!b || e <= b || (e - b) % kTargetStride) return;
     const std::uint64_t n = (e - b) / kTargetStride;
 
@@ -323,7 +343,7 @@ void Publish(std::uint64_t mgr) {
     {
         std::uint64_t tb = 0, te = 0;
         std::uint32_t h = 0;
-        if (Rd(mgr + 0x1380, &tb, 8) && Rd(mgr + 0x1388, &te, 8) && tb && te > tb) {
+        if (Rd(mgr + g_tgtBegin, &tb, 8) && Rd(mgr + g_tgtEnd, &te, 8) && tb && te > tb) {
             Rd(tb, &h, 4);
         }
         g_share->handle = h;
@@ -475,7 +495,7 @@ int LaneCount(std::uint64_t mgr, const Vec& v, std::uint64_t& begin) {
 // Never write the hover slot mgr+0x13F8 directly: the snapshot rewrites 0x13f0/0x13f8 as a pair,
 // and reordering before it runs is sufficient.
 void ApplyOrder(std::uint64_t mgr) {
-    if (!g_share) return;
+    if (!g_share || !g_recordOk) return;
     ++g_share->diag[2];
     if (!g_share->pinCount) return;
     ++g_share->diag[3];
@@ -662,6 +682,7 @@ void PromotePinnedEntry(std::uint64_t mgr) {
     g_share->promoSource = rtx::menu::kPromoSrcNone;
     g_share->promoVerb[0] = 0;
     if (!g_share->pinCount) return;
+    if (!g_recordOk) { g_share->promoState = rtx::menu::kPromoUnverified; return; }
     std::uint64_t begin = 0, count = 0;
     if (!EntryVec(mgr, begin, count) || count < 2) return;
 
@@ -783,7 +804,7 @@ void LogLaneTops(std::uint64_t mgr, const char* when) {
     who[0] = 0;
     {
         std::uint64_t tb = 0, te = 0;
-        if (Rd(mgr + 0x1380, &tb, 8) && Rd(mgr + 0x1388, &te, 8) && tb && te > tb) {
+        if (Rd(mgr + g_tgtBegin, &tb, 8) && Rd(mgr + g_tgtEnd, &te, 8) && tb && te > tb) {
             bool hp = false;
             if (ReadEastl(tb + 0x80, who, sizeof(who), &hp) <= 0) who[0] = 0;
         }
@@ -921,7 +942,7 @@ void ResolveAssign(std::uint64_t snap) {
 // Moves the rule's top-ranked row to the top of +0x90 (a permutation of whole records, refcount
 // neutral). Returns true when a row moved.
 bool RotateRuleTop(std::uint64_t mgr) {
-    if (!g_share || !g_share->pinCount) return false;
+    if (!g_share || !g_share->pinCount || !g_recordOk) return false;
     std::uint64_t begin = 0, e = 0;
     if (!Rd(mgr + 0x90, &begin, 8) || !Rd(mgr + 0x98, &e, 8) || !begin || e <= begin) return false;
     const std::uint64_t span = e - begin;
@@ -976,7 +997,7 @@ void __fastcall Hook_Assign13e0(std::uint64_t slot, std::uint64_t src) {
 // runs, so the site is never mid-execution while its rel32 is rewritten).
 void PatchAssignSite() {
     static bool tried = false;
-    if (tried || g_sitePatched || !g_siteCall || !g_assign) return;
+    if (tried || g_sitePatched || !g_siteCall || !g_assign || !g_recordOk) return;
     tried = true;
     SYSTEM_INFO si;
     GetSystemInfo(&si);
@@ -1021,6 +1042,62 @@ void UnpatchAssignSite() {
     // The trampoline stays allocated: a game thread could still be returning through it.
 }
 
+// The live records against the layout this file knows: every row with a live refcount decodes a
+// verb through its control block, and its display object carries a class tag in the image whose
+// ordinal is an entity type. Judged over the first ten rows and again as menus come; a layout that
+// fails keeps every write off.
+void RecordCheck(std::uint64_t mgr) {
+    std::uint64_t begin = 0, count = 0;
+    if (!EntryVec(mgr, begin, count) || count < 2) return;
+    ++g_menusSeen;
+    for (std::uint64_t i = 0; i < count; ++i) {
+        const std::uint64_t rec = begin + i * kRecSize;
+        std::uint64_t obj = 0;
+        std::uint32_t hdr[4] = { 0, 0, 0, 0 };
+        if (!Rd(rec, &obj, 8) || !obj || !Rd(obj, hdr, sizeof(hdr)) || !hdr[2]) continue;   // mid-teardown rows are not judged
+        ++g_rowsSeen;
+        char verb[rtx::menu::kVerbLen];
+        bool hp = false;
+        if (ReadEastl(obj + kObjVerb, verb, sizeof(verb), &hp) > 0) ++g_rowsVerb;
+        std::uint64_t tag = 0;
+        std::int32_t prio = 0, ord = -1;
+        if (EntryTag(rec, tag, prio) && tag > g_base && tag < g_modEnd && prio >= 0 && prio < 5000 && Rd(tag + 0x44, &ord, 4) && ord >= 0 && ord < 32) ++g_rowsTag;
+        else g_lastBadOrd = ord;
+    }
+    if (g_rowsSeen < 10) return;
+    const bool ok = g_rowsVerb * 20 >= g_rowsSeen * 19 && g_rowsTag * 20 >= g_rowsSeen * 19;
+    const bool changed = !g_recordJudged || ok != g_recordOk;
+    g_recordJudged = true;
+    g_recordOk = ok;
+    if (!changed) return;
+    char exp[24], got[32], detail[600];
+    std::snprintf(exp, sizeof(exp), "%u", g_rowsSeen);
+    std::snprintf(got, sizeof(got), "%u/%u", g_rowsVerb, g_rowsTag);
+    if (ok) {
+        std::snprintf(detail, sizeof(detail), "%s%u rows over %u menus: verbs at control block +0x38 readable, class tags in the image with ordinals 0..31; %s",
+                      g_staticKind[0] ? "MOVED: " : "", g_rowsSeen, g_menusSeen, g_static);
+        SayCheck("OK", g_staticKind, exp, got, "", detail);
+    } else {
+        std::snprintf(detail, sizeof(detail), "FORMAT: %u of %u rows decode a verb, %u carry a class tag (last ordinal read %d); reorder and left-click lift off; %s",
+                      g_rowsVerb, g_rowsSeen, g_rowsTag, g_lastBadOrd, g_static);
+        SayCheck("FAIL", "format", exp, got, "", detail);
+    }
+}
+
+// The displacements the hits carry, read before Detours patches anything: hover-target vector
+// begin and end, snapshot counter and base, the game state field, the language index field.
+bool ReadHitDisps(std::uint64_t clearHit, std::uint64_t snapHit, std::uint64_t execHit, std::uint64_t init, std::uint32_t d[6]) {
+    __try {
+        d[0] = clearHit ? rtx::sig::HitDisp((const unsigned char*)clearHit, rtx::sig::kMenuClearBeginAt) : 0;
+        d[1] = clearHit ? rtx::sig::HitDisp((const unsigned char*)clearHit, rtx::sig::kMenuClearEndAt) : 0;
+        d[2] = snapHit ? rtx::sig::HitDisp((const unsigned char*)snapHit, rtx::sig::kMenuSnapCounterAt) : 0;
+        d[3] = snapHit ? rtx::sig::HitDisp((const unsigned char*)snapHit, rtx::sig::kMenuSnapBaseAt) : 0;
+        d[4] = execHit ? rtx::sig::HitDisp((const unsigned char*)execHit, rtx::sig::kMenuExecStatusAt) : 0;
+        d[5] = init ? rtx::sig::HitDisp((const unsigned char*)init, rtx::sig::kMenuInitLanguageAt) : 0;
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
+
 void __fastcall Detour_Init(std::uint64_t mgr) {
     g_mgr = mgr;
     g_origInit(mgr);
@@ -1035,6 +1112,7 @@ Snap_t g_origSnap = nullptr;
 std::uint64_t __fastcall Detour_Snap(std::uint64_t mgr) {
     if (mgr) {
         g_mgr = mgr;
+        RecordCheck(mgr);            // the layout gate: nothing below writes until the records pass
         ApplyOrder(mgr);             // before the original: it is about to read the top record
         PromotePinnedEntry(mgr);
         LogLaneTops(mgr, "snap");
@@ -1119,10 +1197,13 @@ bool Install() {
 
     const std::uint64_t init  = Scan(kInit,  kInitMask,  sizeof(kInit));
     // clear, snapshot and executor are matched inside their bodies: hook the functions holding them
-    const std::uint64_t clear = rtx::codefind::FunctionStart(g_base, Scan(kClear, kClearMask, sizeof(kClear)));
+    const std::uint64_t clearHit = Scan(kClear, kClearMask, sizeof(kClear));
+    const std::uint64_t snapHit  = Scan(kSnap,  kSnapMask,  sizeof(kSnap));
+    const std::uint64_t execHit  = Scan(kExec,  kExecMask,  sizeof(kExec));
+    const std::uint64_t clear = rtx::codefind::FunctionStart(g_base, clearHit);
     const std::uint64_t build = Scan(kBuild, kBuildMask, sizeof(kBuild));
-    const std::uint64_t snap  = rtx::codefind::FunctionStart(g_base, Scan(kSnap,  kSnapMask,  sizeof(kSnap)));
-    const std::uint64_t exec  = rtx::codefind::FunctionStart(g_base, Scan(kExec,  kExecMask,  sizeof(kExec)));
+    const std::uint64_t snap  = rtx::codefind::FunctionStart(g_base, snapHit);
+    const std::uint64_t exec  = rtx::codefind::FunctionStart(g_base, execHit);
     Log("=== RuneToolsX menu probe ===");
     Log("string-init: %s", init  ? "found" : "NOT FOUND");
     Log("clear()    : %s", clear ? "found" : "NOT FOUND");
@@ -1133,7 +1214,28 @@ bool Install() {
     if (build) Log("  build rva 0x%llx", (unsigned long long)(build - g_base));
     if (!init && !clear) {
         Log("Neither pattern matched - the game build moved them. Nothing hooked.");
+        SayCheck("FAIL", "gone", "hits", "0", "", "GONE: neither the menu string-init nor the clear() pattern was found; menu swaps and the menu panel off");
         return false;
+    }
+    // The displacements the hits carry against the compiled ones (read before Detours patches
+    // anything): the hover-target vector is taken from its hit, the rest is reported.
+    {
+        std::uint32_t d[6] = {};
+        ReadHitDisps(clearHit, snapHit, execHit, init, d);
+        char s[400]; std::size_t at = 0; bool moved = false;
+        auto note = [&](const char* what, std::uint32_t hit, std::uint32_t compiled) {
+            if (!hit || hit == compiled) return;
+            moved = true;
+            if (at < sizeof(s) - 48) at += (std::size_t)std::snprintf(s + at, sizeof(s) - at, "%s%s 0x%x in the hit, compiled 0x%x", at ? "; " : "", what, hit, compiled);
+        };
+        note("hover-target vector", d[0], rtx::sig::kMenuTargetsBegin);
+        if (d[0] && d[1] == d[0] + 8 && d[0] < 0x4000) { g_tgtBegin = d[0]; g_tgtEnd = d[1]; }
+        note("snapshot counter", d[2], rtx::sig::kMenuSnapCounter);
+        note("snapshot base", d[3], rtx::sig::kMenuSnapBase);
+        note("game state field", d[4], rtx::md::kStatus);
+        note("language index field", d[5], rtx::md::kLanguage);
+        g_staticKind = moved ? "moved" : "";
+        std::snprintf(g_static, sizeof(g_static), "%s", moved ? s : "the hits name the compiled displacements");
     }
 
     DetourTransactionBegin();
@@ -1148,9 +1250,21 @@ bool Install() {
     if (DetourTransactionCommit() != NO_ERROR) {
         g_origInit = nullptr; g_origClear = nullptr;
         Log("Detour commit failed - nothing hooked.");
+        SayCheck("FAIL", "gone", "hooks", "0", "", "GONE: the menu hooks did not attach; menu swaps and the menu panel off");
         return false;
     }
     g_installed = true;
+    if (g_assign && g_siteSlot != rtx::sig::kMenuLeftClickSlot) {
+        const std::size_t at = std::strlen(g_static);
+        if (at < sizeof(g_static) - 64) std::snprintf(g_static + at, sizeof(g_static) - at, "%sleft-click slot 0x%x in the snapshot, compiled 0x%x (the snapshot's in use)", g_staticKind[0] ? "; " : "", g_siteSlot, rtx::sig::kMenuLeftClickSlot);
+        g_staticKind = "moved";
+    }
+    {
+        char d[520];
+        std::snprintf(d, sizeof(d), "%s%s%s; the live records are judged on the first menus", g_staticKind[0] ? "MOVED: " : "", g_static,
+                      !snap ? "; no snapshot routine: left-click lift off" : !g_assign ? "; no slot-assign helper: left-click lift off" : "");
+        SayCheck("SKIP", g_staticKind, "rows", "-", "open a right-click menu", d);
+    }
     g_share = MapShare();
     if (g_share) {
         g_share->magic = rtx::menu::kMagic;
@@ -1198,6 +1312,14 @@ void Rebind() {
 
     g_share = fresh;                       // publish last, fully built
     Log("session: menu share rebound");
+}
+
+bool TakeLog(char* out, std::size_t cap) {
+    std::lock_guard<std::mutex> lk(g_checkMu);
+    if (!g_check[0] || cap == 0) return false;
+    std::snprintf(out, cap, "%s", g_check);
+    g_check[0] = 0;
+    return true;
 }
 
 void Poll() {
