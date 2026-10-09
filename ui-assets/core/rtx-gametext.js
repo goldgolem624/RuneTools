@@ -364,7 +364,7 @@
     var int4 = 0;
     var int5 = (-1 | 0);
     var int6 = R.enumCount(681);
-    while (((int1 = (int1 + (1)) | 0) <= int6)) {
+    while (R.loop() && (((int1 = (int1 + (1)) | 0) <= int6))) {
       int5 = R.enumValue(0, 17, 681, int1);
       if (R.eq(R.call(951, [int0, int5]), 1)) {
         int4 = R.call(952, [int0, int5]);
@@ -1139,7 +1139,7 @@
     var int1 = 0;
     var int2 = (-1 | 0);
     int1 = R.enumCount(17159);
-    while ((int0 < int1)) {
+    while (R.loop() && ((int0 < int1))) {
       int2 = R.enumValue(0, 33, 17159, int0);
       if ((R.call(18309, [int2]) > 0)) {
         return 1;
@@ -3833,7 +3833,7 @@
     var string3 = "";
     var int6 = (-1 | 0);
     var int7 = R.enumCount(681);
-    while (((int2 = (int2 + (1)) | 0) <= int7)) {
+    while (R.loop() && (((int2 = (int2 + (1)) | 0) <= int7))) {
       int6 = R.enumValue(0, 17, 681, int2);
       if (R.eq(R.call(951, [int0, int6]), 0)) {
         if (R.eq(int1, 1)) {
@@ -8007,7 +8007,7 @@
     var int0 = 0;
     var int1 = R.enumCount(15289);
     var int2 = (-1 | 0);
-    while ((int0 < int1)) {
+    while (R.loop() && ((int0 < int1))) {
       int2 = R.enumValue(0, 33, 15289, int0);
       if ((R.call(6646, [int2]) > 0)) {
         return 1;
@@ -8079,7 +8079,7 @@
   S[7167] = function (int0, int1) {
     var int2 = 1;
     var int3 = R.enumValue(0, 17, 681, int2);
-    while ((!R.eq(int3, (-1 | 0)))) {
+    while (R.loop() && ((!R.eq(int3, (-1 | 0))))) {
       if ((R.statBase(int3) < int0)) {
         if ((!R.eq(int3, 26))) {
           return 0;
@@ -8589,7 +8589,7 @@
       }
     }
     if (((!R.eq(int3, 2)) && (!R.eq(int3, 3)))) {
-      while (((int1 > 0) && R.eq(R.mod(int0, 10), 0))) {
+      while (R.loop() && (((int1 > 0) && R.eq(R.mod(int0, 10), 0)))) {
         int1 = ((int1) - (1) | 0);
         int0 = R.idiv(int0, 10);
       }
@@ -8601,12 +8601,12 @@
     if ((int1 > 0)) {
       if (((!R.eq(int3, 2)) && (!R.eq(int3, 3)))) {
         if ((!R.eq(int6, 0))) {
-          while ((int7 > 0)) {
+          while (R.loop() && ((int7 > 0))) {
             int7 = R.idiv(int7, 10);
             int8 = ((int8) + (1) | 0);
           }
           int8 = ((int1) - (int8) | 0);
-          while ((int8 > 0)) {
+          while (R.loop() && ((int8 > 0))) {
             string0 = R.cat(string0, "0");
             int8 = ((int8) - (1) | 0);
           }
@@ -8615,13 +8615,13 @@
         if (R.eq(int6, 0)) {
           int8 = ((int8) + (1) | 0);
         } else {
-          while ((int7 > 0)) {
+          while (R.loop() && ((int7 > 0))) {
             int7 = R.idiv(int7, 10);
             int8 = ((int8) + (1) | 0);
           }
         }
         int8 = ((int1) - (int8) | 0);
-        while ((int8 > 0)) {
+        while (R.loop() && ((int8 > 0))) {
           string0 = R.cat(string0, "0");
           int8 = ((int8) - (1) | 0);
         }
@@ -9279,7 +9279,7 @@
     var int3 = (-1 | 0);
     var int4 = (-1 | 0);
     var int5 = (-1 | 0);
-    while (((int5 = (int5 + (1)) | 0) < int1)) {
+    while (R.loop() && (((int5 = (int5 + (1)) | 0) < int1))) {
       int2 = R.invObj(94, int5);
       if ((!R.eq(int2, (-1 | 0)))) {
         int3 = R.call(7241, [int2]);
@@ -9478,7 +9478,7 @@
     var int8 = 0;
     var int9 = R.itemParam(int0, 8605);
     var int10 = (-1 | 0);
-    while (((int10 = (int10 + (1)) | 0) < int9)) {
+    while (R.loop() && (((int10 = (int10 + (1)) | 0) < int9))) {
       if ((R.call(9693, [int1, int2, int10]) > 0)) {
         int8 = ((int8) + (1) | 0);
       }
@@ -9500,7 +9500,7 @@
     var int17 = 0;
     var int18 = R.invVar(int1, int2, 50377);
     int10 = (-1 | 0);
-    while (((int10 = (int10 + (1)) | 0) < int9)) {
+    while (R.loop() && (((int10 = (int10 + (1)) | 0) < int9))) {
       [int16, int17] = R.call(9689, [int1, int2, int10]);
       if ((!R.eq(int16, (-1 | 0)))) {
         R.ifNoop(int4, 5, ((int5 = (int5 + (1)) | 0) - (1)));
@@ -9724,7 +9724,7 @@
     var int7 = R.itemParam(int0, 8605);
     var int8 = (-1 | 0);
     var int9 = (-1 | 0);
-    while (((int9 = (int9 + (1)) | 0) < int7)) {
+    while (R.loop() && (((int9 = (int9 + (1)) | 0) < int7))) {
       int8 = R.call(9692, [int1, int2, int9]);
       if ((!R.eq(int8, (-1 | 0)))) {
         var int6 = R.call(7235, [int3, int4, int5, int6, R.call(3509, [int8]), string0]);
@@ -10359,7 +10359,7 @@
     var int2 = 100;
     var int3 = 1;
     var int4 = 1;
-    while (((int4 <= int1) && (!R.eq(int3, 0)))) {
+    while (R.loop() && (((int4 <= int1) && (!R.eq(int3, 0))))) {
       switch (R.key(int4)) {
         case 1:
         {
@@ -12355,7 +12355,7 @@
       return (-1 | 0);
     }
     var int4 = (-1 | 0);
-    while ((int2 < int3)) {
+    while (R.loop() && ((int2 < int3))) {
       int4 = R.invObj(int0, int2);
       if (R.eq(int4, int1)) {
         return int2;
@@ -12523,7 +12523,7 @@
     if (R.eq(R.itemParam(int0, 6295), 1)) {
       int3 = 3;
     }
-    while ((int3 > 0)) {
+    while (R.loop() && ((int3 > 0))) {
       [int4, int5] = R.call(470, [int0, int3]);
       if (R.eq(int4, int1)) {
         if ((R.eq(int2, 1) && R.eq(int5, 0))) {
@@ -13456,7 +13456,7 @@
         case 63592:
         {
           int21 = R.enumCount(15320);
-          while ((int20 < int21)) {
+          while (R.loop() && ((int20 < int21))) {
             int10 = R.enumValue(0, 33, 15320, int20);
             int12 = R.call(7361, [int10]);
             R.ifNoop(int2, 5, ((int3 = (int3 + (1)) | 0) - (1)));
@@ -13466,7 +13466,7 @@
           }
           int20 = 0;
           int12 = ((int3) - (int23) | 0);
-          while ((int23 < int3)) {
+          while (R.loop() && ((int23 < int3))) {
             if (R.eq(R.ifNone(int2, ((int23 = (int23 + (1)) | 0) - (1))), 1)) {
               R.call(7229, [5, int12, int6, int20]);
               if (R.eq(R.mod(int20, 5), 4)) {
@@ -13486,7 +13486,7 @@
         {
           if (R.eq(R.call(6666, []), 1)) {
             int21 = R.enumCount(15289);
-            while ((int20 < int21)) {
+            while (R.loop() && ((int20 < int21))) {
               int10 = R.enumValue(0, 33, 15289, int20);
               int12 = R.call(6646, [int10]);
               if ((int12 > 0)) {
@@ -13498,7 +13498,7 @@
             }
             int20 = 0;
             int12 = ((int3) - (int23) | 0);
-            while ((int23 < int3)) {
+            while (R.loop() && ((int23 < int3))) {
               if (R.eq(R.ifNone(int2, ((int23 = (int23 + (1)) | 0) - (1))), 1)) {
                 R.call(7229, [5, int12, int6, int20]);
                 if (R.eq(R.mod(int20, 5), 4)) {
@@ -13519,7 +13519,7 @@
         {
           if (R.eq(R.call(21003, []), 1)) {
             int21 = R.enumCount(13250);
-            while ((int20 < int21)) {
+            while (R.loop() && ((int20 < int21))) {
               int10 = R.enumValue(0, 33, 13250, int20);
               int12 = R.call(21002, [int10]);
               if ((int12 > 0)) {
@@ -13531,7 +13531,7 @@
             }
             int20 = 0;
             int12 = ((int3) - (int23) | 0);
-            while ((int23 < int3)) {
+            while (R.loop() && ((int23 < int3))) {
               if (R.eq(R.ifNone(int2, ((int23 = (int23 + (1)) | 0) - (1))), 1)) {
                 R.call(7229, [5, int12, int6, int20]);
                 if (R.eq(R.mod(int20, 5), 4)) {
@@ -13551,7 +13551,7 @@
         case 63588:
         {
           if ((!R.eq(R.invFree(1012), R.invSize(1012)))) {
-            while ((int20 < 3)) {
+            while (R.loop() && ((int20 < 3))) {
               int10 = R.invObj(1012, int20);
               if ((!R.eq(int10, (-1 | 0)))) {
                 int12 = R.invNum(1012, int20);
@@ -13565,7 +13565,7 @@
             }
             int20 = 0;
             int12 = ((int3) - (int23) | 0);
-            while ((int23 < int3)) {
+            while (R.loop() && ((int23 < int3))) {
               if (R.eq(R.ifNone(int2, ((int23 = (int23 + (1)) | 0) - (1))), 1)) {
                 R.call(7229, [5, int12, int6, int20]);
                 if (R.eq(R.mod(int20, 5), 4)) {
@@ -13587,7 +13587,7 @@
           int21 = R.enumCount(14069);
           int22 = 0;
           int20 = (-1 | 0);
-          while (((int20 = (int20 + (1)) | 0) < int21)) {
+          while (R.loop() && (((int20 = (int20 + (1)) | 0) < int21))) {
             int10 = R.enumValue(0, 33, 14069, int20);
             int12 = R.call(14695, [int10]);
             if ((int12 > 0)) {
@@ -13601,7 +13601,7 @@
             int20 = 0;
             int9 = R.max(int9, Math.imul(R.min(4, int22), 36));
             int8 = Math.imul(32, ((1) + (R.idiv(((int22) - (1) | 0), 4)) | 0));
-            while ((int23 < int3)) {
+            while (R.loop() && ((int23 < int3))) {
               if (R.eq(R.ifNone(int2, ((int23 = (int23 + (1)) | 0) - (1))), 1)) {
                 R.call(7229, [4, ((int22) - (Math.imul(4, R.idiv(int20, int22))) | 0), int6, int20]);
                 int20 = ((int20) + (1) | 0);
@@ -13616,7 +13616,7 @@
           int21 = R.enumCount(16107);
           int22 = 0;
           int20 = (-1 | 0);
-          while (((int20 = (int20 + (1)) | 0) < int21)) {
+          while (R.loop() && (((int20 = (int20 + (1)) | 0) < int21))) {
             int10 = R.enumValue(0, 33, 16107, int20);
             int12 = R.invTotal(895, int10);
             if ((int12 > 0)) {
@@ -13630,7 +13630,7 @@
             int20 = 0;
             int9 = R.max(int9, ((Math.imul(R.min(6, int22), 36)) + (16) | 0));
             int8 = Math.imul(32, ((1) + (R.idiv(((int22) - (1) | 0), 6)) | 0));
-            while ((int23 < int3)) {
+            while (R.loop() && ((int23 < int3))) {
               if (R.eq(R.ifNone(int2, ((int23 = (int23 + (1)) | 0) - (1))), 1)) {
                 R.call(7229, [6, ((int22) - (Math.imul(6, R.idiv(int20, int22))) | 0), int6, int20]);
                 int20 = ((int20) + (1) | 0);
@@ -13646,7 +13646,7 @@
           int22 = 0;
           int20 = (-1 | 0);
           int12 = 1;
-          while (((int20 = (int20 + (1)) | 0) < int21)) {
+          while (R.loop() && (((int20 = (int20 + (1)) | 0) < int21))) {
             int10 = R.enumValue(0, 33, 8487, int20);
             if (R.eq(R.call(16377, [int10]), 1)) {
               R.ifNoop(int2, 5, ((int3 = (int3 + (1)) | 0) - (1)));
@@ -13659,7 +13659,7 @@
             int20 = 0;
             int9 = R.max(int9, ((Math.imul(R.min(6, int22), 36)) + (16) | 0));
             int8 = Math.imul(32, ((1) + (R.idiv(((int22) - (1) | 0), 6)) | 0));
-            while ((int23 < int3)) {
+            while (R.loop() && ((int23 < int3))) {
               if (R.eq(R.ifNone(int2, ((int23 = (int23 + (1)) | 0) - (1))), 1)) {
                 R.call(7229, [6, ((int22) - (Math.imul(6, R.idiv(int20, int22))) | 0), int6, int20]);
                 int20 = ((int20) + (1) | 0);
@@ -13774,7 +13774,7 @@
             {
               if (R.eq(R.call(2532, []), 1)) {
                 int21 = R.enumCount(17159);
-                while ((int20 < int21)) {
+                while (R.loop() && ((int20 < int21))) {
                   int10 = R.enumValue(0, 33, 17159, int20);
                   int12 = R.call(18309, [int10]);
                   if (((int12 > 0) && R.eq(R.call(2535, [int0, int10]), 1))) {
@@ -13786,7 +13786,7 @@
                 }
                 int20 = 0;
                 int12 = ((int3) - (int23) | 0);
-                while ((int23 < int3)) {
+                while (R.loop() && ((int23 < int3))) {
                   if (R.eq(R.ifNone(int2, ((int23 = (int23 + (1)) | 0) - (1))), 1)) {
                     switch (R.key(R.mod(R.min(int12, 4), 4))) {
                       case 1:
@@ -13885,7 +13885,7 @@
               int21 = R.enumCount(15971);
               int22 = 0;
               int20 = (-1 | 0);
-              while (((int20 = (int20 + (1)) | 0) < int21)) {
+              while (R.loop() && (((int20 = (int20 + (1)) | 0) < int21))) {
                 int10 = R.enumValue(0, 33, 15971, int20);
                 if (R.eq(int0, 59637)) {
                   if (((!R.eq(R.itemCategory(int10), 4707)) && R.eq(R.itemParam(int10, 9304), 1))) {
@@ -13907,7 +13907,7 @@
                 int20 = 0;
                 int9 = R.max(int9, Math.imul(R.min(5, int22), 36));
                 int8 = Math.imul(32, ((1) + (R.idiv(((int22) - (1) | 0), 5)) | 0));
-                while ((int23 < int3)) {
+                while (R.loop() && ((int23 < int3))) {
                   if (R.eq(R.ifNone(int2, ((int23 = (int23 + (1)) | 0) - (1))), 1)) {
                     R.call(7229, [5, ((int22) - (Math.imul(5, R.idiv(int20, int22))) | 0), int6, int20]);
                     int20 = ((int20) + (1) | 0);
@@ -13940,7 +13940,7 @@
               int21 = R.enumCount(17223);
               int22 = 0;
               int20 = (-1 | 0);
-              while (((int20 = (int20 + (1)) | 0) < int21)) {
+              while (R.loop() && (((int20 = (int20 + (1)) | 0) < int21))) {
                 int10 = R.enumValue(0, 33, 17223, int20);
                 int12 = R.invTotal(953, int10);
                 if ((int12 > 0)) {
@@ -13954,7 +13954,7 @@
                 int20 = 0;
                 int9 = R.max(int9, Math.imul(R.min(5, int22), 36));
                 int8 = 32;
-                while ((int23 < int3)) {
+                while (R.loop() && ((int23 < int3))) {
                   if (R.eq(R.ifNone(int2, ((int23 = (int23 + (1)) | 0) - (1))), 1)) {
                     R.call(7229, [5, ((int22) - (Math.imul(5, R.idiv(int20, int22))) | 0), int6, int20]);
                     int20 = ((int20) + (1) | 0);
@@ -15771,7 +15771,7 @@
     R.arrSet(1, 3, R.invVar(int1, int2, 30222));
     var int7 = 0;
     var string1 = "";
-    while ((int7 < 4)) {
+    while (R.loop() && ((int7 < 4))) {
       string1 = R.call(15936, [R.arrGet(0, int7), R.arrGet(1, int7)]);
       if ((!R.eq(R.strcmp(string1, ""), 0))) {
         var int6 = R.call(7235, [int3, int4, int5, int6, string1, string0]);
@@ -15827,7 +15827,7 @@
     if ((int5 < int1)) {
       return 0;
     }
-    while (((!R.eq(int4, 0)) && (int3 <= int2))) {
+    while (R.loop() && (((!R.eq(int4, 0)) && (int3 <= int2)))) {
       switch (R.key(int3)) {
         case 1:
         {
@@ -17944,7 +17944,7 @@
     }
     var int6 = (-1 | 0);
     var int7 = 0;
-    while (((int7 = (int7 + (1)) | 0) <= int1)) {
+    while (R.loop() && (((int7 = (int7 + (1)) | 0) <= int1))) {
       switch (R.key(int7)) {
         case 1:
         {
@@ -18253,7 +18253,7 @@
     var int1 = 0;
     var int2 = (-1 | 0);
     var int3 = (-1 | 0);
-    while ((int1 <= 7)) {
+    while (R.loop() && ((int1 <= 7))) {
       switch (R.key(int1)) {
         case 0:
         {
@@ -18328,7 +18328,7 @@
     var int9 = (-1 | 0);
     var int10 = R.invSize(int0);
     if ((!R.eq(int10, 0))) {
-      while ((int8 < int10)) {
+      while (R.loop() && ((int8 < int10))) {
         int9 = R.invObj(int0, int8);
         int7 = R.invNum(int0, int8);
         if ((int7 > 0)) {
@@ -18340,7 +18340,7 @@
       }
       int8 = 0;
       int7 = ((int4) - (int5) | 0);
-      while ((int5 < int4)) {
+      while (R.loop() && ((int5 < int4))) {
         if (R.eq(R.ifNone(int3, ((int5 = (int5 + (1)) | 0) - (1))), 1)) {
           switch (R.key(R.mod(R.min(int7, 4), 4))) {
             case 1:
@@ -18534,7 +18534,7 @@
     var string1 = "";
     var int2 = R.dbFieldCount(int1, 1122368);
     var int3 = 0;
-    while ((int3 < int2)) {
+    while (R.loop() && ((int3 < int2))) {
       string1 = R.dbField(int1, 1122368, int3);
       if ((R.len(string1) > 0)) {
         string0 = `${R.s(string0)}<br><sprite=21341>${R.s(string1)}`;
@@ -20114,7 +20114,7 @@
   S[19652] = function (int0) {
     var int1 = ((R.invSize(int0)) - (1) | 0);
     var int2 = 0;
-    while ((int1 > (-1 | 0))) {
+    while (R.loop() && ((int1 > (-1 | 0)))) {
       int2 = ((int2) + (R.call(19653, [R.invObj(int0, int1)])) | 0);
       int1 = ((int1) - (1) | 0);
     }
@@ -20295,7 +20295,7 @@
     var int3 = (-1 | 0);
     var int4 = (-1 | 0);
     var int5 = (-1 | 0);
-    while (((int5 = (int5 + (1)) | 0) < int1)) {
+    while (R.loop() && (((int5 = (int5 + (1)) | 0) < int1))) {
       int2 = R.invObj(94, int5);
       if ((!R.eq(int2, (-1 | 0)))) {
         int3 = R.call(7241, [int2]);
@@ -20807,7 +20807,7 @@
     var int0 = 0;
     var int1 = R.enumCount(13250);
     var int2 = (-1 | 0);
-    while ((int0 < int1)) {
+    while (R.loop() && ((int0 < int1))) {
       int2 = R.enumValue(0, 33, 13250, int0);
       if ((R.call(21002, [int2]) > 0)) {
         return 1;
@@ -20841,10 +20841,10 @@
     var int11 = 0;
     var int12 = 0;
     var int13 = 0;
-    while ((int13 < 84)) {
+    while (R.loop() && ((int13 < 84))) {
       int13 = ((int13) + (1) | 0);
       int11 = 0;
-      while ((int11 < int8)) {
+      while (R.loop() && ((int11 < int8))) {
         int9 = R.invVar(int7, int11, 30215);
         int10 = R.invVar(int7, int11, 30216);
         if (R.eq(int9, int13)) {
@@ -20883,7 +20883,7 @@
       int6 = R.call(7235, [int3, int4, int5, int6, "None!", string0]);
       return int6;
     }
-    while ((int14 < 84)) {
+    while (R.loop() && ((int14 < 84))) {
       if (R.eq(R.enumHas(0, 13420, R.arrGet(0, int14)), 0)) {
         R.arrSet(1, int14, Math.imul(((R.arrGet(1, int14)) + (0) | 0), 2));
       }

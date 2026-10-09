@@ -17,8 +17,11 @@ const gameText = (function () {
   const STRING_PARAMS = { 2794: 1, 2795: 1 };   // the string params the scripts read most: name, description
   const RUNEDAY_EPOCH_MS = Date.UTC(2002, 1, 27);
 
+  const LOOP_BUDGET = 500000;   // loop passes per evaluation: past it the script is stopped, never the page
   const R = {
     Pending, Missing,
+    steps: 0,
+    loop() { if (++this.steps > LOOP_BUDGET) throw new Error('loop budget'); return true; },
     vars:  { vb: new Map(), vp: new Map(), vc: new Map() },
     live:  { player: null, clock: null, quests: null, varcStrings: null, inv: new Map(), itemExtra: new Map(), achievements: new Map() },
     cache: { structs: new Map(), items: new Map(), itemParams: new Map(), paramDefs: new Map(), enums: new Map(), tables: new Map() },
@@ -162,7 +165,13 @@ const gameText = (function () {
     itemUncert(item) { const v = this.item(item).unnoted; return (v == null || v < 0) ? (item | 0) : (v | 0); },
     itemHasVarobj(item, varobj) { const vs = this.item(item).varobjs; return Array.isArray(vs) && vs.indexOf(varobj | 0) >= 0 ? 1 : 0; },
     enumOf(id) { return this.lookup('enums', id | 0); },
-    enumValue(kt, vt, enumId, key) { const v = this.enumOf(enumId)[key]; return v == null ? '' : v; },
+    // a key the enum lacks gives its default: empty text for text values (type 36), 0 for plain ints and
+    // booleans, -1 for every id type (stats, objects, structs), which is what the scripts' list walks stop on
+    enumValue(kt, vt, enumId, key) {
+      const v = this.enumOf(enumId)[key];
+      if (v != null) return v;
+      return vt === 36 ? '' : (vt === 0 || vt === 1) ? 0 : -1;
+    },
     enumString(enumId, key) { const v = this.enumOf(enumId)[key]; return v == null ? '' : String(v); },
     enumHas(enumId, key) { return Object.prototype.hasOwnProperty.call(this.enumOf(enumId), key) ? 1 : 0; },
     enumReverse(kt, vt, enumId, value) { const e = this.enumOf(enumId); for (const k in e) if (this.eq(e[k], value)) return k | 0; return -1; },
@@ -219,7 +228,7 @@ const gameText = (function () {
     const f = sid && GAME_TEXT.scripts[sid];
     if (!f) return { text: '', pending: false };
     R.ctx = Object.assign({ count: 0, vc: null }, ctx || {});
-    R.lines = []; R.arrays = new Map();
+    R.lines = []; R.arrays = new Map(); R.steps = 0;
     try {
       const out = f.apply(null, args || []);
       const text = (typeof out === 'string') ? out : R.lines.join('<br>');
