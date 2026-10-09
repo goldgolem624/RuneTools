@@ -38,7 +38,12 @@
     return abCd;
   }
   function abCdLive(s) {
-    const r = abCdMap() && abCd[s.id], d = abarData;
+    const d = abarData;
+    if (d && d.hostCd && d.hostCd[s.id] > 0) {   // the launcher's read of the same cooldown clocks, when it has one
+      const left = d.hostCd[s.id] - (Date.now() - d.hostAt);
+      if (left > 0) return Math.ceil(left / 1000);
+    }
+    const r = abCdMap() && abCd[s.id];
     if (!r || !r.v || !d || !d.vc) return null;
     const a = d.vc['5:' + r.v[0]], b = d.vc['5:' + r.v[1]];
     if (typeof a !== 'number' || typeof b !== 'number' || a <= 0 || b <= a) return null;
@@ -64,6 +69,16 @@
       try { const j = JSON.parse(await rtxData.raw('state.actionBar')); bars = j.bars || []; clock = j.clock || 0; cycles = j.cycles || 0; } catch (e) {}
       let vc = null;
       try { if (bridge().varcsDumpAll) vc = JSON.parse(await rtxData.raw('state.varcsAll') || 'null'); } catch (e) {}
+      let hostCd = null, hostAt = 0;   // cooldowns the launcher derives from the bar's clocks: newer builds carry readyCycle, older ones are skipped
+      try {
+        if (bridge().cooldowns) {
+          const j = JSON.parse(await rtxData.raw('state.cooldowns') || 'null');
+          if (j && typeof j.cycles === 'number' && Array.isArray(j.cooldowns)) {
+            hostCd = {}; hostAt = Date.now();
+            for (const cd of j.cooldowns) if (cd && cd.id > 0 && typeof cd.readyCycle === 'number' && cd.remaining > 0) hostCd[cd.id] = cd.remaining;
+          }
+        }
+      } catch (e) {}
       await ensureVbMap();
       const vps = new Set([AB_ADREN_VARP, 3531, 3532, 711, 3563, 4499]);
       for (const bi in ABAR_GATE) { const r = storageVbMap && storageVbMap[ABAR_GATE[bi]]; if (r) vps.add(r.varp); }
@@ -79,7 +94,7 @@
           if (cape) capeArg = await abCapeArg(cape[1] | 0);
         }
       } catch (e) {}
-      abarData = { bars, preset, clock, cycles, adren, vc, dmg, capeArg };
+      abarData = { bars, preset, clock, cycles, adren, vc, dmg, capeArg, hostCd, hostAt };
     } finally { abarFetching = false; }
     paneRun('abilities', renderAbilities);
   }

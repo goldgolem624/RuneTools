@@ -13,6 +13,7 @@
 #include <windows.h>
 #include <detours.h>
 
+#include <atomic>
 #include <cstdint>
 #include <cstring>
 
@@ -60,6 +61,30 @@ std::uint64_t FindNotify() {
 bool ReadI32(std::uint64_t at, std::int32_t* out) {
     __try { *out = *(const std::int32_t*)at; return true; }
     __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
+bool ReadI64(std::uint64_t at, std::int64_t* out) {
+    __try { *out = *(const std::int64_t*)at; return true; }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
+
+// The store's second index: a tree at +0x20 whose size sits at +0x40. It holds a few of the lines
+// (8 of 140 seen live, of several types) and its size held while lines arrived, so the unlink below
+// leaves it alone; the size is watched on every line, and an unlink is refused while the tree
+// follows the lines. Judged from 40 lines on: the tree fills over the first lines of a session.
+std::atomic<std::uint32_t> g_treeLines{ 0 }, g_treeChanges{ 0 };
+std::atomic<std::int64_t>  g_treeFirst{ 0 }, g_treeLast{ 0 };
+void NoteTree(std::uint64_t store) {
+    std::int64_t size = 0;
+    if (!ReadI64(store + 0x40, &size)) return;
+    const std::uint32_t lines = g_treeLines.load(std::memory_order_relaxed);
+    if (lines == 0) g_treeFirst.store(size, std::memory_order_relaxed);
+    else if (size != g_treeLast.load(std::memory_order_relaxed)) g_treeChanges.fetch_add(1, std::memory_order_relaxed);
+    g_treeLast.store(size, std::memory_order_relaxed);
+    g_treeLines.store(lines + 1, std::memory_order_relaxed);
+}
+bool TreeFollowsLines() {
+    const std::uint32_t lines = g_treeLines.load(std::memory_order_relaxed);
+    return lines >= 40 && g_treeChanges.load(std::memory_order_relaxed) * 2 >= lines;
 }
 // A string as the store keeps it: inline while it fits, with the room left at +0x17, else a
 // pointer at +0 and a length at +8.
@@ -120,13 +145,13 @@ void NoteHeard(const char* who) {
     g_share->recentSeq = seq + 1;
 }
 
-// The store: a hash map of records keyed by id at store+0x880 (buckets) / +0x888 (count of
-// buckets) / +0x890 (records), the id the next line takes at +0x18, each record chained through
+// The store: a hash map of records keyed by id at store+0x878 (buckets +0x880, count of buckets
+// +0x888, records +0x890), the id the next line takes at +0x18, each record chained through
 // +0xB8, and a doubly linked id chain through the records' +0x8 (next id) and +0xC (previous id).
 // The chat window starts from the newest id and follows the chain back, and a new line looks its
 // predecessor up by id, so a muted line is undone as if never added: out of the map and the chain,
 // and its id handed back for the next line. Its memory is left: a freed record could be handed to
-// the caller's next use of it.
+// the caller's next use of it. The tree at +0x20 is not touched (NoteTree above).
 std::uint64_t FindRecord(std::uint64_t store, std::int32_t key) {
     const std::uint64_t buckets = *(const std::uint64_t*)(store + 0x880);
     const std::uint32_t nb = *(const std::uint32_t*)(store + 0x888);
@@ -140,6 +165,7 @@ std::uint64_t FindRecord(std::uint64_t store, std::int32_t key) {
 }
 // 0 when done, else the step that stopped it (diag[7]); diag[6] keeps the counter's distance from the key.
 int Unlink(std::uint64_t store, std::uint64_t rec) {
+    if (TreeFollowsLines()) return 5;                       // the line is in an index this does not unlink from
     __try {
         // The add takes the counter as the key and leaves the counter at key + 1 (seen live in the hook:
         // counter - key = 1). A record's +0x8 starts out as key + 1, the key the next line takes, and
@@ -167,6 +193,7 @@ int Unlink(std::uint64_t store, std::uint64_t rec) {
 }
 
 void __fastcall Detour_Notify(std::uint64_t store, std::uint64_t rec8) {
+    if (store > 0x10000 && rec8 > 0x10000) NoteTree(store);
     if (g_share && g_share->enable && rec8 > 0x10000) {
         ++g_share->diag[0];
         std::int32_t type = 0;
@@ -239,6 +266,11 @@ void Rebind() {
     if (!fresh) return;
     Reset(fresh, g_share ? g_share->flags : 0, g_share ? g_share->notifyRva : 0);
     g_share = fresh;
+}
+
+void TreeStats(std::uint32_t& lines, std::uint32_t& changes, std::int64_t& first, std::int64_t& last) {
+    lines = g_treeLines.load(std::memory_order_relaxed); changes = g_treeChanges.load(std::memory_order_relaxed);
+    first = g_treeFirst.load(std::memory_order_relaxed); last = g_treeLast.load(std::memory_order_relaxed);
 }
 
 void Uninstall() {

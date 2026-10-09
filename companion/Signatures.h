@@ -26,7 +26,9 @@ inline constexpr std::size_t   kSoundSynthCtxAt = 23;      // sound-synth: mov r
 inline constexpr std::uint32_t kMenuLeftClickSlot = 0x13E0; // the slot FindMenuAssign names on 950-1 (0x13E8 on the plugin client)
 inline std::uint32_t HitDisp(const unsigned char* hit, std::size_t at) { std::uint32_t d; std::memcpy(&d, hit + at, 4); return d; }
 
-// Varp and varc-int set handlers, the same body up to the bucket load register.
+// The var push handlers pushvar (op 1495, kVarpBody) and pushvarbit (op 1564, kVarcBody): the same
+// body up to the bucket load register. Both look the current instruction's constant up by the pc
+// (state +0x24) in the script's constant map; the var id and domain sit in the constant's config.
 inline constexpr unsigned char kVarpBody[] = {
     0x4C, 0x8B, 0x4A, 0x10, 0x48, 0x8B, 0xDA, 0x44, 0x0F, 0xB7, 0x42, 0x24, 0x33, 0xD2, 0x41, 0x8B,
     0xC0, 0x41, 0x8B, 0x49, 0x60, 0x4D, 0x8B, 0x51, 0x58, 0x48, 0xF7, 0xF1, 0x8B, 0xC2, 0x49, 0x8B,
@@ -511,6 +513,7 @@ inline const Anchor* AnchorOf(const char* name) {
 // and anchor=0x..|agrees|ambiguous(n)|none.
 inline constexpr const char* kCheckNames[] = {
     "scene-root", "player-entity", "ground-stacks", "framer-conn", "markers", "menu-record", "hover-object", "highlight", "packets", "engine-ops",
+    "var-cache", "chat-tree",
 };
 
 // Engine ops called by their fixed number; the head must be that handler's first bytes.

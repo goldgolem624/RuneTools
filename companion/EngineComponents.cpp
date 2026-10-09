@@ -186,17 +186,24 @@ void Resolve() {
     g_usable = g_state != nullptr;
 }
 
-// A string on the state's string stack: a 32 byte entry, the characters inline while they fit (23
-// with the terminator), else a pointer at +0 with the top bit of +0x17 set; the kind byte at +0x18
-// is 2 for a string. The setter reads it as a C string.
+// A string on the state's string stack: a 32 byte entry. Up to 23 characters sit inline with
+// byte +0x17 = 23 - length (0x17 empty, 0 full and the terminator); longer text is kept out of
+// line as {pointer +0, length +8, capacity +0x10 with bit 63 set}, whose top byte is the +0x17
+// flag 0x80. The kind byte at +0x18 is 2 for a string. Routines that take the length (compare,
+// append, hash) read these fields; c_str users read the pointer or the inline bytes. The text
+// pointed at belongs to this module (g_textKeep) and the game never releases a stack entry
+// this module wrote: nothing of the game's is ever assigned over one.
 void PushStr(const char* s) {
     std::uint32_t& sp = *reinterpret_cast<std::uint32_t*>(g_state + kStrSp);
     if (sp >= 1000) return;
     std::uint8_t* e = g_state + kStrStack + (std::size_t)sp * 0x20;
     std::memset(e, 0, 0x20);
     const std::size_t n = std::strlen(s);
-    if (n < 0x17) { std::memcpy(e, s, n + 1); }
-    else { std::memcpy(e, &s, 8); e[0x17] = 0x80; }
+    if (n <= 0x17) { std::memcpy(e, s, n); e[0x17] = (std::uint8_t)(0x17 - n); }
+    else {
+        const std::uint64_t len = n, cap = n | (1ull << 63);
+        std::memcpy(e, &s, 8); std::memcpy(e + 8, &len, 8); std::memcpy(e + 0x10, &cap, 8);
+    }
     e[0x18] = 2;
     ++sp;
 }

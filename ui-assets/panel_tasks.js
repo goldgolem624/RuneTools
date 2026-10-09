@@ -517,6 +517,20 @@
 
 
   let _infoSig = '';
+  const fmtMmSs = (s) => Math.floor(s / 60) + ':' + ((s % 60) < 10 ? '0' : '') + (s % 60);
+  // NPC combat stats as the actor holds them: attack, defence, strength, constitution, ranged, prayer, magic.
+  const NPC_STAT_K = ['ATT', 'DEF', 'STR', 'CON', 'RNG', 'PRY', 'MAG'];
+  function npcStatsGrid(cur, base) {
+    const g = document.createElement('div'); g.className = 'npc-stats';
+    for (let i = 0; i < 7; i++) {
+      const c = document.createElement('div'); if (cur[i] !== base[i]) c.className = 'off';
+      c.title = NPC_STAT_K[i] + ': current / base';
+      const k = document.createElement('span'); k.className = 'k'; k.textContent = NPC_STAT_K[i];
+      const v = document.createElement('span'); v.className = 'v'; v.textContent = cur[i] + '/' + base[i];
+      c.appendChild(k); c.appendChild(v); g.appendChild(c);
+    }
+    return g;
+  }
   function renderInfo() {
     const c = $('content');
     let wrap = $('infoWrap');
@@ -525,7 +539,9 @@
       const im = infoMember && typeof infoMember.idleMs === 'number'
         ? Object.assign({}, infoMember, { idleMs: Math.floor(infoMember.idleMs / 1000) })
         : infoMember;
-      const sig = JSON.stringify([infoData, playerVp, playerVb, im, infoCam, infoHover, infoHoverHeld]);
+      const ic = infoClient ? [infoClient.systemUpdateTicks, infoClient.membersWorld, infoClient.logoutReason, infoClient.loginReply, infoClient.lobbyReply,
+                               Math.round((infoClient.fov || 0) * 100), infoClient.cameraControl] : null;
+      const sig = JSON.stringify([infoData, playerVp, playerVb, im, infoCam, infoHover, infoHoverHeld, ic, lastSnap && lastSnap.world]);
       if (sig === _infoSig && wrap.firstChild) return;
       _infoSig = sig;
     } catch (e) { /* unstringifiable input: fall through and rebuild */ }
@@ -566,6 +582,17 @@
           } else {
             add(row('Idle logout', idleBudget));
           }
+        }
+        {   // session: world and type, system update countdown, login replies, why the last session ended
+          const ic = infoClient || {};
+          const wn = (lastSnap && lastSnap.world > 0) ? String(lastSnap.world) : '';
+          const wt = ic.membersWorld === 1 ? 'members' : ic.membersWorld === 0 ? 'free' : '';
+          if (wn || wt) add(row('World', (wn + ' ' + wt).trim()));
+          if (typeof ic.systemUpdateTicks === 'number' && ic.systemUpdateTicks > 0) add(row('System update', 'in ' + fmtMmSs(Math.ceil(ic.systemUpdateTicks * 0.6))));
+          if (typeof ic.loginReply === 'number' && ic.loginReply >= 0)
+            add(row('Login reply', (ic.loginReply === 2 ? 'ok' : String(ic.loginReply)) +
+                                   (typeof ic.lobbyReply === 'number' && ic.lobbyReply >= 0 ? ' / lobby ' + (ic.lobbyReply === 2 ? 'ok' : ic.lobbyReply) : '')));
+          if (typeof ic.logoutReason === 'number' && ic.logoutReason >= 0) add(row('Logout reason', String(ic.logoutReason)));
         }
         {
           const lg = u(typeof VP !== 'undefined' ? VP.LEAGUE : 12314);
@@ -651,6 +678,10 @@
           add(row('Yaw', Math.round(((infoCam.yaw % 16284) + 16284) % 16284 / 16284 * 360) + '° (' + infoCam.yaw + ')'));
         if (typeof infoCam.pitch === 'number') add(row('Pitch', String(infoCam.pitch)));
         if (typeof infoCam.zoom === 'number') add(row('Zoom', String(infoCam.zoom)));
+        const ic = infoClient || {};
+        if (typeof ic.fov === 'number' && ic.fov > 0)
+          add(row('Field of view', (ic.fov * 180 / Math.PI).toFixed(1) + '\u00b0' + (ic.fovX > 0 ? ' x ' + (ic.fovX * 180 / Math.PI).toFixed(1) + '\u00b0' : '')));
+        if (typeof ic.cameraControl === 'number' && ic.cameraControl >= 0) add(row('Control mode', String(ic.cameraControl)));
       }
       {
         let hv = infoHover;
@@ -667,6 +698,10 @@
           if (hv.id != null && hv.id >= 0) add(row('· Id', String(hv.id)));
           if (hv.uid != null) add(row('· Uid', String(hv.uid)));
           if (hv.x != null) add(row('· Tile', hv.x + ', ' + hv.y + (hv.p != null ? ' · floor ' + hv.p : '')));
+          if (hv.kind === 'npc') {   // combat stats (current / base) and the level the game shows
+            if (typeof hv.vis === 'number' && hv.vis >= 0) add(row('\u00b7 Level', String(hv.vis)));
+            if (Array.isArray(hv.stats) && Array.isArray(hv.base) && hv.stats.length === 7 && hv.base.length === 7) add(npcStatsGrid(hv.stats, hv.base));
+          }
           if (hv.slot != null) add(row('· Slot', hv.slot + ' · in ' + hv.iface + ':' + hv.comp));
           else if (hv.kind === 'iface') add(row('· Component', hv.iface + ':' + hv.comp + (hv.comp2 ? ' (' + hv.comp2 + ')' : '')));
         }

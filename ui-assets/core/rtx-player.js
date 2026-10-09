@@ -5,9 +5,17 @@
   let infoHoverHeld = null;   // last REAL hover target, held so the panel stays readable after unhover
   // varbit (50572) but is folded into the same call so the tier arrives consistent.
   let infoMember = null;
+  let infoClient = null;   // clientState bridge: world type, system update countdown, login replies, camera; null on older launchers
+  let _infoClientAt = 0;
+  async function fetchClientState() {
+    if (!bridge() || !bridge().clientState) return;
+    const now = Date.now(); if (now - _infoClientAt < 1000) return; _infoClientAt = now;
+    try { const d = await rtxData.call('state.clientState'); if (d && typeof d === 'object') infoClient = d; } catch (e) {}
+  }
   async function fetchInfo() {
     if (!bridge() || !bridge().playerInfo) return;
     try { infoData = JSON.parse(await bridge().playerInfo(myPid())); } catch (e) { infoData = null; }
+    await fetchClientState();
     if (bridge().hoverEntity) { try { infoHover = JSON.parse(bridge().hoverEntity(myPid()) || '{}'); } catch (e) { infoHover = null; } }
     if (bridge().membership) { try { infoMember = JSON.parse(await bridge().membership(myPid()) || 'null'); } catch (e) { infoMember = null; } }
     if (bridge().varbits) { try { infoVb = JSON.parse(await bridge().varbits(myPid(), String(typeof VB !== 'undefined' ? VB.PENGUIN_POINTS : 4163)) || 'null'); } catch (e) {} }

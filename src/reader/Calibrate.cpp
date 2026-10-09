@@ -59,6 +59,15 @@ const Rule kRules[] = {
     { "md::kLanguage",     "MAP_LANG",                         "48 8B 81", kMdLo, kMdHi, 0, rtx::md::kLanguage },
     { "md::kVarpMgr",      "QUEST_FINISHED",                   "48 8D 97", kMdLo, kMdHi, 0, rtx::md::kVarpMgr },        // lea rdx,[rdi+disp]
     { "md::kOptions",      "CLIENTOPTION_GET",                 "48 8B 81", kMdLo, kMdHi, 0, rtx::md::kOptions },
+    { "md::kConfigs",      "QUEST_GETDIFFICULTY",              "4C 8B 81", kMdLo, kMdHi, 0, rtx::md::kConfigs },        // mov r8,[rcx+disp]
+    { "md::kDisplay",      "WINDOW_GETINSETS",                 "48 8B 89", kMdLo, kMdHi, 0, rtx::md::kDisplay },
+    { "md::kConnection",   "ABORT_DIALOG",                     "48 8B 91", kMdLo, kMdHi, 0, rtx::md::kConnection },
+    { "md::kFriendsChat",  "CLAN_GETCHATCOUNT",                "48 8B 81", kMdLo, kMdHi, 0, rtx::md::kFriendsChat },
+    { "md::kLoginMgr",     "LOGIN_REPLY",                      "48 8B 81", kMdLo, kMdHi, 0, rtx::md::kLoginMgr },
+    { "md::kWorldMapMgr",  "WORLDMAP_GETCURRENTMAP",           "48 8B 81", kMdLo, kMdHi, 0, rtx::md::kWorldMapMgr },
+    { "md::kServerTimeOffset", "DATE_RUNEDAY",                 "48 F7 A9", kMdLo, kMdHi, 0, rtx::md::kServerTimeOffset },   // imul [rcx+disp]
+    { "md::kCountry",      "PLAYERCOUNTRY",                    "8B 91",    kMdLo, kMdHi, 0, rtx::md::kCountry },        // mov edx,[rcx+disp]
+    { "md::kWorldInfo",    "REBOOTTIMER",                      "48 8B 81", kMdLo, kMdHi, 0, rtx::md::kWorldInfo },
     // references: offsets written out in the reader and the companion
     { "dbMgr",             "DB_FIND_GET",                      "48 8B B1", kMdLo, kMdHi, 0, 0x19980, false, "ScriptRunner" },
     { "dbOther",           "DB_LISTALL",                       "48 8B 89", kMdLo, kMdHi, 0, 0x198C0, false, "DbDatabase" },

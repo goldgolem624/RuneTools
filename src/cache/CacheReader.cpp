@@ -1491,8 +1491,9 @@ std::string ParamDefJson(int param_id) {
 }
 
 namespace {
-// Varbit defs: CONFIGS index 2, archive 69 (file = varbit id). opcode 1 = u8 domain + u16 var index, opcode 2 = u8 lsb + u8 msb,
-// opcode 16 = flag (no payload), 0 ends. Only domain 0 (player) goes in the varp map; other domains are separate id spaces.
+// Varbit defs: CONFIGS index 2, archive 69 (file = varbit id). opcode 1 = u8 domain + var id as a big smart (2 bytes, or 4
+// when the first byte is >= 0x80; 0x7FFF = none), opcode 2 = u8 lsb + u8 msb, opcode 16 = flag (no payload), 0 ends. Only
+// domain 0 (player) goes in the varp map; other domains are separate id spaces.
 constexpr int kVarbitArchive = 69;
 std::string g_varbit_map_json;
 bool        g_varbit_map_loaded = false;
@@ -1532,7 +1533,7 @@ void LoadVarbitMapLocked() {
         while (s.remaining() > 0) {
             int op = s.ReadUnsignedByte();
             if (op == 0) break;
-            if (op == 1)      { domain = s.ReadUnsignedByte(); varp = s.ReadUnsignedShort(); }
+            if (op == 1)      { domain = s.ReadUnsignedByte(); varp = s.ReadBigSmart(); }
             else if (op == 2) { lsb = s.ReadUnsignedByte(); msb = s.ReadUnsignedByte(); }
             else if (op == 16) { /* boolean flag, no data */ }
             else { probe::unknown(probe::kUnkVarbit, op); break; }   // unknown opcode -> length unknown, stop
@@ -3893,7 +3894,7 @@ std::string VarbitDomainsJson() {
         while (s.remaining() > 0) {
             int op = s.ReadUnsignedByte();
             if (op == 0) break;
-            if (op == 1)      { domain = s.ReadUnsignedByte(); var = s.ReadUnsignedShort(); }
+            if (op == 1)      { domain = s.ReadUnsignedByte(); var = s.ReadBigSmart(); }
             else if (op == 2) { s.ReadUnsignedByte(); s.ReadUnsignedByte(); }
             else if (op == 16) { }
             else break;
@@ -5171,7 +5172,7 @@ bool RunParseSweep(const Store& store, bool full, Cancel&& cancelled, SweepOut& 
         int domain = -1, var = -1, lsb = -1, msb = -1;
         r.stop = WalkOps(s, r.last, [&](int op) {
             probe::note(op);
-            if (op == 1) { domain = s.ReadUnsignedByte(); var = s.ReadUnsignedShort(); }
+            if (op == 1) { domain = s.ReadUnsignedByte(); var = s.ReadBigSmart(); }
             else if (op == 2) { lsb = s.ReadUnsignedByte(); msb = s.ReadUnsignedByte(); }
             else if (op == 16) { }
             else return false;
@@ -5533,7 +5534,7 @@ std::string PinVarbitLocked(int id) {
     while (s.remaining() > 0) {
         int op = s.ReadUnsignedByte();
         if (op == 0) break;
-        if (op == 1)       { domain = s.ReadUnsignedByte(); var = s.ReadUnsignedShort(); }
+        if (op == 1)       { domain = s.ReadUnsignedByte(); var = s.ReadBigSmart(); }
         else if (op == 2)  { lsb = s.ReadUnsignedByte(); msb = s.ReadUnsignedByte(); }
         else if (op == 16) { }
         else return "op=" + std::to_string(op);          // a new opcode: the layout cannot be read

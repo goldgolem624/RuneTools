@@ -53,7 +53,7 @@ function state.baitBox() end
 function state.scene(range) end
 ---@return table|nil
 function state.groundItems() end
----@return table|nil
+---@return table|nil social  # {world,friendsLoaded,online,friends:[{name,world,worldName,rank,prev,notes}],ignores:[...],friendsChat:{name,owner,rank,users:[...]}|nil,group:{name,members:[...]}|nil}
 function state.social() end
 ---@param since? integer
 ---@param max? integer
@@ -77,7 +77,7 @@ function state.varbits(ids) end
 function state.interface(group, compsCsv) end
 ---@return table|nil buffs  # {buffs:[{slot,struct,name,remaining,...}]}
 function state.buffs() end
----@return table|nil
+---@return table|nil cooldowns  # {clock,cycles,cooldowns:[{id,name,remaining,castCycle,readyCycle,duration}]}
 function state.cooldowns() end
 ---@return table|nil
 function state.perks() end
@@ -103,7 +103,7 @@ function state.hideyHoles() end
 ---@param sinceSeq? integer
 ---@return table|nil events  # {seq,tick,events:[{seq,t,wall,op,len,kind,...}]}
 function state.events(sinceSeq) end
----@return table|nil  # {cutscene,inCutscene,options:[44 ints]}
+---@return table|nil  # {cutscene,inCutscene,systemUpdateTicks,membersWorld,loginReply,lobbyReply,fov,varSeq,options:[44 ints],optionsNamed:[{id,name,value,label,min,max}],windowMode,preset}
 function state.clientState() end
 ---@return integer|nil
 function state.gameTick() end

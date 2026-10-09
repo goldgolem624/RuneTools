@@ -94,7 +94,8 @@
             }
           label = host ? host.name + (n.bar >= 0 ? ' (timer)' : ' (helper)') : 'Unnamed NPC';
         }
-        out.push({ type: 'npc', name: n.name, label, x: n.x, y: n.y, plane: n.plane, dist: d, id: n.id, uid: n.uid, combat: n.combat, anim: n.anim, actions: n.actions });
+        out.push({ type: 'npc', name: n.name, label, x: n.x, y: n.y, plane: n.plane, dist: d, id: n.id, uid: n.uid, combat: n.combat,
+                   vis: (typeof n.vis === 'number' && n.vis > 0) ? n.vis : -1, lp: n.lp, lpMax: n.lpMax, anim: n.anim, actions: n.actions });
       }
     if (sceneShow.objects && Array.isArray(sceneData.objects))
       for (const o of sceneData.objects) {
@@ -465,7 +466,7 @@
     const sig = (items === null) ? 'null' + st
       : st + items.length + '|q' + sceneAllTerms().join('|') + '|ol' + [...outlineSet].join(',') + '|np' + [...nameplateNames].join(',') + '|' +
         items.map(n => n.type + (n.id || 0) + ':' + (n.uid || 0) + ':' +
-          n.x + ',' + n.y + ':' + n.dist + ':' + (n.combat || 0) + ':' + (n.anim == null ? -1 : n.anim) + ':' + (n.name || n.label || '') + ':' + (n.actions || []).join('|')).join(';');
+          n.x + ',' + n.y + ':' + n.dist + ':' + (n.combat || 0) + ':' + (n.vis == null ? -1 : n.vis) + ':' + (n.lp == null ? -1 : n.lp) + ':' + (n.anim == null ? -1 : n.anim) + ':' + (n.name || n.label || '') + ':' + (n.actions || []).join('|')).join(';');
     if (sig === sceneSig) return;
     sceneSig = sig;
 
@@ -585,7 +586,9 @@
       sub.innerHTML = subTxt + live + (acts ? ' · <span class="act">' + acts + '</span>' : '');
       namec.appendChild(nameRow); namec.appendChild(sub);
       const tipLines = [dispName, subTxt.replace(' · ', ', ')];
-      if (n.combat && n.combat > 0) tipLines.push('Combat level ' + n.combat);
+      if (n.type === 'npc' && n.vis > 0) tipLines.push('Level ' + n.vis + (n.combat > 0 && n.combat !== n.vis ? ' (config ' + n.combat + ')' : ''));
+      else if (n.combat && n.combat > 0) tipLines.push('Combat level ' + n.combat);
+      if (n.type === 'npc' && n.lpMax > 0 && n.lp >= 0) tipLines.push('Life points ' + n.lp.toLocaleString() + ' / ' + n.lpMax.toLocaleString());
       if (n.dist >= 0) tipLines.push('Distance ' + n.dist + (n.dist === 1 ? ' tile' : ' tiles'));
       tipLines.push('Tile (' + n.x + ', ' + n.y + (typeof n.plane === 'number' ? ', ' + n.plane : '') + ')');
       if (acts) tipLines.push('Actions: ' + acts);
@@ -596,7 +599,7 @@
         tipLines.push('Model height ' + n.mh + ' (' + (n.mh / 512).toFixed(1) + ' tiles)');
       row.dataset.tip = tipLines.join('\n');
       const lvlc = document.createElement('div'); lvlc.className = 'num lvl';
-      lvlc.textContent = (n.combat && n.combat > 0) ? n.combat : '-';
+      lvlc.textContent = (n.type === 'npc' && n.vis > 0) ? n.vis : (n.combat && n.combat > 0) ? n.combat : '-';   // the level the game shows, else the config's
       const distc = document.createElement('div'); distc.className = 'num';
       distc.textContent = (n.dist >= 0) ? n.dist : '-';
       const tilec = document.createElement('div'); tilec.className = 'tile';

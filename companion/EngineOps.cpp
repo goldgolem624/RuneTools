@@ -344,11 +344,19 @@ int Call(std::uint8_t* root, const char* name, const std::int32_t* ints, int nIn
     std::uint32_t& ssp = *reinterpret_cast<std::uint32_t*>(g_state + kStrSp);
     isp = 0; ssp = 0; g_state[0x20] = 0;
     for (int i = 0; i < nInts && i < 1000; ++i) *reinterpret_cast<std::int32_t*>(g_state + kIntStack + 4 * i) = ints[i], isp = i + 1;
+    // String entries as the engine keeps them: up to 23 characters inline with byte +0x17 = 23 -
+    // length, longer text out of line as {pointer, length +8, capacity +0x10 with bit 63 set}
+    // (that top byte is the +0x17 flag). The caller's text outlives the call; the game never
+    // releases an entry this module wrote.
     for (int i = 0; i < nStrs && i < 1000; ++i) {
         std::uint8_t* e = g_state + kStrStack + (std::size_t)i * 0x20;
         std::memset(e, 0, 0x20);
         const std::size_t n = std::strlen(strs[i]);
-        if (n < 0x17) std::memcpy(e, strs[i], n + 1); else { std::memcpy(e, &strs[i], 8); e[0x17] = 0x80; }
+        if (n <= 0x17) { std::memcpy(e, strs[i], n); e[0x17] = (std::uint8_t)(0x17 - n); }
+        else {
+            const std::uint64_t len = n, cap = n | (1ull << 63);
+            std::memcpy(e, &strs[i], 8); std::memcpy(e + 8, &len, 8); std::memcpy(e + 0x10, &cap, 8);
+        }
         e[0x18] = 2; ssp = i + 1;
     }
     void* r = CallGuarded(fn, root);

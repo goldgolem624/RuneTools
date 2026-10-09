@@ -601,22 +601,29 @@ void PruneInvalid() {
     g_mgrCount = w;
 }
 
-// CS2 var ops: registry-entry+0x20 4 = varp, 5 = varc-int. vm_ctx: int stack +0x100, count +0x10a0, var id +0x24 (u16), registry +0x10.
+// The var push handlers (pushvar, pushvarbit) run on a script state (vm_ctx): int stack +0x100, count
+// +0x10A0, pc u16 +0x24, script object +0x10, dot flag +0x20, domain -> store tables +0xC008 and
+// +0xC1D8. The script's constant map (object +0x58 buckets, +0x60 count) is keyed by the pc: node
+// {u16 pc, constant +8 (object +0x10), variant byte +0x20, next +0x28}; variant 4 is a var config of
+// any domain {id u32 +8, domain +0x38 -> id u32 +8}, 5 a varbit config. The pc names the instruction,
+// not the var, so the var id and domain are read from the config and the cache is keyed by them.
 
-constexpr std::uint64_t kVmVarId = 0x24;
+constexpr std::uint64_t kVmPc = 0x24;
+constexpr std::uint8_t  kConstVar = 4;           // constant variant: var config
+constexpr std::uint32_t kDomainPlayer = 0, kDomainClient = 2, kDomainMax = 15;
+inline std::uint32_t VarKey(std::uint32_t domain, std::uint32_t varId) { return (domain << 16) | varId; }
 
 // Read by the var detours on the game's script thread and replaced by the worker on a session
 // rebind, so it is never null once set and each user loads it once.
 std::atomic<rtx::varc::Share*> g_varcShare{ nullptr };
 typedef void* (*VarOp_t)(std::uint64_t, std::uint64_t);
-VarOp_t g_origVarp = nullptr;     // type 4 handler (player var)
-VarOp_t g_origVarc = nullptr;     // type 5 handler (client var)
+VarOp_t g_origVarp = nullptr;     // pushvar (op 1495): a var of any domain
+VarOp_t g_origVarc = nullptr;     // pushvarbit (op 1564): a varbit
 
 struct VarContext {
     std::uint64_t registry, bucket_table; std::uint32_t bucket_count;
     std::uint64_t inst_table_0; std::uint32_t inst_count_0;
     std::uint64_t inst_table_1; std::uint32_t inst_count_1; std::uint8_t flag20;
-    std::uint8_t  scope_type;   // 4 = varp/varbit handler, 5 = varc-int handler
 };
 typedef void* (__fastcall *GetStorage_t)(void*, void*);
 
@@ -629,12 +636,29 @@ std::atomic<std::uint64_t> g_lastPanelResolveMs{0};
 constexpr std::uint64_t    kPanelResolveMinMs = 250;
 
 std::mutex g_varMu;
-std::unordered_map<std::uint32_t, std::int32_t>  g_varVal;        // (type<<16)|id -> value (published)
-std::unordered_map<std::uint32_t, std::uint64_t> g_storageCache;  // (scope<<16)|id -> storage ptr
-std::unordered_map<std::uint32_t, int>           g_walkAttempts;  // (scope<<16)|id -> failed getStorage attempts
+std::unordered_map<std::uint32_t, std::uint64_t> g_storageCache;  // VarKey(domain, var id) -> storage ptr
+std::unordered_map<std::uint32_t, int>           g_walkAttempts;  // VarKey(domain, var id) -> failed getStorage attempts
 static constexpr int kWalkMaxAttempts = 6;
+std::atomic<std::uint32_t> g_varKeyBad{ 0 };     // var constants whose config read an id or domain out of range
 
 static inline bool CanonPtr(std::uint64_t p) { return p >= 0x10000ull && p <= 0x00007FFFFFFFFFFFull; }
+
+// The var a constant names: false for another variant, a fault, or an id or domain out of range.
+bool ConstVar(std::uint64_t entry, std::uint32_t& varId, std::uint32_t& domain) {
+    std::uint32_t id = 0, dom = 0;
+    __try {
+        if (*(std::uint8_t*)(entry + 0x20) != kConstVar) return false;
+        const std::uint64_t cfg = *(std::uint64_t*)(entry + 0x10);
+        if (!CanonPtr(cfg)) return false;
+        const std::uint64_t domObj = *(std::uint64_t*)(cfg + 0x38);
+        if (!CanonPtr(domObj)) return false;
+        id = *(std::uint32_t*)(cfg + 8);
+        dom = *(std::uint32_t*)(domObj + 8);
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+    if (id > 0xFFFF || dom > kDomainMax) { g_varKeyBad.fetch_add(1, std::memory_order_relaxed); return false; }
+    varId = id; domain = dom;
+    return true;
+}
 
 bool ReadVarContext(std::uint64_t vm_ctx, VarContext& out) {
     VarContext c{};
@@ -665,10 +689,11 @@ std::uint64_t LookupInstEntry(std::uint64_t inst_table, std::uint32_t inst_count
     return 0;
 }
 
-// entry -> holder chain -> vtable getStorage(holder, entry+8); 0 on any fault.
+// entry -> var config -> domain, the state's store for that domain, its GetVar (vtable +8) on the
+// config; 0 on any fault.
 std::uint64_t ResolveStorage(std::uint64_t entry, const VarContext& ctx) {
     __try {
-        if (*(std::uint8_t*)(entry + 0x20) != 4) return 0;          // type 4 only
+        if (*(std::uint8_t*)(entry + 0x20) != kConstVar) return 0;   // var configs only, not varbits
         std::uint64_t type_holder = *(std::uint64_t*)(entry + 0x10);
         if (!type_holder) return 0;
         std::uint64_t sub_holder = *(std::uint64_t*)(type_holder + 0x38);
@@ -697,14 +722,14 @@ std::uint64_t ResolveStorage(std::uint64_t entry, const VarContext& ctx) {
     } __except (EXCEPTION_EXECUTE_HANDLER) { return 0; }
 }
 
-// var id -> registry entry (bucket hash + chain at entry+0x28).
-std::uint64_t FindEntry(const VarContext& ctx, std::uint16_t var_id) {
+// pc -> the constant that instruction uses (bucket hash + chain at entry+0x28).
+std::uint64_t FindEntry(const VarContext& ctx, std::uint16_t pc) {
     if (!ctx.bucket_table || !ctx.bucket_count || !CanonPtr(ctx.bucket_table)) return 0;
     __try {
-        std::uint64_t e = *(std::uint64_t*)(ctx.bucket_table + (var_id % ctx.bucket_count) * 8);
+        std::uint64_t e = *(std::uint64_t*)(ctx.bucket_table + (pc % ctx.bucket_count) * 8);
         for (int s = 0; e && s < 256; ++s) {
             if (!CanonPtr(e)) return 0;
-            if (*(std::uint16_t*)(e + 0) == var_id) return e;
+            if (*(std::uint16_t*)(e + 0) == pc) return e;
             e = *(std::uint64_t*)(e + 0x28);
         }
     } __except (EXCEPTION_EXECUTE_HANDLER) {}
@@ -723,13 +748,14 @@ bool ScopeStillLive(const VarContext& sc) {
     } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
 }
 
-__declspec(noinline) void PushCandidate(const VarContext& ctx, std::uint16_t var_id) {
+__declspec(noinline) void PushCandidate(const VarContext& ctx, std::uint16_t pc) {
     std::lock_guard<std::mutex> lk(g_scopeMu);
     for (auto& e : g_verifiedScopes) if (e.registry == ctx.registry) return;
     for (auto& c : g_candidates) if (c.first.registry == ctx.registry) return;
-    if (g_candidates.size() < 64) g_candidates.emplace_back(ctx, var_id);
+    if (g_candidates.size() < 64) g_candidates.emplace_back(ctx, pc);
 }
 
+// Panel position client vars (domain 2): origin x, y and size w, h of each window.
 struct PanelGroup { std::uint16_t x, y, w, h; };
 static const PanelGroup kPanelGroups[] = {
     { 9102, 9103, 9104, 9105 },  // dialogues (Choose/NPC/Player/Clue/Server/Input)
@@ -763,18 +789,21 @@ static const PanelGroup kPanelGroups[] = {
     { 10147, 10148, 10149, 10150 }, // debuff bar
 };
 
-__declspec(noinline) void ResolveCurrentVarLive(std::uint64_t vm_ctx, std::uint16_t var_id, std::uint8_t scope_type) {
-    std::uint32_t key = ((std::uint32_t)scope_type << 16) | var_id;
+// The var the current instruction pushes: its constant by pc, then its storage, cached under the
+// var id and domain the config carries.
+__declspec(noinline) void ResolveCurrentVarLive(std::uint64_t vm_ctx, std::uint16_t pc) {
+    VarContext ctx{};
+    if (!ReadVarContext(vm_ctx, ctx)) return;
+    const std::uint64_t e = FindEntry(ctx, pc);
+    std::uint32_t varId = 0, domain = 0;
+    if (!e || !ConstVar(e, varId, domain)) return;       // a varbit push, or not a var constant
+    const std::uint32_t key = VarKey(domain, varId);
     {
         std::lock_guard<std::mutex> lk(g_varMu);
         if (g_storageCache.find(key) != g_storageCache.end()) return;
         if (g_walkAttempts[key] >= kWalkMaxAttempts) return;
     }
-    VarContext ctx{};
-    if (!ReadVarContext(vm_ctx, ctx)) return;
-    ctx.scope_type = scope_type;
-    std::uint64_t e = FindEntry(ctx, var_id);
-    std::uint64_t storage = e ? ResolveStorage(e, ctx) : 0;
+    const std::uint64_t storage = ResolveStorage(e, ctx);
     std::lock_guard<std::mutex> lk(g_varMu);
     if (storage) { g_storageCache[key] = storage; g_walkAttempts.erase(key); if (auto* vs = g_varcShare.load(std::memory_order_acquire)) vs->diag[3]++; }
     else         { g_walkAttempts[key]++; }
@@ -782,11 +811,42 @@ __declspec(noinline) void ResolveCurrentVarLive(std::uint64_t vm_ctx, std::uint1
 
 std::int32_t ReadIntSafe(std::uint64_t storage);
 
+constexpr int kPanelGroupCount = (int)(sizeof(kPanelGroups) / sizeof(kPanelGroups[0]));
+// The panel vars among this script's constants: every var constant is read for its id and domain and
+// matched against the groups (x, y, w, h per group). No lookups by pc. Returns how many were found.
+__declspec(noinline) int ScanPanelConsts(const VarContext& ctx, std::uint64_t (*found)[4]) {
+    const std::uint64_t bt = ctx.bucket_table; const std::uint32_t bc = ctx.bucket_count;
+    if (!bt || !bc || bc > 1000000 || !CanonPtr(bt)) return 0;
+    int hits = 0;
+    for (std::uint32_t b = 0; b < bc; ++b) {
+        std::uint64_t entry = 0;
+        __try { entry = *(std::uint64_t*)(bt + (std::uint64_t)b * 8); }
+        __except (EXCEPTION_EXECUTE_HANDLER) { return hits; }
+        for (int chain = 0; entry && chain < 256; ++chain) {
+            if (!CanonPtr(entry)) break;
+            std::uint32_t id = 0, domain = 0;
+            if (ConstVar(entry, id, domain) && domain == kDomainClient) {
+                for (int g = 0; g < kPanelGroupCount; ++g) {
+                    const PanelGroup& grp = kPanelGroups[g];
+                    const std::uint16_t ids[4] = { grp.x, grp.y, grp.w, grp.h };
+                    for (int k = 0; k < 4; ++k) if (ids[k] && ids[k] == id && !found[g][k]) { found[g][k] = entry; ++hits; }
+                }
+            }
+            __try { entry = *(std::uint64_t*)(entry + 0x28); }
+            __except (EXCEPTION_EXECUTE_HANDLER) { return hits; }
+        }
+    }
+    return hits;
+}
+
 __declspec(noinline) void ResolvePanelGroupsFromLive(std::uint64_t vm_ctx) {
     VarContext ctx{};
     if (!ReadVarContext(vm_ctx, ctx)) return;
-    for (const auto& grp : kPanelGroups) {
-        std::uint64_t ex = FindEntry(ctx, grp.x), ey = FindEntry(ctx, grp.y);
+    std::uint64_t found[kPanelGroupCount][4] = {};
+    if (!ScanPanelConsts(ctx, found)) return;
+    for (int g = 0; g < kPanelGroupCount; ++g) {
+        const PanelGroup& grp = kPanelGroups[g];
+        const std::uint64_t ex = found[g][0], ey = found[g][1], ew = found[g][2], eh = found[g][3];
         if (!ex || !ey) continue;
         std::uint64_t sx = ResolveStorage(ex, ctx), sy = ResolveStorage(ey, ctx);
         if (!sx || !sy) continue;
@@ -794,24 +854,23 @@ __declspec(noinline) void ResolvePanelGroupsFromLive(std::uint64_t vm_ctx) {
         if (X < 0 || X >= 6000 || Y < 0 || Y >= 6000) continue;
         std::uint64_t sw = 0, sh = 0;
         if (grp.w || grp.h) {
-            std::uint64_t ew = grp.w ? FindEntry(ctx, grp.w) : 0, eh = grp.h ? FindEntry(ctx, grp.h) : 0;
             if ((grp.w && !ew) || (grp.h && !eh)) continue;
             if (ew) { std::uint64_t s = ResolveStorage(ew, ctx); int v = s ? ReadIntSafe(s) : 0; if (v <= 0 || v >= 5000) continue; sw = s; }
             if (eh) { std::uint64_t s = ResolveStorage(eh, ctx); int v = s ? ReadIntSafe(s) : 0; if (v <= 0 || v >= 5000) continue; sh = s; }
         }
         std::lock_guard<std::mutex> lk(g_varMu);
-        g_storageCache[(4u << 16) | grp.x] = sx; g_storageCache[(4u << 16) | grp.y] = sy;
-        if (sw) g_storageCache[(4u << 16) | grp.w] = sw;
-        if (sh) g_storageCache[(4u << 16) | grp.h] = sh;
+        g_storageCache[VarKey(kDomainClient, grp.x)] = sx; g_storageCache[VarKey(kDomainClient, grp.y)] = sy;
+        if (sw) g_storageCache[VarKey(kDomainClient, grp.w)] = sw;
+        if (sh) g_storageCache[VarKey(kDomainClient, grp.h)] = sh;
         if (auto* vs = g_varcShare.load(std::memory_order_acquire)) vs->diag[3]++;
     }
 }
 
-// push_var capture (game thread, thousands/sec). Panel resolver is always on; per-var capture is gated.
-inline void* VarOpObserve(VarOp_t orig, std::uint64_t a, std::uint64_t vm_ctx, std::uint8_t scope_type) {
+// Var push capture (game thread, thousands/sec). Panel resolver is always on; per-var capture is gated.
+inline void* VarOpObserve(VarOp_t orig, std::uint64_t a, std::uint64_t vm_ctx) {
     if (auto* vs = g_varcShare.load(std::memory_order_acquire)) {
-        std::uint64_t reg = 0; std::uint16_t var_id = 0; bool ok = false;
-        __try { var_id = *(std::uint16_t*)(vm_ctx + kVmVarId); reg = *(std::uint64_t*)(vm_ctx + 0x10); ok = true; }
+        std::uint64_t reg = 0; std::uint16_t pc = 0; bool ok = false;
+        __try { pc = *(std::uint16_t*)(vm_ctx + kVmPc); reg = *(std::uint64_t*)(vm_ctx + 0x10); ok = true; }
         __except (EXCEPTION_EXECUTE_HANDLER) {}
         if (ok && reg && reg != g_lastReg.load(std::memory_order_relaxed)) {
             g_lastReg.store(reg, std::memory_order_relaxed);
@@ -821,12 +880,12 @@ inline void* VarOpObserve(VarOp_t orig, std::uint64_t a, std::uint64_t vm_ctx, s
                 ResolvePanelGroupsFromLive(vm_ctx);
             }
         }
-        if (ok && vs->enable) ResolveCurrentVarLive(vm_ctx, var_id, scope_type); // id 0 is a real var
+        if (ok && vs->enable) ResolveCurrentVarLive(vm_ctx, pc);
     }
     return orig(a, vm_ctx);
 }
-void* Detour_Varp(std::uint64_t a, std::uint64_t vm_ctx) { if (auto* vs = g_varcShare.load(std::memory_order_acquire)) vs->diag[0]++; return VarOpObserve(g_origVarp, a, vm_ctx, 4); }
-void* Detour_Varc(std::uint64_t a, std::uint64_t vm_ctx) { if (auto* vs = g_varcShare.load(std::memory_order_acquire)) vs->diag[1]++; return VarOpObserve(g_origVarc, a, vm_ctx, 5); }
+void* Detour_Varp(std::uint64_t a, std::uint64_t vm_ctx) { if (auto* vs = g_varcShare.load(std::memory_order_acquire)) vs->diag[0]++; return VarOpObserve(g_origVarp, a, vm_ctx); }
+void* Detour_Varc(std::uint64_t a, std::uint64_t vm_ctx) { if (auto* vs = g_varcShare.load(std::memory_order_acquire)) vs->diag[1]++; return VarOpObserve(g_origVarc, a, vm_ctx); }
 
 typedef void* (*CcOp_t)(std::uint64_t, std::uint64_t, std::uint64_t, std::uint64_t);
 CcOp_t g_origCcDrag = nullptr;
@@ -912,7 +971,7 @@ rtx::varc::Share* MapVarcShare() {
 
 rtx::varc::Entry g_varcbuf[rtx::varc::kMaxVars];
 
-struct EnumEntry { std::uint64_t entry; std::uint16_t id; std::uint8_t type; };
+struct EnumEntry { std::uint64_t entry; std::uint16_t pc; std::uint8_t type; };
 
 void EnumerateScope(const VarContext& sc, std::vector<EnumEntry>& out) {
     std::uint64_t bt = sc.bucket_table; std::uint32_t bc = sc.bucket_count;
@@ -932,7 +991,7 @@ void EnumerateScope(const VarContext& sc, std::vector<EnumEntry>& out) {
         for (int chain = 0; entry && chain < 256; ++chain) {
             if (!CanonPtr(entry)) break;
             EnumEntry e{}; e.entry = entry;
-            __try { e.id = *(std::uint16_t*)(entry + 0); e.type = *(std::uint8_t*)(entry + 0x20); }
+            __try { e.pc = *(std::uint16_t*)(entry + 0); e.type = *(std::uint8_t*)(entry + 0x20); }
             __except (EXCEPTION_EXECUTE_HANDLER) { break; }
             out.push_back(e);
             __try { entry = *(std::uint64_t*)(entry + 0x28); }
@@ -944,6 +1003,10 @@ void EnumerateScope(const VarContext& sc, std::vector<EnumEntry>& out) {
 std::int32_t ReadIntSafe(std::uint64_t storage) {
     __try { return *(std::int32_t*)storage; } __except (EXCEPTION_EXECUTE_HANDLER) { return 0; }
 }
+bool IsPanelVar(std::uint16_t id) {
+    for (const auto& g : kPanelGroups) if (id == g.x || id == g.y || (g.w && id == g.w) || (g.h && id == g.h)) return true;
+    return false;
+}
 
 __declspec(noinline) void DiscoverStorage() {
     std::vector<VarContext> scopes;
@@ -954,11 +1017,11 @@ __declspec(noinline) void DiscoverStorage() {
         if (!ScopeStillLive(sc)) continue;
         ++live;
         ents.clear(); EnumerateScope(sc, ents);
-        const std::uint32_t scopeKey = (std::uint32_t)sc.scope_type << 16;
         std::lock_guard<std::mutex> lk(g_varMu);
         for (auto& e : ents) {
-            if (e.type != 4) continue;
-            std::uint32_t key = scopeKey | e.id;
+            std::uint32_t varId = 0, domain = 0;
+            if (e.type != kConstVar || !ConstVar(e.entry, varId, domain)) continue;
+            const std::uint32_t key = VarKey(domain, varId);
             if (g_storageCache.find(key) != g_storageCache.end()) continue;
             std::uint64_t storage = ResolveStorage(e.entry, sc);
             if (storage) g_storageCache[key] = storage;
@@ -997,12 +1060,16 @@ void PublishVarcs(rtx::varc::Share* vsh) {
             else { g_walkAttempts.erase(it->first); it = g_storageCache.erase(it); }
         }
     }
+    // Published as (scope, id): scope 4 for player vars (domain 0), 5 for client vars (domain 2),
+    // 16 + domain for the rest.
     std::uint32_t c = 0;
     { std::lock_guard<std::mutex> lk(g_varMu);
       for (auto& kv : g_storageCache) {
           if (c >= (std::uint32_t)rtx::varc::kMaxVars) break;
-          g_varcbuf[c].id    = (std::uint16_t)(kv.first & 0xffff);
-          g_varcbuf[c].scope = (std::uint8_t)((kv.first >> 16) & 0xff);  // 4 = varp/varbit, 5 = varc-int
+          const std::uint32_t domain = kv.first >> 16;
+          const std::uint16_t id = (std::uint16_t)(kv.first & 0xffff);
+          g_varcbuf[c].id    = id;
+          g_varcbuf[c].scope = (std::uint8_t)(domain == kDomainPlayer ? 4 : domain == kDomainClient ? 5 : 16 + domain);
           g_varcbuf[c]._pad  = 0;
           g_varcbuf[c].value = ReadIntSafe(kv.second);
           ++c;
@@ -1528,7 +1595,8 @@ void ResolveNetCapture() {
     }
 }
 
-// Hooked at the inbound framer FUN_1400ff0c0, which ISAAC-deciphers the opcode and looks it up in the packet table (rs2client+0xC70BB0 on 950-1, entries 0..0xDE).
+// Hooked at the inbound framer (the function the descriptor vector anchor names), which deciphers the opcode and looks it up in the
+// descriptor table (ServerOps.h: the fixed-capacity vector, one descriptor per opcode 0..kOpMax).
 // Connection object: +0x2C int opcode (-1 = none), +0x30 int length, +0x2D0 payload ptr, +0x2E8 cumulative inbound byte counter.
 constexpr int kOpMessageGame = rtx::sops::kMessageGame;
 rtx::netprobe::Share* g_netProbeShare = nullptr;
@@ -2008,6 +2076,72 @@ void ConnCheck() {
     }
 }
 
+// The var cache: entries keyed by the var id and domain read from the script constants (config id
+// +8, domain +0x38 -> +8), the panel position varcs among them.
+void VarCacheCheck() {
+    static CheckState s;
+    const char* F = "Live variable changes|Panel positions";
+    std::size_t n = 0, player = 0, client = 0, panel = 0;
+    {
+        std::lock_guard<std::mutex> lk(g_varMu);
+        for (const auto& kv : g_storageCache) {
+            ++n;
+            const std::uint32_t domain = kv.first >> 16;
+            if (domain == kDomainPlayer) ++player;
+            else if (domain == kDomainClient) { ++client; if (IsPanelVar((std::uint16_t)(kv.first & 0xFFFF))) ++panel; }
+        }
+    }
+    const std::uint32_t bad = g_varKeyBad.load(std::memory_order_relaxed);
+    char exp[24], got[32], detail[300];
+    std::snprintf(exp, sizeof(exp), "id,domain");
+    std::snprintf(got, sizeof(got), "%zu/%u", n, bad);
+    if (!n && !bad) {
+        if (Transition(s, 0)) CheckLine("var-cache", "SKIP", "", exp, "-", F, "scripts pushing vars", "no var constant resolved yet");
+        return;
+    }
+    if (bad >= 4 && bad * 10 > n) {   // a few rejects are a torn read of a script on its way out, not a layout change
+        if (Transition(s, 2)) {
+            std::snprintf(detail, sizeof(detail), "FORMAT: %u var constants read an id above 0xffff or a domain above %u at config +8 / +0x38 -> +8; %zu resolved", bad, kDomainMax, n);
+            CheckLine("var-cache", "FAIL", "format", exp, got, F, "", detail);
+        }
+        return;
+    }
+    if (Transition(s, 1)) {
+        std::snprintf(detail, sizeof(detail), "%zu vars cached by id and domain: %zu player, %zu client (%zu panel position vars), %zu other; %u constants rejected",
+                      n, player, client, panel, n - player - client, bad);
+        CheckLine("var-cache", "OK", "", exp, got, F, "", detail);
+    }
+}
+
+// The chat store's second index (the tree at +0x20, size +0x40): the unlink leaves it alone, which
+// holds as long as chat lines do not enter it. Watched on the lines the notify hook sees.
+void ChatTreeCheck() {
+    static CheckState s;
+    const char* F = "Chat mute";
+    std::uint32_t lines = 0, changes = 0; std::int64_t first = 0, last = 0;
+    rtx::chatfilter::TreeStats(lines, changes, first, last);
+    char exp[24], got[32], detail[300];
+    std::snprintf(exp, sizeof(exp), "static");
+    std::snprintf(got, sizeof(got), "%lld/%u", (long long)last, changes);
+    if (lines < 40) {   // the tree fills over the first lines of a session (8 entries seen live)
+        if (Transition(s, 0)) CheckLine("chat-tree", "SKIP", "", exp, "-", F, "40 chat lines", "fewer than 40 chat lines seen by the notify hook");
+        return;
+    }
+    if (changes * 2 >= lines) {
+        if (Transition(s, 2)) {
+            std::snprintf(detail, sizeof(detail), "FORMAT: the tree at chat store +0x20 changed size on %u of %u lines (%lld -> %lld): chat lines enter it, so the unlink is refused and a muted line is skipped instead",
+                          changes, lines, (long long)first, (long long)last);
+            CheckLine("chat-tree", "FAIL", "format", exp, got, F, "", detail);
+        }
+        return;
+    }
+    if (Transition(s, 1)) {
+        std::snprintf(detail, sizeof(detail), "tree size %lld held across %u lines (%u changes): chat lines do not enter the tree at +0x20, the records map at +0x878 is the only index to unlink from",
+                      (long long)last, lines, changes);
+        CheckLine("chat-tree", "OK", "", exp, got, F, "", detail);
+    }
+}
+
 void LiveChecks(std::uint64_t root, std::uint64_t localPlayerSub) {
     static ULONGLONG s_next = 0;
     const ULONGLONG now = GetTickCount64();
@@ -2017,6 +2151,8 @@ void LiveChecks(std::uint64_t root, std::uint64_t localPlayerSub) {
     PlayerEntityCheck(root, localPlayerSub);
     GroundCheck();
     ConnCheck();
+    VarCacheCheck();
+    ChatTreeCheck();
 }
 
 // ---- Session rebind --------------------------------------------------
@@ -2183,14 +2319,14 @@ DWORD WINAPI Worker(LPVOID) {
         g_groundShare->count = 0; g_groundShare->seq = 0; g_groundShare->flags = 0;
     }
 
-    // Client-variable values: observe the varp and varc-int op handlers. flags bit0 = observers installed.
+    // Live var values: observe the var and varbit push handlers (pushvar, pushvarbit). flags bit0 = observers installed.
     if (auto* vs = MapVarcShare()) {
         vs->magic = rtx::varc::kMagic; vs->version = rtx::varc::kVersion;
         vs->pid = GetCurrentProcessId(); vs->count = 0; vs->strCount = 0;
         vs->enable = 0; vs->flags = 0; vs->seq = 0;
         for (int i = 0; i < 8; ++i) vs->diag[i] = 0;
         g_varcShare.store(vs, std::memory_order_release);
-        // Same body up to the final bucket-load register: varp ends ...49 8B 0C C2, varc ...49 8B 04 C2.
+        // Same body up to the final bucket-load register: pushvar ends ...49 8B 0C C2, pushvarbit ...49 8B 04 C2.
         using rtx::sig::kVarpBody;
         using rtx::sig::kVarcBody;
         const Located lVarp = Locate("varp-observer", FindVarOp(kVarpBody, sizeof(kVarpBody)));

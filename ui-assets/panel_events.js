@@ -6,7 +6,7 @@
   const evCounts = {};                    // kind -> count since page load
   const evTick = { count: 0, last: -1, dts: [], lastAt: 0 };
   let evPaused = false, evDirty = false, evTimer = null;
-  const EV_KINDS = ['skill_update', 'container_update', 'runclientscript', 'buff_update', 'varp_set', 'varbit_set', 'varc_set', 'obj_add', 'obj_del', 'obj_count', 'loc_add', 'loc_del', 'spotanim', 'spotanim_actor', 'projectile', 'sound', 'area_sound', 'zone_update', 'zone_base', 'zone_clear', 'ge_offer', 'run_energy', 'run_weight', 'ping', 'raw'];
+  const EV_KINDS = ['skill_update', 'container_update', 'runclientscript', 'buff_update', 'varp_set', 'varbit_set', 'varc_set', 'obj_add', 'obj_del', 'obj_count', 'loc_add', 'loc_del', 'spotanim', 'spotanim_actor', 'projectile', 'sound', 'area_sound', 'zone_update', 'zone_base', 'zone_clear', 'ge_offer', 'run_energy', 'run_weight', 'ping', 'container_full', 'container_reset', 'tracker_group', 'tracker_values', 'tracker_remove', 'tracker_clear', 'tracker_column', 'system_update', 'camera_target', 'cutscene', 'friends_loaded', 'private_filter', 'minimap_state', 'zone_sub', 'raw'];
   const SOPS = { message_game: 0x21, skill_update: 0x5C, container_update: 0x32, runclientscript: 0x23,
                  ge_offer: 0x54, run_energy: 0x15, run_weight: 0x07, ping_echo: 0xBE, server_tick: 0xA0,
                  varp_int: 0x04, varp_byte: 0x4F, varc_int: 0x77, varc_byte: 0x7E, varp_long: 0xA5, varbit_varint: 0x74,
@@ -14,8 +14,10 @@
                  spotanim: 0x0E, spotanim2: 0xBC, spotanim_actor: 0x75, spotanim_actor2: 0xC5, projectile: 0x9A, sound: 0x2C, area_sound: 0xA4, area_sound_abs: 0x5F };
   (async () => { try { const m = await rtxData.call('state.serverOps'); if (m && typeof m === 'object') Object.assign(SOPS, m); } catch (e) {} })();
   const evDefaultMask = () => ['run_weight', 'skill_update', 'ge_offer', 'container_update', 'runclientscript', 'run_energy', 'ping_echo', 'varp_int', 'varp_byte', 'varc_int', 'varc_byte', 'varp_long', 'varbit_varint',
-                               'zone_base', 'zone_clear', 'zone_update', 'obj_add', 'obj_del', 'obj_count', 'loc_add', 'loc_del', 'spotanim', 'spotanim2', 'spotanim_actor', 'spotanim_actor2', 'projectile', 'sound', 'area_sound', 'area_sound_abs']
-      .map(k => SOPS[k]).sort((a, b) => a - b).join(',');   // mirrors kDefaultMask in companion/EventShare.h
+                               'zone_base', 'zone_clear', 'zone_update', 'obj_add', 'obj_del', 'obj_count', 'loc_add', 'loc_del', 'spotanim', 'spotanim2', 'spotanim_actor', 'spotanim_actor2', 'projectile', 'sound', 'area_sound', 'area_sound_abs',
+                               'varbit_byte', 'varbit_int', 'varc_long', 'zone_sub3', 'zone_sub14', 'container_full', 'container_reset', 'tracker_group', 'tracker_values', 'tracker_remove', 'tracker_clear', 'tracker_column',
+                               'system_update', 'camera_target', 'cutscene', 'friends_loaded', 'private_filter', 'minimap_state']
+      .map(k => SOPS[k]).filter(op => typeof op === 'number').sort((a, b) => a - b).join(',');   // mirrors kDefaultMask in companion/EventShare.h; names this host does not know are left out
   const EV_OPNAMES = { [SOPS.server_tick]: 'server_tick' };
   const EV_TYPES = [
     { name: 'skill_update',     kind: 'skill_update',     label: 'XP and levels',    note: 'every xp drop' },
@@ -47,6 +49,24 @@
     { name: 'run_energy',       kind: 'run_energy',       label: 'Run energy',       note: '' },
     { name: 'run_weight',       kind: 'run_weight',       label: 'Weight',           note: '' },
     { name: 'ping_echo',        kind: 'ping',             label: 'Ping',             note: 'server keepalive' },
+    { name: 'varbit_byte',      kind: 'varbit_set',       label: 'Varbit (byte)',    note: 'server varbit set, small' },
+    { name: 'varbit_int',       kind: 'varbit_set',       label: 'Varbit (int)',     note: 'server varbit set, 32-bit' },
+    { name: 'varc_long',        kind: 'varc_set',         label: 'Varc (64-bit)',    note: 'client variable set, 64-bit' },
+    { name: 'container_full',   kind: 'container_full',   label: 'Container (full)', note: 'a whole container, on login or interface open' },
+    { name: 'container_reset',  kind: 'container_reset',  label: 'Container reset',  note: 'a container reset' },
+    { name: 'tracker_group',    kind: 'tracker_group',    label: 'Tracker group',    note: 'skill, combat or loot tracker group added' },
+    { name: 'tracker_values',   kind: 'tracker_values',   label: 'Tracker values',   note: 'the server\'s tracker numbers (XP/h, DPM, GP/h)' },
+    { name: 'tracker_remove',   kind: 'tracker_remove',   label: 'Tracker removed',  note: '' },
+    { name: 'tracker_clear',    kind: 'tracker_clear',    label: 'Tracker cell clear', note: '' },
+    { name: 'tracker_column',   kind: 'tracker_column',   label: 'Tracker column',   note: 'column shown or hidden' },
+    { name: 'system_update',    kind: 'system_update',    label: 'System update',    note: 'countdown seconds' },
+    { name: 'camera_target',    kind: 'camera_target',    label: 'Camera target',    note: 'server points the camera at a tile' },
+    { name: 'cutscene',         kind: 'cutscene',         label: 'Cutscene',         note: '' },
+    { name: 'friends_loaded',   kind: 'friends_loaded',   label: 'Friends loaded',   note: '' },
+    { name: 'private_filter',   kind: 'private_filter',   label: 'Private filter',   note: 'private chat filter' },
+    { name: 'minimap_state',    kind: 'minimap_state',    label: 'Minimap state',    note: '' },
+    { name: 'zone_sub3',        kind: 'zone_sub',         label: 'Zone item 3',      note: 'zone item body not decoded yet' },
+    { name: 'zone_sub14',       kind: 'zone_sub',         label: 'Zone item 14',     note: 'zone item body not decoded yet' },
   ];
   for (const t of EV_TYPES) Object.defineProperty(t, 'op', { get() { return SOPS[t.name]; } });
 
@@ -217,13 +237,32 @@
       }
       case 'runclientscript': return evScriptText(ev);
       case 'ge_offer': {
-        const o = ev.offer || {};
-        if (o.item == null) return 'slot ' + ev.slot + ' (offer unreadable) hex ' + (ev.hex || '');
+        const o = (ev.offer && ev.offer.item != null) ? ev.offer : ev;   // the slot as the client holds it, else the packet's fields
+        if (ev.cleared) return 'market ' + ev.market + ' slot ' + ev.slot + ' cleared';
+        if (o.item == null) return 'market ' + ev.market + ' slot ' + ev.slot + ' status ' + ev.status + (ev.extended === false ? ' (plain form)' : '') + (ev.hex ? ' hex ' + ev.hex : '');
         const kind = o.type === 0 ? 'buy' : o.type === 1 ? 'sell' : ('type ' + o.type);
         const inm = evItemName(o.item);
         return 'slot ' + ev.slot + ' ' + kind + ' ' + (inm || ('item ' + o.item)) + ' x' + o.qty + ' @ ' + Number(o.price).toLocaleString('en-US')
              + ' filled ' + o.filled + '/' + o.qty + ' (' + Number(o.filledValue).toLocaleString('en-US') + ' gp) status ' + o.status;
       }
+      case 'container_full': { const sl = ev.slots || []; return evContainer(ev.container) + (ev.other ? ' (other player)' : '') + ' full: ' + ev.count + ' slots, ' + sl.length + ' filled' + (ev.partial ? ' [partial]' : ''); }
+      case 'container_reset': return evContainer(ev.container) + ' reset' + (ev.other ? ' (other player)' : '');
+      case 'tracker_group': return 'tracker group ' + ev.groupId + ' at slot ' + ev.slot;
+      case 'tracker_values': {
+        const c = ev.cells || [];
+        const cell = x => '[' + (x.groupId != null ? 'g' + x.groupId : x.group) + ',' + (x.rowId != null ? 'r' + x.rowId : x.row) + ',' + (x.columnId != null ? 'c' + x.columnId : x.column) + ']=' + (x.value == null ? 'none' : Number(x.value).toLocaleString('en-US'));
+        return c.length + ' cell(s): ' + c.slice(0, 8).map(cell).join(' ') + (c.length > 8 ? ' ...' : '') + (ev.partial ? ' [partial]' : '');
+      }
+      case 'tracker_remove': return 'tracker slot ' + ev.slot + ' removed';
+      case 'tracker_clear': return 'tracker cell [' + ev.group + ',' + ev.row + ',' + ev.column + '] cleared';
+      case 'tracker_column': return 'tracker group ' + ev.group + ' column ' + ev.column + (ev.shown ? ' shown' : ' hidden');
+      case 'system_update': return 'system update in ' + ev.seconds + ' s';
+      case 'camera_target': return ev.cleared ? 'camera target cleared' : 'camera target ' + ev.x + ',' + ev.y + ' plane ' + ev.plane;
+      case 'cutscene': return 'cutscene ' + ev.id;
+      case 'friends_loaded': return 'friends list loaded';
+      case 'private_filter': return 'private chat filter ' + ev.value;
+      case 'minimap_state': return 'minimap state ' + ev.value + (ev.shown ? ' (shown)' : ' (hidden)');
+      case 'zone_sub': return 'zone item sub ' + ev.sub + ' hex ' + (ev.hex || '');
       case 'run_energy': return 'energy ' + ev.value;
       case 'run_weight': return 'weight ' + ev.value;
       case 'ping': return 'echo ' + ev.a + ' / ' + ev.b;
@@ -358,6 +397,7 @@
     const extra = Object.keys(on).filter(o => !known[o]);
     host.innerHTML = '';
     for (const t of EV_TYPES) {
+      if (typeof t.op !== 'number') continue;   // a type this host's opcode table does not name
       const b = document.createElement('button');
       b.className = 'ev-btn' + (on[t.op] ? ' on' : '');
       b.textContent = t.label;
@@ -378,7 +418,7 @@
     $('evWhat').textContent = total >= 250
       ? ('Recording every packet type (' + total + '). Types without a decoder arrive as raw hex. '
          + 'This is a lot of traffic; Reset to default when you are done.')
-      : ('Recording ' + n + ' of ' + EV_TYPES.length + ' named event types'
+      : ('Recording ' + n + ' of ' + EV_TYPES.filter(t => typeof t.op === 'number').length + ' named event types'
          + (extra.length ? ' and ' + extra.length + ' extra opcode' + (extra.length === 1 ? '' : 's') : '')
          + ', out of 256 the game can send. Anything not switched on is not captured at all, and '
          + 'chat has its own channel. Use Everything to see the rest as raw hex.');

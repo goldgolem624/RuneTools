@@ -266,15 +266,29 @@ rtx.plugin.events.off(kind, fn);
 | `zone_update` | `x, y, plane, items[]` | several tile events batched for one 8x8 zone |
 | `skill_update` | `seq, t, wall, op, len, kind, skill, name, level, xp` | a skill level or xp changed |
 | `container_update` | `container, flags, slots[] (slot, item, qty), partial` | a container changed |
+| `container_full` | `container, flags, other, count, slots[] (slot, item, qty), partial` | a whole container arrived (login, interface open); `other` = another player's side of a trade |
+| `container_reset` | `container, other` | the server reset a container |
 | `runclientscript` | `script, sig, args` | the server ran a client script |
 | `buff_update` | `struct, active, name` | a buff-bar entry was bound or cleared; pair with `state.buffs()` for its timer |
 | `varp_set` | `id, value` | the server changed a player variable |
 | `varbit_set` | `id, value` | the server set a varbit directly (a varbit is a bit range of its varp, see `cache.varbitDomains`) |
-| `varc_set` | `id, value` | the server changed a client variable |
+| `varc_set` | `id, value, long?` | the server changed a client variable (`long: true` for a 64-bit value) |
+| `tracker_group` | `groupId, slot` | the game added a tracker group (1 skills, 2 combat, 3 loot) |
+| `tracker_values` | `cells[] (group, row, column, value, groupId?, rowId?, columnId?), partial` | the server's own tracker numbers (XP, XP/h, DPM, accuracy, GP/h); `value` null = none; the ids resolve the slot and indexes when the group definitions are readable (skills: rowId = skill id, columnId 1 XP, 2 XP/h, 4 ETA) |
+| `tracker_remove` | `slot, groupId?` | a tracker group was removed |
+| `tracker_clear` | `group, row, column, groupId?, rowId?, columnId?` | one tracker cell was cleared |
+| `tracker_column` | `group, column, shown, groupId?, columnId?` | a tracker column was shown or hidden |
+| `system_update` | `seconds` | a system update countdown started or changed |
+| `camera_target` | `x, y, plane, cleared` | the server pointed the camera at a tile (or released it) |
+| `cutscene` | `id` | a cutscene started |
+| `friends_loaded` | | the friends list finished loading |
+| `private_filter` | `value` | the private chat filter changed |
+| `minimap_state` | `value, mode, shown` | the minimap mode changed |
 | `run_energy` | `value` | run energy changed |
 | `run_weight` | `value` | carried weight changed |
 | `ping` | `a, b` | a server ping |
-| `ge_offer` | `op, len, hex` | a Grand Exchange offer packet, undecoded |
+| `ge_offer` | `market, slot, status, type, item, price, qty, filled, filledValue, cleared?, offer?` | a Grand Exchange offer changed (`type` 0 buy, 1 sell; `offer` = the slot as the client holds it) |
+| `zone_sub` | `sub, hex` | a zone item whose body has no decoder yet |
 | `raw` | `op, len, hex` | any other captured opcode |
 | `gameTick` | `tick, dtMs` | one per 600 ms server tick |
 | `*` | the event | every kind |
@@ -389,10 +403,15 @@ await rtx.plugin.state.itemExtra(93, itemId);
 
 ```js
 await rtx.plugin.state.social();
-// -> { in:true, world, friendsLoaded, online, friends:[ { name, world }, ... ] }
+// -> { in:true, world, friendsLoaded, online,
+//      friends:[ { name, world, worldName, rank, prev, notes }, ... ],
+//      ignores:[ { name, prev, notes, temporary }, ... ],
+//      friendsChat: { name, owner, rank, kickRank, count, users:[ { name, world, rank } ] } | null,
+//      group: { name, maxSize, ownerSlot, count, members:[ { name, online, rank, status, team } ] } | null }
 ```
 
-- `world` 0 on a friend means offline.
+- `world` 0 on a friend means offline; `prev` is the previous name.
+- `friendsChat` is null outside a channel; `group` is null without a player group.
 - Names are display names.
 
 #### state.walkable(x, y, plane, r)
@@ -664,12 +683,19 @@ await rtx.plugin.state.gameTick();
 
 ```js
 await rtx.plugin.state.clientState();
-// -> { cutscene, inCutscene, options:[44 ints] }
+// -> { cutscene, inCutscene, systemUpdateTicks, membersWorld, logoutReason, loginReply, lobbyReply,
+//      fov, fovX, cameraControl, varSeq, country, options:[44 ints],
+//      optionsNamed:[ { id, name, value, label, min, max }, ... ], windowMode, windowModeLabel, fullscreenSize, preset, presetLabel }
 ```
 
 - `cutscene` is the running cutscene id, -1 when none.
+- `systemUpdateTicks` counts down to a system update (0 when none); `membersWorld` is 1 on a members world.
+- `loginReply` / `lobbyReply` are the last login and lobby reply codes (2 after a normal login); `logoutReason` is why the last session ended.
+- `fov` / `fovX` are the camera's vertical and horizontal field of view in radians.
+- `varSeq` advances whenever the server changes a var: poll it before re-reading vars (a var a script sets does not move it).
 - `options` holds the client's 44 option values (graphics, audio and interface settings) by id;
-  names are not carried by the client.
+  `optionsNamed` adds each one's name, range and the value's label ("Shadows: On", "VSync: Adaptive").
+- `windowMode` is 1 Small, 2 Resizable, 3 Fullscreen; `preset` is the graphics preset (0 Custom .. 7 Powersave).
 
 #### state.ports()
 
@@ -741,12 +767,13 @@ await rtx.plugin.state.actionBar();
 | `state.read` | none | objects below; `null` when not in game |
 
 ```js
-await rtx.plugin.state.cooldowns();   // -> { cooldowns:[ ... ] }
+await rtx.plugin.state.cooldowns();   // -> { clock, cycles, cooldowns:[ { id, name, remaining, castCycle, readyCycle, duration }, ... ] }
 await rtx.plugin.state.perks();       // -> { items:[ ... ] }
 ```
 
-- `cooldowns` is the legacy engine registry and may be empty; `state.actionBar()` carries the
-  reliable cooldown text.
+- `cooldowns` lists the action-bar abilities counting down, from their cooldown clocks: `remaining`
+  and `duration` in ms, `castCycle` / `readyCycle` in client cycles (50 per second, `cycles` is now).
+  Abilities on the shared global cooldown are not listed; `state.actionBar()` carries the on-slot text.
 - `perks` lists augmented gear and perks.
 
 #### state.pets()

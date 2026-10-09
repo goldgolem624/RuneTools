@@ -483,15 +483,16 @@ std::map<int, int> StaticPacketLengths(const Image& im, std::uint32_t tblRva, st
         const std::uint8_t* b = Bytes(im, from, kWin);
         if (!b) continue;
         int op = -1, len = -1; bool haveOp = false, haveLen = false, lenFromOp = false, opFromR8 = false; std::int32_t d = 0;
+        // a match steps over its immediate: `mov edx,0xBA` carries the byte 0xBA inside its operand
         for (std::uint32_t k = 0; k + 2 <= kWin; ++k) {
-            if (b[k] == 0xBA && k + 5 <= kWin) { std::int32_t v; std::memcpy(&v, b + k + 1, 4); op = v; haveOp = true; opFromR8 = false; continue; }             // mov edx,imm32
-            if (b[k] == 0x33 && b[k + 1] == 0xD2) { op = 0; haveOp = true; opFromR8 = false; continue; }                                                           // xor edx,edx
-            if (b[k] == 0x41 && b[k + 1] == 0xB8 && k + 6 <= kWin) { std::int32_t v; std::memcpy(&v, b + k + 2, 4); len = v; haveLen = true; lenFromOp = false; continue; }   // mov r8d,imm32
-            if (b[k] == 0x44 && b[k + 1] == 0x8D && b[k + 2] == 0x42 && k + 4 <= kWin) { d = (std::int8_t)b[k + 3]; haveLen = true; lenFromOp = true; continue; }       // lea r8d,[rdx+d8]
-            if (b[k] == 0x44 && b[k + 1] == 0x8D && b[k + 2] == 0x82 && k + 7 <= kWin) { std::memcpy(&d, b + k + 3, 4); haveLen = true; lenFromOp = true; continue; }    // lea r8d,[rdx+d32]
-            if (b[k] == 0x45 && b[k + 1] == 0x33 && b[k + 2] == 0xC0) { len = 0; haveLen = true; lenFromOp = false; continue; }                                    // xor r8d,r8d
-            if (b[k] == 0x41 && b[k + 1] == 0x8D && b[k + 2] == 0x50 && k + 4 <= kWin) { op = (std::int8_t)b[k + 3]; haveOp = true; opFromR8 = true; continue; }    // lea edx,[r8+d8]
-            if (b[k] == 0x41 && b[k + 1] == 0x8D && b[k + 2] == 0x90 && k + 7 <= kWin) { std::int32_t v; std::memcpy(&v, b + k + 3, 4); op = v; haveOp = true; opFromR8 = true; continue; }   // lea edx,[r8+d32]
+            if (b[k] == 0xBA && k + 5 <= kWin) { std::int32_t v; std::memcpy(&v, b + k + 1, 4); op = v; haveOp = true; opFromR8 = false; k += 4; continue; }             // mov edx,imm32
+            if (b[k] == 0x33 && b[k + 1] == 0xD2) { op = 0; haveOp = true; opFromR8 = false; k += 1; continue; }                                                           // xor edx,edx
+            if (b[k] == 0x41 && b[k + 1] == 0xB8 && k + 6 <= kWin) { std::int32_t v; std::memcpy(&v, b + k + 2, 4); len = v; haveLen = true; lenFromOp = false; k += 5; continue; }   // mov r8d,imm32
+            if (b[k] == 0x44 && b[k + 1] == 0x8D && b[k + 2] == 0x42 && k + 4 <= kWin) { d = (std::int8_t)b[k + 3]; haveLen = true; lenFromOp = true; k += 3; continue; }       // lea r8d,[rdx+d8]
+            if (b[k] == 0x44 && b[k + 1] == 0x8D && b[k + 2] == 0x82 && k + 7 <= kWin) { std::memcpy(&d, b + k + 3, 4); haveLen = true; lenFromOp = true; k += 6; continue; }    // lea r8d,[rdx+d32]
+            if (b[k] == 0x45 && b[k + 1] == 0x33 && b[k + 2] == 0xC0) { len = 0; haveLen = true; lenFromOp = false; k += 2; continue; }                                    // xor r8d,r8d
+            if (b[k] == 0x41 && b[k + 1] == 0x8D && b[k + 2] == 0x50 && k + 4 <= kWin) { op = (std::int8_t)b[k + 3]; haveOp = true; opFromR8 = true; k += 3; continue; }    // lea edx,[r8+d8]
+            if (b[k] == 0x41 && b[k + 1] == 0x8D && b[k + 2] == 0x90 && k + 7 <= kWin) { std::int32_t v; std::memcpy(&v, b + k + 3, 4); op = v; haveOp = true; opFromR8 = true; k += 6; continue; }   // lea edx,[r8+d32]
         }
         if (!haveOp || !haveLen) continue;
         if (opFromR8 && len != 0) continue;             // lea edx,[r8+d] only means d when r8d is 0
@@ -779,6 +780,19 @@ void Check(const std::wstring& exePath, rtx::health::Run& run) {
             }
             run.Add(G, "code.pktlens", "Packet lengths on disk", ok2, d2, "Packet decoders|Server opcodes|Events channel|Zone events", std::to_string(total) + " lengths", std::to_string(good), "code.packets").kind =
                 ok2 == kUnchecked ? "unrecorded" : std::string();
+            if (lens.size() >= 100) {   // every opcode against the compiled table, so a resized packet is named with the game closed
+                const int all = rtx::sops::kOpMax + 1; int agree = 0, missing = 0; std::string diff, none;
+                for (int op = 0; op < all; ++op) {
+                    auto it = lens.find(op);
+                    if (it == lens.end()) { ++missing; if (none.size() < 80) none += std::string(none.empty() ? "" : ", ") + Hex((std::uint32_t)op); continue; }   // an initializer shape the decode does not read: the live row pkt.lengths covers it
+                    if (it->second == rtx::sops::kAllLengths[op]) { ++agree; continue; }
+                    if (diff.size() < 240) diff += std::string(diff.empty() ? "" : ", ") + Hex((std::uint32_t)op) + " " + std::to_string(it->second) + "/" + std::to_string(rtx::sops::kAllLengths[op]);
+                }
+                const bool ok = diff.empty();
+                run.Add(G, "code.pktlens.all", "Packet lengths on disk, every opcode", ok ? kPass : kFail,
+                        (ok ? std::string() : std::string("FORMAT: ")) + std::to_string(agree) + "/" + std::to_string(all - missing) + " decoded opcodes carry their compiled wire length (file/compiled)" + (diff.empty() ? "" : "; " + diff) + (missing ? "; " + std::to_string(missing) + " not decoded from the file: " + none : ""),
+                        "Packet decoders|Events channel", std::to_string(all) + " lengths", std::to_string(agree) + " agree, " + std::to_string(missing) + " not decoded", "code.pktlens");
+            }
         }
     }
 

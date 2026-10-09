@@ -31,6 +31,7 @@
     { id: 'ge',      name: 'GE offer complete', desc: 'A Grand Exchange offer finishes' },
     { id: 'idle',    name: 'Player idle',       desc: 'You stop moving and stop animating', param: { label: 'After', suffix: 's', def: 5, min: 1, max: 600 }, repeatable: true },
     { id: 'logout',  name: 'Idle logout warning', desc: 'The idle-logout timer is nearly up (the server sends you to the lobby)', param: { label: 'Under', suffix: 's left', def: 10, min: 3, max: 300 }, repeatable: true, repeatHint: 'Keep warning every 5s while the timer is still under the threshold' },
+    { id: 'sysupdate', name: 'System update', desc: 'The game is counting down to a system update', param: { label: 'Under', suffix: 's left', def: 120, min: 5, max: 900 }, repeatable: true, repeatHint: 'Keep warning every 30s while the countdown runs' },
   ];
   const NOTIFY_TYPES = ['ingame', 'windows', 'both'];
   const NOTIFY_LABELS = { ingame: 'In-game', windows: 'Windows', both: 'Both' };
@@ -44,6 +45,7 @@
       ge:      { enabled: false, sound: 'alert 3', flash: false, notify: 'ingame', discord: false },
       idle:    { enabled: false, sound: 'alert 4', flash: false, val: 5, repeat: false, notify: 'ingame', discord: false },
       logout:  { enabled: false, sound: 'alert 9', flash: true,  val: 10, repeat: false, notify: 'both', discord: false },
+      sysupdate: { enabled: false, sound: 'alert 3', flash: true, val: 120, repeat: false, notify: 'both', discord: false },
     },
     custom: [],
   };
@@ -88,6 +90,8 @@
   const RANDOM_HOLD_MS = 3000;
   let alertState     = { ready: false, pid: 0, prevSkills: null, prevGeDone: {}, prevRandom: false, randomSeenAt: 0, idleSince: null, idleFired: false, custom: {}, augSeen: {}, farmSeen: {} };
   let alertLog       = [];
+  const alertSysEv = { seconds: 0, at: 0 };   // last system_update packet (seconds), for launchers without the client state field
+  rtxEvents.on('system_update', ev => { if (ev && typeof ev.seconds === 'number') { alertSysEv.seconds = ev.seconds; alertSysEv.at = Date.now(); } });
 
   function normCustom(w) {
     if (!w || typeof w !== 'object') return null;
@@ -478,6 +482,7 @@
     if (!alertCfg || !alertCfg.master) return false;
     if (alertCfg.rules.idle && alertCfg.rules.idle.enabled) return true;
     if (alertCfg.rules.logout && alertCfg.rules.logout.enabled) return true;
+    if (alertCfg.rules.sysupdate && alertCfg.rules.sysupdate.enabled) return true;
     return Array.isArray(alertCfg.custom) && alertCfg.custom.some(customNeedsInfo);
   }
   let _hiLast = null;
@@ -582,6 +587,17 @@
         alertState.logoutFired = false;   // input reset the clock (or it went unreadable)
       }
     } else { alertState.logoutFired = false; }
+    if (en('sysupdate')) {   // countdown from the client state (ticks of 0.6 s), else from the system_update packet
+      const sr = alertCfg.rules.sysupdate, warn = sr.val || 120, tnow = Date.now();
+      const ic = infoClient;
+      let left = (ic && typeof ic.systemUpdateTicks === 'number' && ic.systemUpdateTicks > 0) ? Math.ceil(ic.systemUpdateTicks * 0.6) : -1;
+      if (left < 0 && alertSysEv.at && tnow - alertSysEv.at < 3600000) left = alertSysEv.seconds - Math.floor((tnow - alertSysEv.at) / 1000);
+      if (left > 0 && left <= warn) {
+        const msg = 'System update in ' + Math.floor(left / 60) + ':' + ((left % 60) < 10 ? '0' : '') + (left % 60);
+        if (!alertState.sysFired) { fireAlert('sysupdate', msg); alertState.sysFired = true; alertState.sysLast = tnow; }
+        else if (sr.repeat && tnow - (alertState.sysLast || 0) >= 30000) { fireAlert('sysupdate', msg, true); alertState.sysLast = tnow; }
+      } else if (left <= 0) alertState.sysFired = false;
+    } else alertState.sysFired = false;
     const [px, py] = sceneSelfPos();
     const within = (x, y) => px == null ? true : Math.max(Math.abs(x - px), Math.abs(y - py)) <= sceneRange;
     if (sceneData && Array.isArray(sceneData.npcs)) {

@@ -8,6 +8,7 @@
   const chatLogs = {};   // pid -> { seen:Set, pseq, gid, pkPlain:Map, ifPlain:Map, lines:[{raw, ts, tokens, plain, chan, src}] }
   let chatFetching = false; let chatFetchAt = 0; chatSearch = ''; let chatSig = ''; let chatChan = 'All';
   let chatPkHook = false; let chatFromStore = 0;
+  let chatPeople = null, chatPeopleAt = 0, chatPeopleSig = '';   // state.social, read while the People view is open
   const CHAT_CHANS = ['All', 'Game', 'Public', 'Private', 'Friends', 'Clan', 'Guest', 'Group'];
   function chatStore() {
     const p = myPid();
@@ -291,6 +292,7 @@
         }
       }
     } catch (e) { try { console.log('[chatsrc] fetch failed: ' + (e && e.message) + ' | ' + String(e && e.stack || '').split('\n').join(' << ').slice(0, 400)); } catch (e2) {} } finally { chatFetching = false; }
+    if (chatChan === 'People') await fetchChatPeople();
     paneRun('chatlog', renderChatList);
   }
   // Muted NPCs: their chatter never reaches the chat window. Kept in the shared prefs; pushed to the
@@ -380,6 +382,7 @@
       chips.addEventListener('click', e => {
         const b = e.target.closest('.pet-chip'); if (!b) return;
         chatChan = b.dataset.chan; chatSig = ''; renderChatList();
+        if (chatChan === 'People') fetchChatPeople().then(() => { chatSig = ''; paneRun('chatlog', renderChatList); });
       });
       clr.addEventListener('click', async () => {
         const s = chatStore();
@@ -398,7 +401,8 @@
     const list = $('chatList'); if (!list) return;
     const store = chatStore();
     const q = chatSearch.trim().toLowerCase();
-    const sig = q + '|' + chatChan + '|' + (chatPkHook ? 1 : 0) + '|' + store.lines.length + '|' + (store.lines[0] ? store.lines[0].raw : '');
+    const sig = q + '|' + chatChan + '|' + (chatPkHook ? 1 : 0) + '|' + store.lines.length + '|' + (store.lines[0] ? store.lines[0].raw : '')
+              + (chatChan === 'People' ? '|' + chatPeopleAt : '');
     if (sig === chatSig) return;
     chatSig = sig;
     const counts = {}; for (const l of store.lines) counts[l.chan] = (counts[l.chan] || 0) + 1;
@@ -413,7 +417,15 @@
         b.dataset.chan = ch; b.textContent = ch + (ch !== 'All' && n ? ' ' + n : '');
         chipBar.appendChild(b);
       }
+      if (bridge() && bridge().social) {   // friends, ignores, friends chat and group rosters
+        const b = document.createElement('button');
+        b.className = 'pet-chip' + (chatChan === 'People' ? ' on' : '');
+        b.dataset.chan = 'People'; b.textContent = 'People';
+        chipBar.appendChild(b);
+      }
     }
+    if (chatChan === 'People') { renderChatPeople(list); return; }
+    list.dataset.people = '0';
     const shown = store.lines.filter(l =>
       (chatChan === 'All' || l.chan === chatChan) &&
       (!q || l.plain.toLowerCase().indexOf(q) >= 0));
@@ -450,6 +462,73 @@
       more.textContent = (shown.length - MAX) + ' older lines hidden. Search to narrow.';
       list.appendChild(more);
     }
+  }
+
+  // People: the social lists the client holds (friends with rank, world and notes; ignores; the
+  // friends chat roster; the player group). A list this launcher cannot read is left out.
+  async function fetchChatPeople() {
+    if (!bridge() || !bridge().social) return;
+    const now = Date.now(); if (now - chatPeopleAt < 1000) return; chatPeopleAt = now;
+    try { const d = await rtxData.call('state.social'); if (d && typeof d === 'object') chatPeople = d; } catch (e) {}
+  }
+  function renderChatPeople(list) {
+    const d = chatPeople, cnt = $('chatCnt');
+    const psig = JSON.stringify(d);
+    if (psig === chatPeopleSig && list.dataset.people === '1') return;
+    chatPeopleSig = psig; list.dataset.people = '1';
+    if (!d || !d.in) {
+      if (cnt) cnt.textContent = '';
+      list.innerHTML = '<div class="chat-empty">Waiting for the game client.</div>'; return;
+    }
+    const str = s => String(s == null ? '' : s);
+    const num = v => (typeof v === 'number' && v >= 0) ? String(v) : '';
+    const fr = Array.isArray(d.friends) ? d.friends.slice() : [];
+    fr.sort((a, b) => ((b.world > 0) - (a.world > 0)) || str(a.name).localeCompare(str(b.name)));
+    const online = fr.filter(f => f.world > 0).length;
+    const ig = Array.isArray(d.ignores) ? d.ignores : null;
+    const fc = d.friendsChat, gr = d.group;
+    const parts = [fr.length + ' friends, ' + online + ' online'];
+    if (ig) parts.push(ig.length + ' ignored');
+    if (fc !== undefined) parts.push(fc ? 'Friends chat ' + str(fc.name) + ' (' + (fc.count | 0) + ')' : 'no friends chat');
+    if (gr !== undefined) parts.push(gr ? 'Group ' + str(gr.name) + ' (' + (gr.count | 0) + (gr.maxSize > 0 ? '/' + gr.maxSize : '') + ')' : 'no group');
+    if (cnt) cnt.textContent = parts.join('  \u00b7  ');
+    const grid = document.createElement('div'); grid.className = 'soc-grid';
+    // cols: [header, track, class]; rows: cells as value or [value, class, tooltip]
+    const table = (title, cols, rows, empty, sub) => {
+      const box = document.createElement('div'); box.className = 'stor-box';
+      const h = document.createElement('div'); h.className = 'stor-h'; h.textContent = title; box.appendChild(h);
+      if (sub) { const s = document.createElement('div'); s.className = 'pet-count'; s.textContent = sub; box.appendChild(s); }
+      if (!rows.length) { const e = document.createElement('div'); e.className = 'stor-empty'; e.textContent = empty; box.appendChild(e); grid.appendChild(box); return; }
+      const t = document.createElement('div'); t.className = 'soc-t';
+      t.style.gridTemplateColumns = cols.map(c => c[1]).join(' ');
+      for (const c of cols) { const s = document.createElement('span'); s.className = 'h' + (c[2] ? ' ' + c[2] : ''); s.textContent = c[0]; t.appendChild(s); }
+      for (const r of rows) for (let i = 0; i < cols.length; i++) {
+        const cell = r[i], s = document.createElement('span');
+        const v = str(Array.isArray(cell) ? cell[0] : cell), cls = Array.isArray(cell) ? cell[1] : '', tip = Array.isArray(cell) ? cell[2] : '';
+        s.className = ((cols[i][2] || '') + ' ' + (cls || '')).trim(); s.textContent = v;
+        if (tip || v) s.title = tip || v;
+        t.appendChild(s);
+      }
+      box.appendChild(t); grid.appendChild(box);
+    };
+    table('Friends ' + online + ' / ' + fr.length,
+      [['Name', 'minmax(0,1.2fr)'], ['World', 'minmax(0,1fr)'], ['Rank', '40px', 'num'], ['Notes', 'minmax(0,1fr)', 'dim']],
+      fr.map(f => [[f.name, f.world > 0 ? 'on' : '', f.prev ? str(f.name) + ' (was ' + str(f.prev) + ')' : ''],
+                   f.world > 0 ? (f.worldName || ('World ' + f.world)) : 'offline', num(f.rank), f.notes || '']),
+      'No friends on the list.');
+    if (ig) table('Ignored ' + ig.length,
+      [['Name', 'minmax(0,1.2fr)'], ['Previous name', 'minmax(0,1fr)', 'dim'], ['Notes', 'minmax(0,1fr)', 'dim'], ['', '70px', 'dim']],
+      ig.map(x => [x.name, x.prev || '', x.notes || '', x.temporary ? 'temporary' : '']), 'Nobody ignored.');
+    if (fc !== undefined) table(fc ? 'Friends chat ' + str(fc.name) : 'Friends chat',
+      [['Name', 'minmax(0,1.4fr)'], ['World', '56px', 'num'], ['Rank', '40px', 'num']],
+      fc ? (fc.users || []).map(u => [u.name, num(u.world), num(u.rank)]) : [],
+      fc ? 'Nobody else in the channel.' : 'Not in a friends chat.',
+      fc ? 'owner ' + str(fc.owner) + (fc.rank >= 0 ? '  \u00b7  your rank ' + fc.rank : '') + (fc.kickRank >= 0 ? '  \u00b7  kick rank ' + fc.kickRank : '') : '');
+    if (gr !== undefined) table(gr ? 'Group ' + str(gr.name) + (gr.maxSize > 0 ? ' (' + (gr.count | 0) + '/' + gr.maxSize + ')' : '') : 'Group',
+      [['Name', 'minmax(0,1.4fr)'], ['', '52px', 'dim'], ['Rank', '40px', 'num'], ['Status', '48px', 'num'], ['Team', '40px', 'num']],
+      gr ? (gr.members || []).map(m => [[m.name, m.online ? 'on' : ''], m.online ? 'online' : 'offline', num(m.rank), num(m.status), num(m.team)]) : [],
+      gr ? 'No members.' : 'Not in a player group.');
+    list.innerHTML = ''; list.appendChild(grid);
   }
 
 Object.assign(window, { fetchChat });

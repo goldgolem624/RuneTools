@@ -2,10 +2,58 @@
 (function () {
 
   xpStateData = null; let xpStateRaw = ''; let xpLiveSig = ''; let xpFetching = false; let xpFetchAt = 0;
+  // The game's tracker grid (skills, combat, loot), from the tracker events: cells keyed by the ids the
+  // launcher resolves (group, row, column). Column names come from enum 10039; group 1 rows are skill ids.
+  const trk = { groups: {}, ver: 0 };   // groupId -> { rows: { rowId: { columnId: value } } }
+  const TRK_GROUP = { 1: 'Skills', 2: 'Combat', 3: 'Loot' };
+  let trkCols = null, trkColsTried = false;
+  rtxPins('XP', { enum: [10039] });
+  async function trkColsLoad() {
+    if (trkCols || trkColsTried || !bridge() || !bridge().enumInfo) return;
+    trkColsTried = true;
+    try { const e = JSON.parse(await rtxData.raw('cache.enumInfo', 10039) || 'null'); if (e && Object.keys(e).length) trkCols = e; else trkColsTried = false; }
+    catch (e) { trkColsTried = false; }
+  }
+  function trkCell(c) {
+    if (!c || typeof c.groupId !== 'number' || typeof c.rowId !== 'number' || typeof c.columnId !== 'number') return;
+    const g = trk.groups[c.groupId] || (trk.groups[c.groupId] = { rows: {} });
+    const r = g.rows[c.rowId] || (g.rows[c.rowId] = {});
+    r[c.columnId] = (typeof c.value === 'number') ? c.value : null;
+    trk.ver++;
+  }
+  rtxEvents.on('tracker_values', ev => { for (const c of (ev && ev.cells) || []) trkCell(c); });
+  rtxEvents.on('tracker_clear', ev => trkCell({ groupId: ev && ev.groupId, rowId: ev && ev.rowId, columnId: ev && ev.columnId, value: null }));
+  rtxEvents.on('tracker_remove', ev => { if (ev && typeof ev.groupId === 'number' && trk.groups[ev.groupId]) { delete trk.groups[ev.groupId]; trk.ver++; } });
+  function trkBox() {
+    const gids = Object.keys(trk.groups).map(Number).sort((a, b) => a - b);
+    if (!gids.length) return null;
+    const box = document.createElement('div'); box.className = 'stor-box'; box.style.marginTop = '6px';
+    const h = document.createElement('div'); h.className = 'stor-h'; h.textContent = 'Game trackers'; h.title = 'The numbers the game sends to its own tracker'; box.appendChild(h);
+    let any = false;
+    for (const gid of gids) {
+      const g = trk.groups[gid];
+      const rids = Object.keys(g.rows).map(Number).sort((a, b) => a - b);
+      const cset = new Set(); for (const r of rids) for (const c of Object.keys(g.rows[r])) cset.add(Number(c));
+      const cids = [...cset].sort((a, b) => a - b);
+      if (!rids.length || !cids.length) continue;
+      any = true;
+      const t = document.createElement('div'); t.className = 'soc-t'; t.style.marginBottom = '6px';
+      t.style.gridTemplateColumns = 'minmax(0,1fr) ' + cids.map(() => 'minmax(64px,auto)').join(' ');
+      const hd = document.createElement('span'); hd.className = 'h'; hd.textContent = TRK_GROUP[gid] || ('Group ' + gid); t.appendChild(hd);
+      for (const c of cids) { const s = document.createElement('span'); s.className = 'h num'; s.textContent = (trkCols && trkCols[c]) || ('Col ' + c); s.title = 'column ' + c; t.appendChild(s); }
+      for (const r of rids) {
+        const n = document.createElement('span'); n.textContent = gid === 1 ? (SKILL_NAMES[r] || ('Row ' + r)) : ('Row ' + r); n.title = 'row ' + r; t.appendChild(n);
+        for (const c of cids) { const v = g.rows[r][c], s = document.createElement('span'); s.className = 'num'; s.textContent = (v == null) ? '-' : Number(v).toLocaleString(); t.appendChild(s); }
+      }
+      box.appendChild(t);
+    }
+    return any ? box : null;
+  }
   async function fetchXpTracker(force) {
     if (!bridge() || !bridge().xpPanelState || xpFetching) return;
     const _t = Date.now(); if (!force && _t - xpFetchAt < 1000) return; xpFetchAt = _t;
     xpFetching = true;
+    trkColsLoad();
     try { const r = await rtxData.raw('host.xpPanelState'); xpStateData = JSON.parse(r); xpStateRaw = r; }
     catch (e) {} finally { xpFetching = false; }
     paneRun('xptracker', renderXpLive);
@@ -111,7 +159,7 @@
     const live = $('xpLive'); if (!live) return;
     const d = xpStateData;
     // Tracker samples at 1 Hz but renderPane() runs every 250 ms; skip no-op rebuilds.
-    const sig = xpStateRaw + '|' + xpAuto + '|' + xpMask + '|' + xpTotal;
+    const sig = xpStateRaw + '|' + xpAuto + '|' + xpMask + '|' + xpTotal + '|' + trk.ver + (trkCols ? 'c' : '');
     if (sig === xpLiveSig && live.childNodes.length) return;
     xpLiveSig = sig;
     live.innerHTML = '';
@@ -134,6 +182,7 @@
     for (const r2 of rows) row(SKILL_NAMES[r2.id] || ('#' + r2.id), r2.gained, r2.ph, false);
     if (!rows.length) box.insertAdjacentHTML('beforeend', '<div class="stor-empty">No XP gained yet this session.</div>');
     live.appendChild(box);
+    const tb = trkBox(); if (tb) live.appendChild(tb);
     const note = document.createElement('div'); note.className = 'pet-count'; note.style.marginTop = '6px';
     note.textContent = 'Skills at the 200,000,000 XP cap cannot be tracked: the game discards their gains.';
     live.appendChild(note);

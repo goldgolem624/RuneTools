@@ -370,7 +370,7 @@ void StripTags(const char* in, char* out) {
 
 // Reorder: permuting whole 16-byte records is refcount-neutral. "Top of menu" = end of array.
 struct Lane { std::uint64_t begin, end; int stat; const char* name; };
-// Permute only the drawn menu (+0x90) and +0x3b8, which FUN_14012d660 copies over +0x90 wholesale for interface/inventory menus.
+// Permute only the drawn menu (+0x90) and +0x3b8, which the routine at exe+0x12D660 copies over +0x90 wholesale for interface/inventory menus.
 // Never the subset lanes (+0x6e0, +0xa08, +0xd30, +0x13a0): permuting them independently desyncs draw from dispatch (row i clicks row i+1).
 const Lane kLanes[] = {
     { 0x0090, 0x0098, 0, "menu"  },
@@ -905,7 +905,7 @@ void DumpHoverSlots(std::uint64_t mgr) {
 }
 
 // ---- left-click lift ----
-// The game's snapshot (FUN_140166980 on 950-1) pulls every row whose class priority is below 1000 out
+// The game's snapshot (exe+0x166980 on 950-1) pulls every row whose class priority is below 1000 out
 // of +0x90 and appends them on top, re-sorts, then copies the top rows into the left-click slots
 // (+0x13f0 = top, +0x1400 = second, +0x13e0 = top or second by a setting) through a refcounted
 // assign helper. That is why a demoted rule row ("Deposit all fish", class 1001) never became the

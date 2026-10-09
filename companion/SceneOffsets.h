@@ -18,12 +18,12 @@ inline bool KnownBuild(std::uint64_t base) {
     return false;
 }
 
-inline constexpr std::uint64_t kContainer  = 0x199D0;  // root -> worldView container
-inline constexpr std::uint64_t kActiveIdx  = 0x70;     // container -> active entry index
-inline constexpr std::uint64_t kEntryArr   = 0x58;     // container -> entry array (stride 0x10)
-inline constexpr std::uint64_t kEntryWv    = 0x8;      // entry -> worldView object
-inline constexpr std::uint64_t kPlayerData = 0x19FA8;  // root -> local-player data block
-inline constexpr std::uint64_t kLocalUid   = 0x48;     // data -> local world index
+inline constexpr std::uint64_t kContainer  = 0x199D0;  // root -> game world list (the main world and instances)
+inline constexpr std::uint64_t kActiveIdx  = 0x70;     // list -> current world index
+inline constexpr std::uint64_t kEntryArr   = 0x58;     // list -> worlds vector of counted handles (stride 0x10)
+inline constexpr std::uint64_t kEntryWv    = 0x8;      // handle -> game world object (the worldView)
+inline constexpr std::uint64_t kPlayerData = 0x19FA8;  // root -> account: local player index +0x48, local player handle +0x50/+0x58, name +0x68
+inline constexpr std::uint64_t kLocalUid   = 0x48;     // account -> local player index
 // World grid: [wv+0x140C0] owns it (the worldView itself on the static map, bounds 0,0..98,198). Rows are indexed
 // by mapsquare x - min x, cells (0x18 each) by y - min y, region pointer at cell+8.
 inline constexpr std::uint64_t kWvGrid     = 0x140C0;  // worldView -> grid owner
@@ -33,7 +33,8 @@ inline constexpr std::uint64_t kMapDef     = 0xA4190;  // worldView -> instance 
 inline constexpr std::uint64_t kRegionWv   = 0x60;     // region -> owning worldView
 inline constexpr std::uint64_t kRegionRx   = 0x6C;     // region -> i32 mapsquare x
 inline constexpr std::uint64_t kRegionRy   = 0x70;     // region -> i32 mapsquare y
-inline constexpr std::uint64_t kWvBox      = 0xE83E8;  // worldView -> loc menu box (server packet 216); its first field == wv
+inline constexpr std::uint64_t kWvBox      = 0xE83E8;  // worldView -> its area bounds (server packet 216 fills them; spawn flag +0xE8428, spawn
+                                                     // +0xE8434, min +0xE8458, max +0xE8464 as {level, x, z}); its first field == wv
 
 inline constexpr std::uint32_t kWorkerOffDefault = 0x10170;
 inline constexpr std::uint32_t kMatrixOffDefault = 0x13090;
@@ -42,7 +43,7 @@ inline constexpr std::int32_t  kCamPosRelDefault = 0x80;     // campos rel. to m
 inline constexpr std::uint64_t kVecBegin = 0x138;   // worker -> entity vector begin
 inline constexpr std::uint64_t kVecEnd   = 0x140;   // worker -> entity vector end
 inline constexpr std::uint64_t kSecPtr   = 0x1A0;   // entity -> object-data (sec/sub)
-inline constexpr std::uint64_t kBack     = 0x18;    // sec -> entity back-pointer (was +0x8 through 949-5)
+inline constexpr std::uint64_t kBack     = 0x18;    // sec -> its scene node (the worker vector element; was +0x8 through 949-5)
 inline constexpr std::uint64_t kType     = 0x20;    // sec -> type byte (0x10 through 949-5; header grew 0x10 on 950-1, +0x88 onward unchanged)
 inline constexpr std::uint64_t kName     = 0xB8;    // sec -> live name: the 64-byte buffer of the string at sec+0x90
                                                      // {ptr +0x90 (== sec+0xB8), u64 len +0x98, cap +0xA0 = 63 with bit 63
@@ -102,8 +103,11 @@ inline constexpr std::uint64_t kSplatStride  = 0x18;
 inline constexpr std::uint64_t kBarStride    = 0x1b0;   // vector element stride, from the drawing code
 inline constexpr std::uint64_t kBarStamp     = 0x78;
 inline constexpr std::uint64_t kBarFill      = 0x7C;
-inline constexpr std::uint64_t kLpCur        = 0x114C;  // sec -> NPC current life points (local player: varp 13537)
-inline constexpr std::uint64_t kLpMax        = 0x1168;  // sec -> NPC max life points
+// NPC combat stats: seven current values from +0x1140 and seven base values from +0x115C (attack,
+// defence, strength, constitution, ranged, prayer, magic), visible level at +0x1178; the two read
+// today are index 3 of each.
+inline constexpr std::uint64_t kLpCur        = 0x114C;  // sec -> NPC current life points, stats[3] (local player: varp 13537)
+inline constexpr std::uint64_t kLpMax        = 0x1168;  // sec -> NPC max life points, base stats[3]
 inline constexpr std::uint64_t kNpcTarget    = 0x1364;  // sec -> NPC target player index, -1 none
 // Scene entity classes by sec type byte: 1 NPC, 2 player, 3 ground item, 4 world spot animation
 // (gfx @+0x84, fine x/up/y @+0x88/+0x8C/+0x90), 5 projectile (fine src x/y @+0x84/+0x88, dst x/y
