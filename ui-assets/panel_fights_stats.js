@@ -22,7 +22,9 @@
     SURGE: [], ESCAPE: [], DIVE: [], BLADED_DIVE: [0, 1], LIMITLESS: [], NATURAL_INSTINCT: [], BERSERK: [], REJUVENATE: [], GUTHIXS_BLESSING: [],
     INCITE: [], PROVOKE: [], REGENERATE: [], DEBILITATE: [0, 1], GLOBAL_COOLDOWN: [0, 1, 2]
   };
-  const EVENT_NAMES = ['hit', 'cast', 'anim', 'target', 'lp', 'adren', 'prayer', 'buff', 'channel', 'tracker', 'death', 'actor', 'encounter', 'gfx', 'proj', 'xp', 'mark', 'bar', 'stat'];
+  const EVENT_NAMES = ['hit', 'cast', 'anim', 'target', 'lp', 'adren', 'prayer', 'buff', 'channel', 'tracker', 'death', 'actor', 'encounter', 'gfx', 'proj', 'xp', 'mark', 'bar', 'stat', 'sound'];
+  // Boss mechanic rows: ["mech", c, boss, key, kind, id, actor]; kind indexes this list.
+  const MECH_KINDS = ['', 'animation', 'graphic', 'tile graphic', 'projectile', 'sound', 'hint arrow', 'var', 'spawn'];
 
   function token(name) {
     return String(name || '').toUpperCase().replace(/^GREATER\s+/, '').replace(/\(.*?\)/g, '').replace(/[^A-Z0-9]+/g, '_').replace(/^_+|_+$/g, '');
@@ -41,10 +43,17 @@
     const hm = {}, dh = (log.dict && log.dict.hitmarks) || {};
     for (const k in dh) hm[k] = dh[k];
     const c = { n: log.events.length, self, actors, hm, abilities: (log.dict && log.dict.abilities) || {}, buffs: (log.dict && log.dict.buffs) || {},
-                seqs: (log.dict && log.dict.seqs) || {}, attr: null };
+                seqs: (log.dict && log.dict.seqs) || {}, attr: null, mechT: {}, mechN: -1, bossN: {} };
+    const sc = log.schema || {};
+    for (const k in sc) if (Array.isArray(sc[k]) && sc[k][0] === 'mech') c.mechT[k] = 1;
     log.__cs = c;
     return c;
   }
+  function isMech(log, e) {
+    const t = e[0];
+    return t === 'mech' || !!ctx(log).mechT[t];
+  }
+  function typeName(log, e) { return isMech(log, e) ? 'mech' : (EVENT_NAMES[e[0]] || String(e[0])); }
   function hmInfo(log, id) {
     const c = ctx(log);
     return c.hm[id] || { kind: 'unknown', other: false, crit: false, name: '' };
@@ -380,6 +389,12 @@
   function describe(log, i) {
     const c = ctx(log), e = log.events[i], at = attribute(log);
     const row = { i, c: e[1], type: EVENT_NAMES[e[0]] || String(e[0]), actor: '', text: '', kind: '', value: '', ability: '', hitmark: '' };
+    if (isMech(log, e)) {
+      const m = mechInfo(log, e[2], e[3], e[4]), a = e[6] == null ? -1 : e[6];
+      row.type = 'mech'; row.actor = a >= 0 ? actorLabel(log, a) : ''; row.kind = MECH_KINDS[m.kind] || 'kind ' + m.kind;
+      row.value = e[5] == null ? '' : String(e[5]); row.text = bossName(log, e[2], a) + ': ' + m.label;
+      return row;
+    }
     switch (e[0]) {
       case 0: {
         const role = hitRole(log, e), h = hmInfo(log, e[3]);
@@ -403,12 +418,13 @@
       case 10: row.actor = actorLabel(log, e[2]); row.text = e[3] === 2 ? 'you died' : row.actor + ' died' + (e[3] === 1 ? ' (death animation)' : ''); break;
       case 11: row.actor = actorLabel(log, e[2]); row.text = row.actor + (e[3] ? ' appears' : ' leaves'); break;
       case 12: row.value = e[2]; row.text = e[2] < 0 ? 'encounter ends' : 'encounter ' + ((log.dict && log.dict.encounters && log.dict.encounters[e[2]]) || e[2]); break;
-      case 13: row.actor = actorLabel(log, e[2]); row.value = e[3]; row.text = 'gfx ' + e[3]; break;
+      case 13: row.actor = e[2] >= 0 ? actorLabel(log, e[2]) : ''; row.value = e[3]; row.text = 'gfx ' + e[3] + (e[2] >= 0 ? ' on ' + row.actor : ''); break;
       case 14: row.value = e[4]; row.text = 'projectile ' + e[4] + (e[2] >= 0 ? ' from ' + actorLabel(log, e[2]) : '') + (e[3] >= 0 ? ' to ' + actorLabel(log, e[3]) : ''); break;
       case 15: row.value = e[3]; row.text = 'xp skill ' + e[2] + ' +' + e[3]; break;
       case 16: row.kind = ['fight start', 'fight end', 'gap', 'rotation', 'logout'][e[2]] || 'mark'; row.text = row.kind + (e[3] ? ': ' + e[3] : ''); break;
       case 17: row.actor = actorLabel(log, e[2]); row.value = e[4]; row.text = 'head bar ' + e[3] + ' fill ' + e[4]; break;
       case 18: row.actor = actorLabel(log, e[2]); row.value = e[4]; row.text = 'stat ' + e[3] + ' ' + e[4] + ' / ' + e[5]; break;
+      case 19: row.value = e[2]; row.text = 'sound ' + e[2] + (e[3] ? ' on a tile' : ''); break;
       default: row.text = JSON.stringify(e.slice(2));
     }
     return row;
@@ -419,9 +435,71 @@
     return (log.fights || []).map(f => Object.assign({ n: f.n, start: f.start, end: f.end, kind: f.kind, boss: f.boss }, summary(log, f.n)));
   }
 
-  const api = { version: 1, CYCLE_MS, TICK, STYLES, EVENT_NAMES, token, ctx, hmInfo, hitRole, hitStyle, actorOf, actorLabel, cycleMs, cycleTick, range, inRange,
+  // Boss mechanics. Label, tactic struct and kind come from dict.mechs[boss][key]; the key stands in for a
+  // missing label.
+  function mechInfo(log, boss, key, kind) {
+    const d = (log.dict && log.dict.mechs) || {}, b = d[boss] || {}, m = b[key] || {};
+    return { label: m.label ? String(m.label) : String(key), tactic: (m.tactic | 0) > 0 ? m.tactic | 0 : 0, kind: m.kind != null ? m.kind | 0 : kind | 0 };
+  }
+  function mechCount(log) {
+    const c = ctx(log);
+    if (c.mechN < 0) { let k = 0; for (const e of log.events) if (isMech(log, e)) k++; c.mechN = k; }
+    return c.mechN;
+  }
+  // The boss's name: an NPC actor with the boss id, else the actor the cue came from.
+  function bossName(log, boss, actor) {
+    const c = ctx(log);
+    if (c.bossN[boss]) return c.bossN[boss];
+    const a = c.actors.find(x => x && x.type === 'npc' && x.id === boss && x.name);
+    let nm = a ? a.name : '';
+    if (!nm && actor != null && actor >= 0) { const b = actorOf(log, actor); if (b.type === 'npc' && b.name) nm = b.name; }
+    if (!nm) return 'NPC ' + boss;
+    c.bossN[boss] = nm;
+    return nm;
+  }
+  // Mechanics in the range. A mechanic is a boss and label; its cues (animation, graphic, sound...) that fall
+  // within MECH_USE cycles of a use's first cue are that one use. Returns every cue row (list), every use
+  // (uses) and one summary per mechanic (rows) with its cues, use times and the gaps between uses (ms).
+  const MECH_USE = 90;
+  function mechs(log, n) {
+    const r = range(log, n), list = [], uses = [], rows = {}, bosses = [];
+    for (let i = 0; i < log.events.length; i++) {
+      const e = log.events[i];
+      if (e[1] > r.end) break;
+      if (e[1] < r.start || !isMech(log, e)) continue;
+      const boss = Number(e[2]) || 0, key = String(e[3]), id = e[5] == null ? -1 : Number(e[5]), actor = e[6] == null ? -1 : Number(e[6]);
+      const m = mechInfo(log, boss, key, e[4]), k = boss + ':' + m.label;
+      const it = { i, c: e[1], boss, key, kind: m.kind, id, actor, label: m.label, tactic: m.tactic, row: k };
+      list.push(it);
+      let row = rows[k];
+      if (!row) { row = rows[k] = { id: k, boss, label: m.label, key, tactic: m.tactic, kind: m.kind, cues: [], ids: [], uses: [] }; if (bosses.indexOf(boss) < 0) bosses.push(boss); }
+      if (!row.tactic && m.tactic) row.tactic = m.tactic;
+      let q = row.cues.find(x => x.key === key && x.id === id);
+      if (!q) { row.cues.push(q = { key, kind: m.kind, id, n: 0 }); if (row.ids.indexOf(id) < 0) row.ids.push(id); }
+      q.n++;
+      const u = row.uses[row.uses.length - 1];
+      if (u && it.c - u.c <= MECH_USE) { u.cues.push(it); if (u.actor < 0) u.actor = actor; }
+      else { const nu = { c: it.c, boss, row: k, label: m.label, tactic: 0, kind: m.kind, id, actor, cues: [it] }; row.uses.push(nu); uses.push(nu); }
+    }
+    const out = Object.keys(rows).map(k => rows[k]);
+    for (const u of uses) u.tactic = rows[u.row].tactic;
+    for (const row of out) {
+      row.times = row.uses.map(u => u.c); row.count = row.times.length;
+      row.first = row.times[0]; row.last = row.times[row.times.length - 1]; row.gaps = [];
+      for (let j = 1; j < row.times.length; j++) row.gaps.push((row.times[j] - row.times[j - 1]) * CYCLE_MS);
+      row.avgGap = row.gaps.length ? row.gaps.reduce((t, g) => t + g, 0) / row.gaps.length : 0;
+      row.minGap = row.gaps.length ? Math.min.apply(null, row.gaps) : 0;
+      row.maxGap = row.gaps.length ? Math.max.apply(null, row.gaps) : 0;
+    }
+    out.sort((a, b) => a.first - b.first || a.label.localeCompare(b.label));
+    return { list, uses, rows: out, bosses, range: r };
+  }
+  // Game text to plain text: <br> becomes a line break, other tags are dropped.
+  function plain(s) { return String(s == null ? '' : s).replace(/<br\s*\/?>/gi, '\n').replace(/<[^>]*>/g, '').replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim(); }
+
+  const api = { version: 1, CYCLE_MS, TICK, STYLES, EVENT_NAMES, MECH_KINDS, token, ctx, hmInfo, hitRole, hitStyle, actorOf, actorLabel, cycleMs, cycleTick, range, inRange,
                 ability, shapeOf, attribute, sourceOf, summary, byAbility, bySource, series, uptimes, casts, trackerCheck, styleSplit, describe, fightSummaries,
-                shortName, fmtNum, fmtMs, fmtMsTenths };
+                isMech, typeName, mechInfo, mechCount, bossName, mechs, plain, shortName, fmtNum, fmtMs, fmtMsTenths };
   root.combatStats = api;
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
 })(typeof window !== 'undefined' ? window : globalThis);

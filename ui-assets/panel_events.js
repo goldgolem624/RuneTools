@@ -14,7 +14,7 @@
                  spotanim: 0x0E, spotanim2: 0xBC, spotanim_actor: 0x75, spotanim_actor2: 0xC5, projectile: 0x9A, sound: 0x2C, area_sound: 0xA4, area_sound_abs: 0x5F };
   (async () => { try { const m = await rtxData.call('state.serverOps'); if (m && typeof m === 'object') Object.assign(SOPS, m); } catch (e) {} })();
   const evDefaultMask = () => ['run_weight', 'skill_update', 'ge_offer', 'container_update', 'runclientscript', 'run_energy', 'ping_echo', 'varp_int', 'varp_byte', 'varc_int', 'varc_byte', 'varp_long', 'varbit_varint',
-                               'zone_base', 'zone_clear', 'zone_update', 'obj_add', 'obj_del', 'obj_count', 'loc_add', 'loc_del', 'spotanim', 'spotanim2', 'spotanim_actor', 'spotanim_actor2', 'projectile', 'sound', 'area_sound', 'area_sound_abs',
+                               'zone_base', 'zone_clear', 'zone_update', 'obj_add', 'obj_del', 'obj_count', 'loc_add', 'loc_del', 'spotanim', 'spotanim2', 'spotanim_actor', 'spotanim_actor2', 'projectile', 'sound', 'area_sound', 'area_sound_abs', 'hint_arrow',
                                'varbit_byte', 'varbit_int', 'varc_long', 'zone_sub3', 'zone_sub14', 'container_full', 'container_reset', 'tracker_group', 'tracker_values', 'tracker_remove', 'tracker_clear', 'tracker_column',
                                'system_update', 'camera_target', 'cutscene', 'friends_loaded', 'private_filter', 'minimap_state']
       .map(k => SOPS[k]).filter(op => typeof op === 'number').sort((a, b) => a - b).join(',');   // mirrors kDefaultMask in companion/EventShare.h; names this host does not know are left out

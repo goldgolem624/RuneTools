@@ -514,6 +514,7 @@ bool CompactText(const std::string& jsonl, const char* endBy, std::string& outJs
             else if (kind == "fight" && v.a[1].k == JV::Obj) fights.push_back(v.a[1]);
             else if (kind == "dict" && v.a.size() >= 4 && v.a[1].k == JV::Str && v.a[2].k == JV::Num) { std::string j; emit_json(v.a[3], j); dict[v.a[1].s][(long long)v.a[2].num] = j; }
             else if (kind == "end" && v.a[1].k == JV::Obj) { endObj = v.a[1]; haveEnd = true; }
+            else if (kind == "mech" && v.a.size() >= 7 && v.a[1].k == JV::Num) { order.push_back({ (long long)v.a[1].num, events.size() }); events.push_back(std::move(line)); }
             continue;
         }
         std::vector<long long> f; event_ints(line, f);
@@ -553,6 +554,7 @@ bool CompactText(const std::string& jsonl, const char* endBy, std::string& outJs
     std::vector<long long> f;
     for (const E& e : order) {
         event_ints(events[e.at], f);
+        if (f.size() < 2) continue;                                    // ["mech", ...]
         const long long type = f[0], c = f[1];
         if ((type == 0 || type == 2 || type == 3 || type == 4 || type == 10 || type == 11 || type == 13 || type == 17 || type == 18) && f.size() >= 3) {
             lastC[(int)f[2]] = c;
@@ -601,8 +603,8 @@ bool CompactText(const std::string& jsonl, const char* endBy, std::string& outJs
              ",\"lpMax\":" + std::to_string(lpMax) + ",\"vis\":" + std::to_string(a.i("vis", -1)) + "}";
     }
     o += "],\"dict\":{";
-    static const char* kinds[] = { "abilities", "buffs", "hitmarks", "seqs", "encounters", "trackers" };
-    for (int k = 0; k < 6; ++k) {
+    static const char* kinds[] = { "abilities", "buffs", "hitmarks", "seqs", "encounters", "trackers", "mechs" };
+    for (int k = 0; k < 7; ++k) {
         if (k) o += ",";
         o += "\""; o += kinds[k]; o += "\":{";
         bool f1 = true;
@@ -624,7 +626,8 @@ bool CompactText(const std::string& jsonl, const char* endBy, std::string& outJs
          "\"6\":[\"prayer\",\"points\",\"level\"],\"7\":[\"buff\",\"struct\",\"on\",\"start\",\"end\",\"stacks\"],\"8\":[\"channel\",\"side\",\"ticks\",\"name\"],"
          "\"9\":[\"tracker\",\"group\",\"row\",\"col\",\"value\"],\"10\":[\"death\",\"actor\",\"how\"],\"11\":[\"actor\",\"actor\",\"present\"],"
          "\"12\":[\"encounter\",\"struct\"],\"13\":[\"gfx\",\"actor\",\"gfx\"],\"14\":[\"proj\",\"from\",\"to\",\"gfx\"],\"15\":[\"xp\",\"skill\",\"xp\"],"
-         "\"16\":[\"mark\",\"kind\",\"text\"],\"17\":[\"bar\",\"actor\",\"slot\",\"fill\"],\"18\":[\"stat\",\"actor\",\"idx\",\"cur\",\"base\"]},\"events\":[";
+         "\"16\":[\"mark\",\"kind\",\"text\"],\"17\":[\"bar\",\"actor\",\"slot\",\"fill\"],\"18\":[\"stat\",\"actor\",\"idx\",\"cur\",\"base\"],"
+         "\"19\":[\"sound\",\"id\",\"area\"],\"mech\":[\"mech\",\"boss\",\"key\",\"kind\",\"id\",\"actor\"]},\"events\":[";
     for (std::size_t i = 0; i < order.size(); ++i) { if (i) o += ",\n"; o += events[order[i].at]; }
     o += "]}\n";
     outJson = std::move(o);

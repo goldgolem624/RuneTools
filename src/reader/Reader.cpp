@@ -4512,6 +4512,7 @@ namespace {
 constexpr std::uint64_t kCbSecRead   = 0x1380;   // actor object bytes covering every field read below
 constexpr std::uint64_t kCbNameLen   = 0x98;
 constexpr std::uint64_t kCbAnim      = 0xA90;
+constexpr std::uint64_t kCbAnimCount = 0xAFC, kCbAnimCycle = 0xB00;   // animation start count and its CLIENTCLOCK cycle
 constexpr std::uint64_t kCbTargetUid = 0x1B4;
 constexpr std::uint64_t kCbNpcStats  = 0x1140, kCbNpcBase = 0x115C, kCbNpcVis = 0x1178;
 constexpr std::uint64_t kCbVarNode   = 0x30;     // var map node: id +0, value +8, type +0x20, next +0x28
@@ -4641,6 +4642,7 @@ bool cb_read_actor(CombatCtx& c, std::uint64_t sec, bool bars, CombatActorSample
         if (id < 0) id = i32(rtx::scn::kConfig);
         a.id = id;
         std::memcpy(a.stats, b + kCbNpcStats, 28); std::memcpy(a.base, b + kCbNpcBase, 28); a.vis = i32(kCbNpcVis);
+        a.animCount = i32(kCbAnimCount); a.animCycle = i32(kCbAnimCycle); a.haveAnimStart = true;
         a.haveStats = true;
         for (int k = 0; k < 7; ++k) if (a.stats[k] < -100000 || a.stats[k] > 1000000000 || a.base[k] < 0 || a.base[k] > 1000000000) a.haveStats = false;
         if (a.haveStats) { a.lp = a.stats[3] < 0 ? -1 : a.stats[3]; a.lpMax = a.base[3] <= 0 ? -1 : a.base[3]; }
@@ -4725,6 +4727,15 @@ bool CombatRead(std::uint32_t pid, bool bars, CombatSample& out) {
     ++out.reads;
     if (!clk) { ++out.fails; return false; }
     out.clock = *clk;
+    {   // the map base at [MainData+0x19898]+0x698 / +0x69C, for the zone packets the recorder decodes
+        ++out.reads;
+        const std::uint64_t mm = rpm<std::uint64_t>(h, *root + kOffMapMgr).value_or(0);
+        std::int32_t mb[2] = { 0, 0 };
+        if (mm > 0x10000) {
+            ++out.reads;
+            if (rpm_bytes(h, mm + 0x698, mb, sizeof(mb))) { out.mapBaseX = mb[0]; out.mapBaseY = mb[1]; out.haveMapBase = true; }
+        }
+    }
     auto deref = [&](std::optional<std::uint64_t> p, std::uint64_t off) -> std::optional<std::uint64_t> {
         if (!p || *p <= 0x10000) return std::nullopt;
         ++out.reads;

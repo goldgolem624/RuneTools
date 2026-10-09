@@ -1,9 +1,12 @@
 #include "CombatRecorder.h"
+#include "BossMechanics.h"
 #include "../reader/BuffVars.h"
 #include "../reader/Hitmarks.h"
+#include "../../companion/ServerOps.h"
 
 #include <algorithm>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <initializer_list>
 #include <unordered_set>
@@ -14,6 +17,18 @@ namespace {
 constexpr int kUnknown = -0x7fffffff;
 constexpr int kVarpLp = 13537, kVarpLpMax = 13538, kVarpAdren = 679, kVarpPrayer = 3274, kVarpEncounter = 10946;
 constexpr int kGcdStart = 2091, kGcdEnd = 2092, kGcdStruct = 14881;   // the global cooldown's dummy struct
+constexpr int kTypeSound = 19, kTypeMech = 100;      // kTypeMech is written as ["mech", c, boss, key, kind, id, actor]
+constexpr long long kResendMs = 1200;                // tile items this soon after their zone was cleared are the zone sent again
+
+std::uint16_t nu16(const std::uint8_t* b) { return (std::uint16_t)((b[0] << 8) | b[1]); }
+std::uint32_t nu32(const std::uint8_t* b) { return ((std::uint32_t)b[0] << 24) | ((std::uint32_t)b[1] << 16) | ((std::uint32_t)b[2] << 8) | b[3]; }
+std::uint64_t zoneKey(int x, int y, int plane) { return ((std::uint64_t)(plane & 3) << 48) ^ ((std::uint64_t)(std::uint32_t)(x & 0xFFFFFF) << 24) ^ (std::uint32_t)(y & 0xFFFFFF); }
+std::uint64_t mechKey(int kind, int id) { return ((std::uint64_t)(std::uint32_t)kind << 32) | (std::uint32_t)id; }
+// Zone item body length by sub id; -1: a length byte follows the id.
+int itemLen(int sub) {
+    static const int k[18] = { 6, 11, 14, 5, 10, 21, 8, -1, -1, 8, 4, 11, 2, 7, -1, 20, 28, 29 };
+    return sub >= 0 && sub < 18 ? k[sub] : -2;
+}
 
 std::string jesc(const std::string& s) {
     std::string o; o.reserve(s.size() + 2);
@@ -42,6 +57,195 @@ long long bossTotal(const std::unordered_map<int, int>& vp, const int* t) {
 }
 
 }  // namespace
+
+void BuiltinMechanics(std::vector<MechRow>& rows, std::vector<MechBoss>& bosses) {
+    namespace bm = rtx::bossmech;
+    rows.clear(); bosses.clear();
+    for (const auto& r : bm::kRows) {
+        MechRow m; m.kind = (int)r.kind; m.id = r.id; m.boss = r.boss; m.key = r.key; m.label = r.label; m.tactic = r.tactic; m.windowMs = r.window_ms;
+        if (m.kind == 7) m.domain = 2;                  // the table's var rows are player varbits
+        rows.push_back(std::move(m));
+    }
+    for (const auto& b : bm::kBosses) {
+        MechBoss x; x.npc = b.npc; x.encounter = b.encounter;
+        for (const auto p : b.phases) if (p > 0) x.phases.push_back(p);
+        bosses.push_back(std::move(x));
+    }
+}
+
+// ---- packets ----
+
+bool NetDecoder::Wanted(int op) {
+    namespace s = rtx::sops;
+    switch (op) {
+    case s::kZoneBase: case s::kZoneClear: case s::kZoneUpdate: case s::kSpotAnim: case s::kSpotAnim2: case s::kSpotAnimActor: case s::kSpotAnimActor2:
+    case s::kProjectile: case s::kProjectile20: case s::kProjectile28: case s::kProjectile29: case s::kSound: case s::kAreaSound: case s::kAreaSoundAbs:
+    case s::kHintArrow: case s::kVarpInt: case s::kVarpByte: case s::kVarpLong: case s::kVarbitVarint: case s::kVarbitByte: case s::kVarbitInt:
+    case s::kVarcInt: case s::kVarcByte: case s::kVarcLong:
+        return true;
+    default:
+        return false;
+    }
+}
+
+long long NetDecoder::FullWall(std::uint32_t low, long long near) {
+    long long v = (near & ~0xFFFFFFFFLL) | (long long)low;
+    if (v - near > 0x80000000LL) v -= 0x100000000LL;
+    else if (near - v > 0x80000000LL) v += 0x100000000LL;
+    return v;
+}
+
+// A zone-local position byte (x << 4 | y) on the current zone; x = -1 when no zone base was seen.
+bool NetDecoder::tileOf(std::uint8_t pos, NetEv& e) const {
+    e.tile = true;
+    if (!zset_) { e.x = e.y = e.plane = -1; return false; }
+    e.x = zx_ + ((pos >> 4) & 7); e.y = zy_ + (pos & 7); e.plane = zp_;
+    return true;
+}
+
+void NetDecoder::item(int sub, const std::uint8_t* b, std::uint32_t n, long long wallMs, std::vector<NetEv>& out) {
+    const int need = itemLen(sub);
+    if (need < 0 || (int)n < need) return;
+    NetEv e; e.wallMs = wallMs;
+    switch (sub) {
+    case 0x0B: case 0x02:   // graphic on a tile: position b0, graphic u16 BE at 1 (0xFFFF removes)
+        e.kind = NetEv::Gfx; e.id = nu16(b + 1); tileOf(b[0], e); break;
+    case 0x05:              // projectile: graphic u16 BE at 10
+        e.kind = NetEv::Proj; e.id = nu16(b + 10); e.form = need; break;
+    case 0x0F: case 0x10:   // projectile: graphic u16 BE at 6
+        e.kind = NetEv::Proj; e.id = nu16(b + 6); e.form = need; break;
+    case 0x11:              // projectile: source position b0, graphic u16 BE at 10
+        e.kind = NetEv::Proj; e.id = nu16(b + 10); e.form = need; tileOf(b[0], e); break;
+    case 0x04: case 0x01:   // sound on a tile: position b0, id u32 BE at 1
+        e.kind = NetEv::Sound; e.id = (int)nu32(b + 1); tileOf(b[0], e); break;
+    default:
+        return;
+    }
+    if (e.kind != NetEv::Sound && e.id == 0xFFFF) return;
+    if (e.tile && zset_) {
+        auto it = cleared_.find(zoneKey(zx_, zy_, zp_));
+        e.resend = it != cleared_.end() && wallMs >= it->second && wallMs - it->second <= kResendMs;
+    }
+    out.push_back(e);
+}
+
+void NetDecoder::Decode(int op, const std::uint8_t* b, std::uint32_t n, long long wallMs, std::vector<NetEv>& out) {
+    namespace s = rtx::sops;
+    auto var = [&](int kind, int id, int value) { NetEv e; e.kind = kind; e.wallMs = wallMs; e.id = id; e.value = value; out.push_back(e); };
+    switch (op) {
+    case s::kZoneBase:      // y offset, -x offset (zones from the map base), plane + 0x80
+        if (n >= 3) zone(baseX_ - (int)(std::int8_t)b[1] * 8, baseY_ + (int)(std::int8_t)b[0] * 8, (b[2] + 0x80) & 0xFF);
+        return;
+    case s::kZoneClear:     // plane + 0x80, x offset, y offset
+        if (n < 3) return;
+        zone(baseX_ + (int)(std::int8_t)b[1] * 8, baseY_ + (int)(std::int8_t)b[2] * 8, (b[0] + 0x80) & 0xFF);
+        if (zset_) {
+            cleared_[zoneKey(zx_, zy_, zp_)] = wallMs;
+            if (cleared_.size() > 512) for (auto it = cleared_.begin(); it != cleared_.end();) it = wallMs - it->second > 60000 ? cleared_.erase(it) : std::next(it);
+        }
+        return;
+    case s::kZoneUpdate: {  // 0x80 - plane, -x offset, y offset, then [sub id][body] items
+        if (n < 3) return;
+        zone(baseX_ - (int)(std::int8_t)b[1] * 8, baseY_ + (int)(std::int8_t)b[2] * 8, (0x80 - b[0]) & 0xFF);
+        std::uint32_t p = 3;
+        while (p < n) {
+            const int sub = b[p++]; int len = itemLen(sub);
+            if (len == -1) { if (p >= n) break; len = b[p++]; }
+            if (len < 0 || p + (std::uint32_t)len > n) break;    // an unknown sub id or a short body ends the walk
+            item(sub, b + p, (std::uint32_t)len, wallMs, out);
+            p += (std::uint32_t)len;
+        }
+        return;
+    }
+    case s::kSpotAnim:      item(0x0B, b, n, wallMs, out); return;
+    case s::kSpotAnim2:     item(0x02, b, n, wallMs, out); return;
+    case s::kProjectile:    item(0x05, b, n, wallMs, out); return;
+    case s::kProjectile20:  item(0x0F, b, n, wallMs, out); return;
+    case s::kProjectile28:  item(0x10, b, n, wallMs, out); return;
+    case s::kProjectile29:  item(0x11, b, n, wallMs, out); return;
+    case s::kAreaSound:     item(0x04, b, n, wallMs, out); return;
+    case s::kSpotAnimActor:
+    case s::kSpotAnimActor2: {
+        // 12 bytes: ref u32 BE at 5, graphic (b9 - 0x80 low, b10 high); 15 bytes: ref b2 b3 b0 b1, graphic (b11 - 0x80 low, b12 high)
+        std::uint32_t ref = 0; unsigned g = 0;
+        if (op == s::kSpotAnimActor) { if (n < 12) return; ref = nu32(b + 5); g = (unsigned)(((b[9] - 0x80) & 0xFF) | (b[10] << 8)); }
+        else { if (n < 15) return; ref = ((std::uint32_t)b[2] << 24) | ((std::uint32_t)b[3] << 16) | ((std::uint32_t)b[0] << 8) | b[1]; g = (unsigned)(((b[11] - 0x80) & 0xFF) | (b[12] << 8)); }
+        if (g == 0xFFFF) return;
+        NetEv e; e.kind = NetEv::Gfx; e.wallMs = wallMs; e.id = (int)g;
+        if (ref < 0x20000000u) { e.ref = 1; e.index = (int)(ref & 0xFFFF); }
+        else if (ref < 0x40000000u) { e.ref = 2; e.index = (int)(ref & 0xFFFF); }
+        else { e.tile = true; e.x = (int)((ref >> 14) & 0x3FFF); e.y = (int)(ref & 0x3FFF); e.plane = (int)((ref >> 28) & 3); }
+        out.push_back(e);
+        return;
+    }
+    case s::kSound: {       // id u32 BE
+        if (n < 8) return;
+        NetEv e; e.kind = NetEv::Sound; e.wallMs = wallMs; e.id = (int)nu32(b);
+        out.push_back(e);
+        return;
+    }
+    case s::kAreaSoundAbs: {    // id b2 b1 b3 b0, packed tile b7 b8 b5 b6
+        if (n < 11) return;
+        NetEv e; e.kind = NetEv::Sound; e.wallMs = wallMs;
+        e.id = (int)(((std::uint32_t)b[2] << 24) | ((std::uint32_t)b[1] << 16) | ((std::uint32_t)b[3] << 8) | b[0]);
+        const std::uint32_t pk = ((std::uint32_t)b[7] << 24) | ((std::uint32_t)b[8] << 16) | ((std::uint32_t)b[5] << 8) | b[6];
+        e.tile = true;
+        if (pk == 0xFFFFFFFFu) e.x = e.y = e.plane = -1;
+        else { e.x = (int)((pk >> 14) & 0x3FFF); e.y = (int)(pk & 0x3FFF); e.plane = (int)((pk >> 28) & 3); }
+        out.push_back(e);
+        return;
+    }
+    case s::kHintArrow: {   // slot << 5 | type; type 0 clears, 1 NPC and 10 player (index u16 BE at 2), 2..6 tile (plane b2, x and y u16 BE at 3 and 5)
+        if (n < 7) return;
+        const int type = b[0] & 31;
+        NetEv e; e.kind = NetEv::Hint; e.wallMs = wallMs;
+        if (type == 1 || type == 10) { e.ref = type == 1 ? 2 : 1; e.index = nu16(b + 2); }
+        else if (type >= 2 && type <= 6) { e.tile = true; e.plane = b[2]; e.x = nu16(b + 3); e.y = nu16(b + 5); }
+        else return;
+        out.push_back(e);
+        return;
+    }
+    case s::kVarpInt:       // id ((b0 - 0x80) & 0xFF) | b1 << 8, value b4 b5 b2 b3
+        if (n >= 6) var(NetEv::Varp, ((b[0] - 0x80) & 0xFF) | (b[1] << 8), (int)(((std::uint32_t)b[4] << 24) | ((std::uint32_t)b[5] << 16) | ((std::uint32_t)b[2] << 8) | b[3]));
+        return;
+    case s::kVarpByte:      // value i8 b0, id ((b2 - 0x80) & 0xFF) | b1 << 8
+        if (n >= 3) var(NetEv::Varp, ((b[2] - 0x80) & 0xFF) | (b[1] << 8), (int)(std::int8_t)b[0]);
+        return;
+    case s::kVarpLong:      // low word b5 b4 b7 b6, id u16 BE at 8
+        if (n >= 10) var(NetEv::Varp, (b[8] << 8) | b[9], (int)(((std::uint32_t)b[5] << 24) | ((std::uint32_t)b[4] << 16) | ((std::uint32_t)b[7] << 8) | b[6]));
+        return;
+    case s::kVarbitVarint: {    // two LEB128 varints: varbit id, value
+        std::uint32_t p = 0; std::uint64_t v[2] = { 0, 0 };
+        for (int k = 0; k < 2; ++k) {
+            for (int sh = 0;; sh += 7) {
+                if (p >= n || sh > 56) return;
+                const std::uint8_t c = b[p++];
+                v[k] |= (std::uint64_t)(c & 0x7F) << sh;
+                if (c < 0x80) break;
+            }
+        }
+        var(NetEv::Varbit, (int)v[0], (int)(std::uint32_t)v[1]);
+        return;
+    }
+    case s::kVarbitByte:    // value (b0 + 0x80) & 0xFF, id u16 LE at 1
+        if (n >= 3) var(NetEv::Varbit, b[1] | (b[2] << 8), (b[0] + 0x80) & 0xFF);
+        return;
+    case s::kVarbitInt:     // value i32 BE, id u16 LE at 4
+        if (n >= 6) var(NetEv::Varbit, b[4] | (b[5] << 8), (int)nu32(b));
+        return;
+    case s::kVarcInt:       // id ((b1 - 0x80) & 0xFF) | b0 << 8, value b3 b2 b5 b4
+        if (n >= 6) var(NetEv::Varc, ((b[1] - 0x80) & 0xFF) | (b[0] << 8), (int)(((std::uint32_t)b[3] << 24) | ((std::uint32_t)b[2] << 16) | ((std::uint32_t)b[5] << 8) | b[4]));
+        return;
+    case s::kVarcByte:      // id u16 LE, value (int8)(0x80 - b2)
+        if (n >= 3) var(NetEv::Varc, b[0] | (b[1] << 8), (int)(std::int8_t)((0x80 - b[2]) & 0xFF));
+        return;
+    case s::kVarcLong:      // low word u32 LE at 4, id u16 LE at 8
+        if (n >= 10) var(NetEv::Varc, b[8] | (b[9] << 8), (int)((std::uint32_t)b[4] | ((std::uint32_t)b[5] << 8) | ((std::uint32_t)b[6] << 16) | ((std::uint32_t)b[7] << 24)));
+        return;
+    default:
+        return;
+    }
+}
 
 void WantedVars(const Config& cfg, std::vector<int>& varps, std::vector<int>& varcs) {
     varps = { kVarpLp, kVarpLpMax, kVarpAdren, kVarpPrayer, kVarpEncounter };
@@ -75,6 +279,20 @@ void Recorder::Configure(const Config& cfg) {
         BuffVar b; b.structId = e.structId; b.kind = e.kind; b.var = e.var;
         if (const auto* ce = rtx::buffvars::FindCount(e.structId)) { b.countKind = ce->kind; b.countVar = ce->var; }
         buffs_.push_back(b);
+    }
+    mechIdx_.clear(); bossOfNpc_.clear(); bossOfEnc_.clear(); active_.clear(); mechLast_.clear(); varLast_.clear();
+    auto add = [](std::vector<int>& v, int boss) { if (std::find(v.begin(), v.end(), boss) == v.end()) v.push_back(boss); };
+    for (std::size_t r = 0; r < cfg.mechRows.size(); ++r) {
+        const MechRow& m = cfg.mechRows[r];
+        if (m.kind < 1 || m.kind > 8 || m.boss <= 0 || m.key.empty()) continue;
+        mechIdx_[mechKey(m.kind, m.id)].push_back((int)r);
+        add(bossOfNpc_[m.boss], m.boss);
+    }
+    for (const auto& b : cfg.mechBosses) {
+        if (b.npc <= 0) continue;
+        add(bossOfNpc_[b.npc], b.npc);
+        for (int p : b.phases) if (p > 0) add(bossOfNpc_[p], b.npc);
+        if (b.encounter > 0) add(bossOfEnc_[b.encounter], b.npc);
     }
 }
 
@@ -157,12 +375,118 @@ void Recorder::route(std::vector<Ev>& evs) {
     evs.clear();
 }
 
+// Packets arrive after the pass that may have closed their fight: the ones inside it still go to the log.
+void Recorder::routeLate(std::vector<Ev>& evs) {
+    std::stable_sort(evs.begin(), evs.end(), [](const Ev& a, const Ev& b) { return a.c < b.c; });
+    for (auto& e : evs) {
+        const bool closed = !inFight_ && logOpen_ && !fights_.empty() && e.c >= fights_.back().start && e.c <= fights_.back().end;
+        if (inFight_ || closed) writeEvent(e);
+        else preroll(std::move(e));
+    }
+    evs.clear();
+}
+
+// The actor a graphic or hint arrow names: ref 1 a player, 2 an NPC, by uid; -1 when it is not in the scene.
+int Recorder::actorOfRef(int ref, int index) const {
+    if (index < 0 || (ref != 1 && ref != 2)) return -1;
+    auto fits = [&](const ActorState& s) { return s.present && s.row.uid == index && ((ref == 2) == (s.row.type == "npc")); };
+    const int at = indexOfUid(index);
+    if (at >= 0 && fits(actors_[(std::size_t)at])) return at;
+    for (std::size_t i = actors_.size(); i-- > 0;) if (fits(actors_[i])) return (int)i;
+    return -1;
+}
+
+// The one actor standing on a tile (the local player first, then NPCs, then other players); -1 when none or several.
+int Recorder::actorOnTile(int x, int y, int plane) const {
+    int found = -1, rank = 9, ties = 0;
+    for (std::size_t i = 0; i < actors_.size(); ++i) {
+        const ActorState& s = actors_[i];
+        if (!s.present || s.tx != x || s.ty != y || s.tplane != plane) continue;
+        const int r = s.row.type == "self" ? 0 : s.row.type == "npc" ? 1 : 2;
+        if (r < rank) { rank = r; found = (int)i; ties = 1; }
+        else if (r == rank) ++ties;
+    }
+    return ties == 1 ? found : -1;
+}
+
+// The same graphic or sound on the same tile again: within kTileRepeatMs of the last sight (a zone sent
+// again every second or two keeps it suppressed), or sent again right after its zone was cleared.
+bool Recorder::tileRepeat(int kind, int id, const NetEv& n) {
+    const std::uint64_t k = ((std::uint64_t)(kind & 0xFF) << 56) ^ ((std::uint64_t)(std::uint32_t)(id & 0xFFFFFF) << 32) ^
+                            ((std::uint64_t)(n.plane & 3) << 30) ^ ((std::uint64_t)(n.x & 0x7FFF) << 15) ^ (std::uint64_t)(n.y & 0x7FFF);
+    auto it = tileSeen_.find(k);
+    const bool rep = it != tileSeen_.end() && (n.wallMs - it->second < kTileRepeatMs || n.resend);
+    tileSeen_[k] = n.wallMs;
+    if (tileSeen_.size() > 8192) for (auto j = tileSeen_.begin(); j != tileSeen_.end();) j = n.wallMs - j->second > 600000 ? tileSeen_.erase(j) : std::next(j);
+    return rep;
+}
+
+// Bosses in scope: one of their NPCs (the boss or a phase) is in the scene, or their encounter bar runs.
+void Recorder::updateScope() {
+    active_.clear();
+    if (bossOfNpc_.empty()) return;
+    for (const auto& s : actors_) {
+        if (!s.present || s.row.type != "npc") continue;
+        auto it = bossOfNpc_.find(s.row.id);
+        if (it != bossOfNpc_.end()) active_.insert(it->second.begin(), it->second.end());
+    }
+    if (enc_ != kUnknown && enc_ != -1) {
+        auto it = bossOfEnc_.find(enc_);
+        if (it != bossOfEnc_.end()) active_.insert(it->second.begin(), it->second.end());
+    }
+}
+
+// A mech event for every row of (kind, id) whose boss is in scope (and in `before` when given), once per
+// row within its window; an animation counts only on the boss's own NPCs. True when such a row exists,
+// matched or held back.
+bool Recorder::matchMech(std::vector<Ev>& evs, int kind, int id, long long c, int actor, int domain, const std::unordered_set<int>* before) {
+    auto it = mechIdx_.find(mechKey(kind, id));
+    if (it == mechIdx_.end()) return false;
+    const std::vector<int>* own = nullptr;
+    if (kind == 1) {
+        if (actor < 0 || actor >= (int)actors_.size()) return false;
+        auto b = bossOfNpc_.find(actors_[(std::size_t)actor].row.id);
+        if (b == bossOfNpc_.end()) return false;
+        own = &b->second;
+    }
+    bool any = false;
+    for (int r : it->second) {
+        const MechRow& m = cfg_.mechRows[(std::size_t)r];
+        if (!active_.count(m.boss) || (before && !before->count(m.boss))) continue;
+        if (own &&std::find(own->begin(), own->end(), m.boss) == own->end()) continue;
+        if (kind == 7 && m.domain && m.domain != domain) continue;
+        any = true;
+        auto last = mechLast_.find(r);
+        const long long w = m.windowMs > 0 ? m.windowMs / 20 : 0;
+        if (last != mechLast_.end() && (w > 0 ? std::llabs(c - last->second) < w : c == last->second)) continue;
+        mechLast_[r] = c;
+        Ev e; e.type = kTypeMech; e.c = c; e.f = { m.boss, m.kind, m.id, actor }; e.text = m.key; e.a1 = actor; e.mech = r;
+        evs.push_back(std::move(e));
+        ++mechs_;
+    }
+    return any;
+}
+
+// dict.mechs[boss] holds every key the log has used, so each new key rewrites the boss's object.
+void Recorder::mechDict(const Ev& e) {
+    if (e.mech < 0 || e.mech >= (int)cfg_.mechRows.size() || !dict_.emplace(dictKey(30, e.mech), true).second) return;
+    const MechRow& m = cfg_.mechRows[(std::size_t)e.mech];
+    auto& keys = mechDict_[m.boss];
+    keys[m.key] = "{\"label\":" + jstr(m.label) + ",\"tactic\":" + std::to_string(m.tactic) + ",\"kind\":" + std::to_string(m.kind) + "}";
+    std::string o = "{";
+    for (const auto& kv : keys) { if (o.size() > 1) o += ","; o += jstr(kv.first) + ":" + kv.second; }
+    dictLine("mechs", m.boss, o + "}");
+}
+
 void Recorder::emitLine(const std::string& line) {
     logBytes_ += (long long)line.size() + 1;
     pending_.push_back(line);
 }
 
 std::string Recorder::eventJson(const Ev& e) const {
+    if (e.type == kTypeMech && e.f.size() == 4)
+        return "[\"mech\"," + std::to_string(e.c) + "," + std::to_string(e.f[0]) + "," + jstr(e.text) + "," + std::to_string(e.f[1]) + "," +
+               std::to_string(e.f[2]) + "," + std::to_string(e.f[3]) + "]";
     std::string o = "[" + std::to_string(e.type) + "," + std::to_string(e.c);
     for (long long v : e.f) { o += ","; o += std::to_string(v); }
     if (!e.text.empty()) o += "," + jstr(e.text);
@@ -278,14 +602,15 @@ void Recorder::ensureDict(const Ev& e) {
         dictLine("encounters", st, jstr(cfg_.names.structStr ? cfg_.names.structStr(st, 8849) : std::string()));
         break;
     }
+    case kTypeMech: mechDict(e); break;
     default: break;
     }
 }
 
 std::string Recorder::dictJson() const {
-    static const char* kinds[] = { "abilities", "buffs", "hitmarks", "seqs", "encounters", "trackers" };
+    static const char* kinds[] = { "abilities", "buffs", "hitmarks", "seqs", "encounters", "trackers", "mechs" };
     std::string o = "{";
-    for (int k = 0; k < 6; ++k) {
+    for (int k = 0; k < 7; ++k) {
         if (k) o += ",";
         o += "\""; o += kinds[k]; o += "\":{";
         auto it = dictJson_.find(kinds[k]);
@@ -310,7 +635,7 @@ void Recorder::openLog(long long c, long long wallMs, const std::vector<Ev>& pen
     logId_ = cfg_.newLogId ? cfg_.newLogId() : std::to_string(wallMs);
     startedAt_ = wallMs; c0_ = c; wall0_ = wallMs;
     written_ = 0; logBytes_ = 0; gaps_ = 0; readFails_ = 0; seq_ = 0;
-    tail_.clear(); dict_.clear(); dictJson_.clear(); fights_.clear();
+    tail_.clear(); dict_.clear(); dictJson_.clear(); mechDict_.clear(); fights_.clear();
     for (auto& a : actors_) a.row.written = false;
     logOpen_ = true;
     emitLine(headerJson());
@@ -382,8 +707,10 @@ void Recorder::endFight(long long c, const char* by) {
 }
 
 void Recorder::resetScene() {
-    actors_.clear(); byUid_.clear(); baseline_.clear(); preroll_.clear(); dict_.clear();
+    actors_.clear(); byUid_.clear(); baseline_.clear(); preroll_.clear(); dict_.clear(); mechDict_.clear();
     selfIdx_ = -1;
+    sceneFresh_ = true; active_.clear(); tileSeen_.clear(); mechLast_.clear(); varLast_.clear();
+    haveMap_ = false; selfX_ = selfY_ = -1;
 }
 
 void Recorder::Close(const char* why) {
@@ -426,6 +753,65 @@ void Recorder::FeedLocal(std::uint32_t clock, int anim, int targetUid, long long
     route(evs);
 }
 
+// Graphics (13), projectiles (14) and sounds (19) from the packets, and the mechanics they and the
+// hint arrows and var sets match. Cycles come from the capture time against the pass's paired read.
+void Recorder::FeedNet(const std::vector<NetEv>& in, std::uint32_t clock, long long wallMs) {
+    if (in.empty()) return;
+    std::vector<Ev> evs;
+    for (const NetEv& n : in) {
+        ++netSeen_;
+        const long long d = n.wallMs - wallMs;
+        const long long c = (long long)clock + (d >= 0 ? d / 20 : -((19 - d) / 20));
+        switch (n.kind) {
+        case NetEv::Gfx: {
+            if (n.id < 0 || n.id == kGfxReticle1 || n.id == kGfxReticle2) break;
+            if (n.ref) {
+                const int ai = actorOfRef(n.ref, n.index);
+                push(evs, 13, c, { ai, n.id }, ai); ++netGfx_;
+                if (!matchMech(evs, 2, n.id, c, ai)) matchMech(evs, 3, n.id, c, ai);
+            } else {
+                if (tileRepeat(13, n.id, n)) { ++netDup_; break; }
+                push(evs, 13, c, { -1, n.id }); ++netGfx_;
+                if (!matchMech(evs, 3, n.id, c, -1)) matchMech(evs, 2, n.id, c, -1);
+            }
+            break;
+        }
+        case NetEv::Proj: {
+            if (n.id < 0) break;
+            const int from = (n.tile && n.x >= 0) ? actorOnTile(n.x, n.y, n.plane) : -1;
+            push(evs, 14, c, { from, -1, n.id }, from); ++netProj_;
+            matchMech(evs, 4, n.id, c, from);
+            break;
+        }
+        case NetEv::Sound: {
+            if (n.id < 0) break;
+            if (n.tile && tileRepeat(kTypeSound, n.id, n)) { ++netDup_; break; }
+            push(evs, kTypeSound, c, { n.id, n.tile ? 1 : 0 }); ++netSound_;
+            matchMech(evs, 5, n.id, c, -1);
+            break;
+        }
+        case NetEv::Hint: {         // rows name the NPC pointed at, or 0 for any arrow
+            const int ai = n.ref ? actorOfRef(n.ref, n.index) : -1;
+            if (ai >= 0 && actors_[(std::size_t)ai].row.type == "npc") matchMech(evs, 6, actors_[(std::size_t)ai].row.id, c, ai);
+            matchMech(evs, 6, 0, c, ai);
+            break;
+        }
+        case NetEv::Varp: case NetEv::Varbit: case NetEv::Varc: {
+            if (mechIdx_.find(mechKey(7, n.id)) == mechIdx_.end()) break;
+            const int dom = n.kind == NetEv::Varp ? 1 : n.kind == NetEv::Varbit ? 2 : 3;
+            const std::uint64_t vk = ((std::uint64_t)dom << 32) | (std::uint32_t)n.id;
+            auto lv = varLast_.find(vk);
+            const bool changed = lv == varLast_.end() || lv->second != n.value;
+            varLast_[vk] = n.value;
+            if (changed && n.value != 0) matchMech(evs, 7, n.id, c, -1, dom);   // back to 0 is the mechanic ending or a reset
+            break;
+        }
+        default: break;
+        }
+    }
+    routeLate(evs);
+}
+
 void Recorder::Feed(const Tick& t) {
     if (!t.ok) { ++readFails_; return; }
     if (t.status != 30) { if (logOpen_ || inFight_) Close("logout"); lastWallMs_ = t.wallMs; return; }
@@ -441,16 +827,42 @@ void Recorder::Feed(const Tick& t) {
     std::vector<int> myHits; bool hitOnSelf = false; long long actionC = -1;
     std::vector<char> seen(actors_.size(), 0);
     std::vector<std::pair<int, bool>> hitThisPass;   // (actor index, by me)
+    struct Cue { int kind, id; long long c; int actor; };
+    std::vector<Cue> cues;                           // NPC animation starts and spawns, matched once the scope is known
+    // a rebuilt map or a long jump of the local player (a teleport, an instance) shows a new scene at once
+    if (t.haveMapBase) {
+        if (haveMap_ && (t.mapBaseX != mapX_ || t.mapBaseY != mapY_)) sceneFresh_ = true;
+        haveMap_ = true; mapX_ = t.mapBaseX; mapY_ = t.mapBaseY;
+    }
+    for (const auto& a : t.actors) {
+        if (!a.self) continue;
+        if (selfX_ >= 0 && (std::abs(a.tx - selfX_) > 32 || std::abs(a.ty - selfY_) > 32)) sceneFresh_ = true;
+        selfX_ = a.tx; selfY_ = a.ty;
+        break;
+    }
+    const bool fresh = sceneFresh_;                  // the scene's first pass: nothing in it spawned or started now
     for (const auto& a : t.actors) {
         const int i = actorIndex(a, c);
         if ((std::size_t)i >= seen.size()) seen.resize((std::size_t)i + 1, 0);
         seen[(std::size_t)i] = 1;
         ActorState& s = actors_[(std::size_t)i];
-        if (!s.present) { s.present = true; push(evs, 11, c, { i, 1 }, i); }
-        s.lastSeenC = c;
+        if (!s.present) { s.present = true; push(evs, 11, c, { i, 1 }, i); if (a.type == 1 && !fresh) cues.push_back({ 8, a.id, c, i }); }
+        s.lastSeenC = c; s.tx = a.tx; s.ty = a.ty; s.tplane = a.plane;
         if (a.self) selfIdx_ = i;
-        if (a.anim != s.anim) {
-            s.anim = a.anim; push(evs, 2, c, { i, a.anim }, i);
+        // an NPC's start count moves on every animation start, a repeat of the same one included; the
+        // start cycle is used when it is near the pass
+        bool started = false; long long sc = c;
+        if (a.type == 1 && a.haveAnimStart) {
+            if (s.animCount != kUnknown && a.animCount != s.animCount && a.anim >= 0) {
+                started = true;
+                if (a.animCycle >= c - 300 && a.animCycle <= c + 300) sc = a.animCycle;
+            }
+            s.animCount = a.animCount;
+        }
+        if (a.anim != s.anim || started) {
+            const bool firstSight = s.anim == kUnknown;
+            s.anim = a.anim; push(evs, 2, sc, { i, a.anim }, i);
+            if (a.type == 1 && a.anim >= 0 && !(fresh && firstSight)) cues.push_back({ 1, a.anim, sc, i });
             if (a.type == 1 && a.anim >= 0 && cfg_.names.official && s.deathC < c - 300) {
                 const std::string nm = cfg_.names.official("seq", a.anim);
                 if (nm.size() > 6 && nm.compare(nm.size() - 6, 6, "_DEATH") == 0) {
@@ -557,6 +969,13 @@ void Recorder::Feed(const Tick& t) {
             if (inFight_ && enc_ != -1) { cur_.kind = "encounter"; cur_.boss = cfg_.names.structStr ? cfg_.names.structStr(enc_, 8849) : std::string(); }
         }
     }
+
+    // boss mechanics seen on the actors; a spawn counts for a boss already in scope before it (a boss and
+    // its adds walking into view together are no spawn)
+    const std::unordered_set<int> before = std::move(active_);
+    updateScope();
+    if (!t.actors.empty()) sceneFresh_ = false;
+    for (const auto& q : cues) matchMech(evs, q.kind, q.id, q.c, q.actor, 0, q.kind == 8 ? &before : nullptr);
 
     // casts: a START varc moving to a new stamp
     bool castAtTarget = false; std::vector<long long> castCs; long long gcdC = -1;
@@ -683,7 +1102,14 @@ std::string Recorder::DiagJson() const {
     std::string o = "{\"clock\":" + std::to_string(lastC_) + ",\"phase\":" + std::to_string(phase_) + ",\"lp\":" + std::to_string(lp_) + ",\"lpMax\":" + std::to_string(lpMax_) +
                     ",\"adren\":" + std::to_string(adren_) + ",\"prayer\":" + std::to_string(prayer_ == kUnknown ? -1 : prayer_) + ",\"encounter\":" + std::to_string(enc_ == kUnknown ? -2 : enc_) +
                     ",\"castVarsSeen\":" + std::to_string(castsSeen) + ",\"buffVarsSeen\":" + std::to_string(buffsSeen) + ",\"buffsOn\":" + std::to_string(buffsOn) +
-                    ",\"trackerCells\":" + std::to_string(trackers_.size()) + ",\"preroll\":" + std::to_string(preroll_.size()) + ",\"baseline\":" + std::to_string(baseline_.size()) + ",\"actors\":[";
+                    ",\"trackerCells\":" + std::to_string(trackers_.size()) + ",\"preroll\":" + std::to_string(preroll_.size()) + ",\"baseline\":" + std::to_string(baseline_.size()) +
+                    ",\"net\":{\"seen\":" + std::to_string(netSeen_) + ",\"gfx\":" + std::to_string(netGfx_) + ",\"proj\":" + std::to_string(netProj_) +
+                    ",\"sound\":" + std::to_string(netSound_) + ",\"repeats\":" + std::to_string(netDup_) + ",\"mechs\":" + std::to_string(mechs_) + ",\"bosses\":[";
+    {
+        std::vector<int> b(active_.begin(), active_.end()); std::sort(b.begin(), b.end());
+        for (std::size_t k = 0; k < b.size(); ++k) { if (k) o += ","; o += std::to_string(b[k]); }
+    }
+    o += "]},\"actors\":[";
     bool first = true;
     for (const auto& a : actors_) {
         if (!a.present) continue;

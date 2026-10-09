@@ -151,6 +151,7 @@
     <ClInclude Include="..\src\launcher\Loot.h" />
     <ClInclude Include="..\src\launcher\CombatRecorder.h" />
     <ClInclude Include="..\src\launcher\Fights.h" />
+    <ClInclude Include="..\src\launcher\BossMechanics.h" />
     <ClInclude Include="..\src\launcher\News.h" />
     <ClInclude Include="..\src\launcher\GameUi.h" />
     <ClInclude Include="..\src\launcher\Cs2Browser.h" />
@@ -247,6 +248,7 @@
     <None Include="..\ui-assets\rtx_vars.js" />
     <None Include="..\ui-assets\quest_guides.js" />
     <None Include="..\ui-assets\quest_tracks.js" />
+    <None Include="..\ui-assets\boss_mechanics.js" />
     <None Include="..\ui-assets\panel_*.js" />
     <None Include="app.ico" />
   </ItemGroup>
@@ -302,6 +304,11 @@
           SkipUnchangedFiles="false"
           OverwriteReadOnlyFiles="true"
           Condition="Exists('$(ProjectDir)..\ui-assets\quest_tracks.js')" />
+    <Copy SourceFiles="$(ProjectDir)..\ui-assets\boss_mechanics.js"
+          DestinationFolder="$(OutDir)"
+          SkipUnchangedFiles="false"
+          OverwriteReadOnlyFiles="true"
+          Condition="Exists('$(ProjectDir)..\ui-assets\boss_mechanics.js')" />
     <Copy SourceFiles="@(PanelScripts)"
           DestinationFolder="$(OutDir)"
           SkipUnchangedFiles="false"
@@ -364,7 +371,7 @@
   -->
   <Target Name="BuildInstaller" AfterTargets="StageRuntime"
           Condition="'$(Configuration)|$(Platform)'=='Release|x64'"
-          Inputs="$(OutDir)RuneToolsXLauncher.exe;$(OutDir)rtxscene.dll;$(ProjectDir)..\ui-assets\launcher.html;$(ProjectDir)..\ui-assets\client.html;$(ProjectDir)..\ui-assets\core\*;$(ProjectDir)..\ui-assets\rtx_vars.js;$(ProjectDir)..\ui-assets\quest_guides.js;$(ProjectDir)..\ui-assets\quest_tracks.js;$(ProjectDir)..\ui-assets\panel_*.js;$(ProjectDir)..\ui-assets\items.pack;$(ProjectDir)..\ui-assets\items_extra.pack;$(ProjectDir)..\ui-assets\wd_table.bin;$(ProjectDir)..\ui-assets\rtx_pins.tsv;$(ProjectDir)..\ui-assets\pdb_5554.bin;$(ProjectDir)..\installer\RuneToolsX.iss"
+          Inputs="$(OutDir)RuneToolsXLauncher.exe;$(OutDir)rtxscene.dll;$(ProjectDir)..\ui-assets\launcher.html;$(ProjectDir)..\ui-assets\client.html;$(ProjectDir)..\ui-assets\core\*;$(ProjectDir)..\ui-assets\rtx_vars.js;$(ProjectDir)..\ui-assets\quest_guides.js;$(ProjectDir)..\ui-assets\quest_tracks.js;$(ProjectDir)..\ui-assets\boss_mechanics.js;$(ProjectDir)..\ui-assets\panel_*.js;$(ProjectDir)..\ui-assets\items.pack;$(ProjectDir)..\ui-assets\items_extra.pack;$(ProjectDir)..\ui-assets\wd_table.bin;$(ProjectDir)..\ui-assets\rtx_pins.tsv;$(ProjectDir)..\ui-assets\pdb_5554.bin;$(ProjectDir)..\installer\RuneToolsX.iss"
           Outputs="$(ProjectDir)..\installer\Output\RuneToolsXSetup.exe">
     <PropertyGroup>
       <ISCC Condition="'$(ISCC)'=='' And Exists('$(LocalAppData)\Programs\Inno Setup 6\ISCC.exe')">$(LocalAppData)\Programs\Inno Setup 6\ISCC.exe</ISCC>

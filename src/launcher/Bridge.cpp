@@ -28,6 +28,7 @@
 #include "../cache/Achievements.h"
 #include "../../companion/HudShare.h"
 #include "../../companion/MarkerShare.h"
+#include "../../companion/EventShare.h"
 #include "../reader/Reader.h"
 #include "../reader/HealthRun.h"
 #include "../shared/Log.h"
@@ -3154,10 +3155,34 @@ JSValueRef ScarabCached(JSContextRef ctx, JSObjectRef, JSObjectRef,
 namespace combatrec {
 using namespace rtx::launcher::combat;
 
+// The companion's event ring of one client, mapped read only; `cursor` is the next record to decode.
+struct EventRing {
+    HANDLE h = nullptr; const rtx::events::Share* sh = nullptr;
+    std::uint64_t cursor = 0; long long retryAt = 0;
+    EventRing() = default;
+    EventRing(const EventRing&) = delete; EventRing& operator=(const EventRing&) = delete;
+    ~EventRing() { close(); }
+    bool open(std::uint32_t pid) {
+        wchar_t name[rtx::ipc::kNameChars];
+        rtx::events::MakeSectionName(pid, name);
+        h = OpenFileMappingW(FILE_MAP_READ, FALSE, name);
+        if (!h) return false;
+        sh = reinterpret_cast<const rtx::events::Share*>(MapViewOfFile(h, FILE_MAP_READ, 0, 0, sizeof(rtx::events::Share)));
+        if (!sh || sh->magic != rtx::events::kMagic || sh->version != rtx::events::kVersion) { close(); return false; }
+        return true;
+    }
+    void close() {
+        if (sh) UnmapViewOfFile(reinterpret_cast<LPCVOID>(sh));
+        if (h) CloseHandle(h);
+        sh = nullptr; h = nullptr;
+    }
+};
+
 struct Client {
     Recorder rec; fights::OpenLog file;
     std::string character, version;
     bool configured = false; int passes = 0;
+    EventRing ring; NetDecoder net;
 };
 std::mutex g_mu;
 std::map<std::uint32_t, Client> g_clients;
@@ -3205,6 +3230,7 @@ bool build_config() {
     };
     for (const auto& e : rtx::buffvars::kTimer) varbit(e);
     for (const auto& e : rtx::buffvars::kCount) varbit(e);
+    BuiltinMechanics(c.mechRows, c.mechBosses);
     c.names.official = [](const char* kind, int id) { return rtx::names::Name(kind, id); };
     c.names.structStr = [](int s, int p) { std::string v; rtx::cache::StructStrParam(s, p, v); return v; };
     c.names.structInt = [](int s, int p, int def) { int v = 0; return rtx::cache::StructIntParam(s, p, v) ? v : def; };
@@ -3246,7 +3272,44 @@ void finish(std::uint32_t pid, Client& c, const char* why, Closed& closed) {
     c.rec.Close(why);
     const std::filesystem::path p = flush(pid, c);
     if (!p.empty()) closed.push_back({ p, id });
+    c.ring.close();
     rtx::reader::CombatForget(pid);
+}
+
+// The ring's records since the last pass, decoded and handed to the recorder after the pass itself
+// (its scene resolves the actors the packets name). The first sight of the ring starts at its end.
+void drain_events(std::uint32_t pid, Client& c, std::uint32_t clock, long long wallMs, bool haveBase, int baseX, int baseY) {
+    EventRing& r = c.ring;
+    if (!r.sh) {
+        const long long now = (long long)GetTickCount64();
+        if (now < r.retryAt) return;
+        r.retryAt = now + 5000;
+        if (r.open(pid)) r.cursor = r.sh->written;
+        return;
+    }
+    const std::uint64_t written = r.sh->written;
+    std::uint64_t from = r.cursor > written ? written : r.cursor;
+    if (written - from > (std::uint64_t)rtx::events::kMaxRecords) from = written - rtx::events::kMaxRecords;
+    if (haveBase) c.net.SetMapBase(baseX, baseY);
+    std::vector<NetEv> evs;
+    std::vector<std::uint8_t> buf((std::size_t)rtx::events::kPayload);
+    for (std::uint64_t i = from; i < written; ++i) {
+        const rtx::events::Record& slot = r.sh->recs[i % rtx::events::kMaxRecords];
+        const std::uint32_t want = (std::uint32_t)((i + 1) * 2);   // published = (index + 1) * 2, odd while filling
+        if (slot.seq != want) continue;
+        MemoryBarrier();
+        const int op = slot.opcode, len = slot.length;
+        const std::uint32_t low = slot.wallMs;
+        if (!NetDecoder::Wanted(op)) continue;
+        std::uint32_t n = len < 0 ? 0 : (std::uint32_t)len;
+        if (n > (std::uint32_t)rtx::events::kPayload) n = rtx::events::kPayload;
+        std::memcpy(buf.data(), slot.payload, n);
+        MemoryBarrier();
+        if (slot.seq != want) continue;                              // rewritten during the copy
+        c.net.Decode(op, buf.data(), n, NetDecoder::FullWall(low, wallMs), evs);
+    }
+    r.cursor = written;
+    c.rec.FeedNet(evs, clock, wallMs);
 }
 
 long long g_reads = 0, g_fails = 0;          // under g_mu; the headless report prints them
@@ -3283,9 +3346,11 @@ void step(const std::vector<std::uint32_t>& pids, const std::map<std::uint32_t, 
                     rtx::reader::CombatRead(pid, (c.passes % 2) == 0, s);
                     g_reads += s.reads; g_fails += s.fails;
                     Tick t; t.ok = s.ok; t.wallMs = s.wallMs ? s.wallMs : wall_ms(); t.clock = s.clock; t.localUid = s.localUid;
+                    t.haveMapBase = s.haveMapBase; t.mapBaseX = s.mapBaseX; t.mapBaseY = s.mapBaseY;
                     t.actors = std::move(s.actors); t.varps = std::move(s.varps); t.varcs = std::move(s.varcs);
                     if (s.ok && c.passes % 5 == 0) t.haveTrackers = rtx::reader::CombatTrackers(pid, t.trackers);
                     c.rec.Feed(t);
+                    if (s.ok) drain_events(pid, c, t.clock, t.wallMs, s.haveMapBase, s.mapBaseX, s.mapBaseY);
                     ++c.passes;
                     if (c.rec.NeedsRotation(t.wallMs)) c.rec.Close("rotation");
                 } else {

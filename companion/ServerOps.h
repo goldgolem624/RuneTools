@@ -167,7 +167,7 @@ inline constexpr int kDefaultCaptured[] = {
     kSkillUpdate, kGeOffer, kContainerUpdate, kRunClientScript, kRunEnergy, kRunWeight, kPingEcho,
     kVarpInt, kVarpByte, kVarcInt, kVarcByte, kVarpLong, kVarbitVarint, kVarbitByte, kVarbitInt, kVarcLong,
     kZoneBase, kZoneClear, kZoneUpdate, kObjAdd, kObjDel, kObjCount, kLocAdd, kLocDel,
-    kSpotAnim, kSpotAnim2, kSpotAnimActor, kSpotAnimActor2, kProjectile, kSound, kAreaSound, kAreaSoundAbs,
+    kSpotAnim, kSpotAnim2, kSpotAnimActor, kSpotAnimActor2, kProjectile, kSound, kAreaSound, kAreaSoundAbs, kHintArrow,
     kZoneSub3, kZoneSub14, kContainerFull, kContainerReset,
     kTrackerGroup, kTrackerValues, kTrackerRemove, kTrackerClear, kTrackerColumn,
     kSystemUpdate, kCameraTarget, kCutscene, kFriendsLoaded, kPrivateFilter, kMinimapState,

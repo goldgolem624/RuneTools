@@ -206,6 +206,9 @@
     <ClInclude Include="..\src\launcher\Fights.h">
       <Filter>Launcher</Filter>
     </ClInclude>
+    <ClInclude Include="..\src\launcher\BossMechanics.h">
+      <Filter>Launcher</Filter>
+    </ClInclude>
     <ClInclude Include="..\src\launcher\Crypto.h">
       <Filter>Launcher</Filter>
     </ClInclude>
@@ -274,6 +277,9 @@
       <Filter>UI Assets</Filter>
     </None>
     <None Include="..\ui-assets\quest_tracks.js">
+      <Filter>UI Assets</Filter>
+    </None>
+    <None Include="..\ui-assets\boss_mechanics.js">
       <Filter>UI Assets</Filter>
     </None>
   </ItemGroup>

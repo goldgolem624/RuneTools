@@ -134,6 +134,7 @@ struct CombatActorSample {
     std::string name;              // live name (NPCs: the cache name when the live one is empty)
     int  tx = 0, ty = 0, plane = 0;
     int  anim = -1;                // sec+0xA90
+    bool haveAnimStart = false; int animCount = 0, animCycle = 0;   // NPCs: sec+0xAFC moves on every animation start, +0xB00 its cycle
     int  targetUid = -1;           // sec+0x1B4 (players)
     int  npcTarget = -1;           // sec+0x1364 (NPCs)
     int  combat = -1;              // players
@@ -148,6 +149,7 @@ struct CombatSample {
     long long wallMs = 0;          // system time of the clock read, ms since the epoch
     std::uint32_t clock = 0;       // CLIENTCLOCK
     int localUid = -1;
+    bool haveMapBase = false; int mapBaseX = 0, mapBaseY = 0;   // the loaded map's base tile (zone packets are relative to it)
     std::vector<CombatActorSample> actors;
     std::vector<std::pair<int, int>> varps, varcs;   // watched vars whose node exists: (id, value)
     int reads = 0, fails = 0;

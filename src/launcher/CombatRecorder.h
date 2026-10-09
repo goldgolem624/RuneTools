@@ -1,8 +1,9 @@
 #pragma once
-// Combat recorder: turns the reader's sampling passes into the combat log's events, segments them into
-// fights and produces the JSONL lines of the open log. Nothing here touches a process or a file: the
-// bridge feeds the samples and the store (Fights.h) writes what TakeLines hands out. One clock: every
-// cycle is CLIENTCLOCK (50/s, 30 per server tick). Log layout: docs/combatlog/DESIGN.md sections 1 and 2.
+// Combat recorder: turns the reader's sampling passes and the companion's packets into the combat log's
+// events, matches boss mechanics, segments the events into fights and produces the JSONL lines of the
+// open log. Nothing here touches a process or a file: the bridge feeds the samples and the packets, and
+// the store (Fights.h) writes what TakeLines hands out. One clock: every cycle is CLIENTCLOCK (50/s, 30
+// per server tick). Log layout: docs/combatlog/DESIGN.md sections 1 and 2.
 #include "../reader/Reader.h"
 
 #include <cstdint>
@@ -11,6 +12,7 @@
 #include <map>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace rtx::launcher::combat {
@@ -21,6 +23,44 @@ constexpr int kPrerollCycles = 1500;           // 30 s of state kept before the 
 constexpr long long kRotateMs = 60LL * 60 * 1000, kRotateHardMs = 90LL * 60 * 1000;
 constexpr long long kRotateBytes = 8LL * 1024 * 1024, kRotateEvents = 40000;
 constexpr std::size_t kTailMax = 4000;         // events kept in memory for the live follow
+constexpr int kGfxReticle1 = 9104, kGfxReticle2 = 9124;   // the target reticle, on every target: never logged
+constexpr long long kTileRepeatMs = 3000;      // a graphic or sound on the same tile within this is the same one
+
+// Boss mechanics the matcher looks for: BuiltinMechanics() copies the generated table, the tests pass
+// their own. kind: 1 npc_anim, 2 gfx_actor, 3 gfx_tile, 4 projectile, 5 sound, 6 hint_arrow,
+// 7 var_change, 8 npc_spawn. id: seq, graphic, sound, var or NPC id (hint arrow: the NPC pointed at,
+// 0 any). boss: the boss's main NPC id. domain (var_change): 1 varp, 2 varbit, 3 varc, 0 any of them.
+struct MechRow { int kind = 0, id = 0, boss = 0; std::string key, label; int tactic = 0, windowMs = 0, domain = 0; };
+struct MechBoss { int npc = 0; std::vector<int> phases; int encounter = 0; };
+void BuiltinMechanics(std::vector<MechRow>& rows, std::vector<MechBoss>& bosses);
+
+// One server packet the recorder uses, from the companion's event ring.
+struct NetEv {
+    enum Kind { Gfx = 1, Proj = 2, Sound = 3, Hint = 4, Varp = 5, Varbit = 6, Varc = 7 };
+    int kind = 0;
+    long long wallMs = 0;                      // capture time, epoch ms
+    int id = -1;                               // graphic, sound or var id
+    int ref = 0, index = -1;                   // the actor it is on or points at: 1 player, 2 NPC (index = its uid), 0 none
+    bool tile = false; int x = 0, y = 0, plane = 0;   // its tile: a graphic or sound on a tile, a projectile's source
+    bool resend = false;                       // a tile item sent again after its zone was cleared
+    int value = 0, form = 0;                   // var value; projectile wire length
+};
+// Decodes the packets NetEv covers. Zone items are relative to the zone base the stream set last, and
+// the zone base to the loaded map's base tile (SetMapBase), so records must be fed in ring order.
+class NetDecoder {
+public:
+    static bool Wanted(int op);
+    static long long FullWall(std::uint32_t low, long long near);   // the ring keeps the low 32 bits of the epoch ms
+    void SetMapBase(int x, int y) { baseX_ = x; baseY_ = y; haveBase_ = true; }
+    void Decode(int op, const std::uint8_t* b, std::uint32_t n, long long wallMs, std::vector<NetEv>& out);
+private:
+    void item(int sub, const std::uint8_t* b, std::uint32_t n, long long wallMs, std::vector<NetEv>& out);
+    bool tileOf(std::uint8_t pos, NetEv& e) const;
+    void zone(int x, int y, int plane) { zx_ = x; zy_ = y; zp_ = plane; zset_ = haveBase_; }
+    int baseX_ = 0, baseY_ = 0; bool haveBase_ = false;
+    int zx_ = 0, zy_ = 0, zp_ = 0; bool zset_ = false;
+    std::unordered_map<std::uint64_t, long long> cleared_;   // zone -> wall ms of its last clear
+};
 
 // One sampling pass (CombatSample) plus what the bridge knows about the client.
 struct Tick {
@@ -29,6 +69,7 @@ struct Tick {
     std::uint32_t clock = 0;
     int status = 30;                           // 30 = in the game world; anything else closes the log
     int localUid = -1;
+    bool haveMapBase = false; int mapBaseX = 0, mapBaseY = 0;   // the loaded map's base tile: a new one is a new scene
     std::vector<rtx::reader::CombatActorSample> actors;
     std::vector<std::pair<int, int>> varps, varcs;
     bool haveTrackers = false;
@@ -48,6 +89,8 @@ struct Config {
     std::vector<AbilityDef> abilities;         // every ability struct with a cooldown pair; the GCD pair as struct 0
     std::vector<BossDef> bosses;
     std::vector<VarbitDef> varbits;            // definitions of the varbits BuffVars.h names
+    std::vector<MechRow> mechRows;
+    std::vector<MechBoss> mechBosses;
     Names names;
     std::function<std::string()> newLogId;
 };
@@ -68,6 +111,8 @@ public:
     void Configure(const Config& cfg);
     void Feed(const Tick& t);                                                   // one sampling pass
     void FeedLocal(std::uint32_t clock, int anim, int targetUid, long long wallMs);   // the local player between passes
+    // Packets since the last call; `clock` and `wallMs` are one paired read (the last pass's) for the cycles.
+    void FeedNet(const std::vector<NetEv>& evs, std::uint32_t clock, long long wallMs);
     void Close(const char* why);                                                // logout | stop | rotation | recovered
     bool TakeLines(std::vector<std::string>& out);                              // JSONL lines since the last call
 
@@ -84,10 +129,11 @@ public:
     std::string DiagJson() const;                                              // what the recorder holds now (the headless report)
 
 private:
-    struct Ev { int type = 0; long long c = 0; std::vector<long long> f; std::string text; int a1 = -1, a2 = -1; std::uint64_t key = 0; };
+    struct Ev { int type = 0; long long c = 0; std::vector<long long> f; std::string text; int a1 = -1, a2 = -1; std::uint64_t key = 0; int mech = -1; };
     struct ActorState {
         ActorRow row; bool present = false; long long lastSeenC = 0, leftC = 0;
-        int anim = -0x7fffffff, target = -0x7fffffff, lp = -2, lpMax = -2, vis = -2;
+        int anim = -0x7fffffff, target = -0x7fffffff, lp = -2, lpMax = -2, vis = -2, animCount = -0x7fffffff;
+        int tx = -1, ty = -1, tplane = -1;
         bool haveStats = false; int stats[7] = {}, base[7] = {};
         int bar[4] = { -1, -1, -1, -1 };
         long long lastHitC = -1, deathC = -1; bool hitByMe = false;
@@ -102,7 +148,14 @@ private:
     int varValue(const std::unordered_map<int, int>& vp, const std::unordered_map<int, int>& vc, int kind, int var, bool& ok) const;
     void push(std::vector<Ev>& evs, int type, long long c, std::initializer_list<long long> f, int a1 = -1, int a2 = -1, const std::string& text = {});
     void route(std::vector<Ev>& evs);
+    void routeLate(std::vector<Ev>& evs);
     void preroll(Ev&& e);
+    int actorOfRef(int ref, int index) const;
+    int actorOnTile(int x, int y, int plane) const;
+    bool tileRepeat(int kind, int id, const NetEv& n);
+    void updateScope();
+    bool matchMech(std::vector<Ev>& evs, int kind, int id, long long c, int actor, int domain = 0, const std::unordered_set<int>* before = nullptr);
+    void mechDict(const Ev& e);
     void openLog(long long c, long long wallMs, const std::vector<Ev>& pending);
     void openFight(long long c, const char* by, long long wallMs, const std::vector<Ev>& pending);
     void endFight(long long c, const char* by);
@@ -143,6 +196,17 @@ private:
     std::deque<std::pair<std::uint64_t, std::string>> tail_; std::uint64_t seq_ = 0;
     std::unordered_map<std::uint64_t, bool> dict_;
     std::map<std::string, std::map<int, std::string>> dictJson_;   // kind -> id -> object, for the live follow
+    // packets and boss mechanics
+    bool sceneFresh_ = true;                             // the next pass is the first sight of the scene
+    bool haveMap_ = false; int mapX_ = 0, mapY_ = 0, selfX_ = -1, selfY_ = -1;   // the last pass's map base and local tile
+    std::unordered_map<std::uint64_t, long long> tileSeen_;   // kind, id and tile -> last wall ms
+    std::unordered_map<std::uint64_t, std::vector<int>> mechIdx_;   // kind << 32 | id -> rows
+    std::unordered_map<int, std::vector<int>> bossOfNpc_, bossOfEnc_;
+    std::unordered_set<int> active_;                     // bosses in scope: one of their NPCs is present or their encounter runs
+    std::unordered_map<int, long long> mechLast_;        // row -> cycle of its last event
+    std::unordered_map<std::uint64_t, int> varLast_;     // domain << 32 | var -> last value, for vars the rows name
+    std::map<int, std::map<std::string, std::string>> mechDict_;   // boss -> key -> object
+    long long netSeen_ = 0, netGfx_ = 0, netProj_ = 0, netSound_ = 0, netDup_ = 0, mechs_ = 0;
 };
 
 }  // namespace rtx::launcher::combat

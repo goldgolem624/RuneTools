@@ -4,16 +4,25 @@
 // functions (older launcher) the panel shows one line and nothing else.
 (function () {
 
-  const FL_TABS = [['overview', 'Overview'], ['dealt', 'Damage done'], ['taken', 'Damage taken'], ['health', 'Health'], ['buffs', 'Buffs'], ['casts', 'Casts'], ['events', 'Events']];
-  const FL_EV_CATS = [['hit', 'Hits'], ['cast', 'Casts'], ['buff', 'Buffs'], ['vitals', 'Vitals'], ['anim', 'Animations'], ['target', 'Targets'], ['tracker', 'Trackers'], ['other', 'Other']];
-  const FL_EV_CAT = { hit: 'hit', cast: 'cast', buff: 'buff', channel: 'cast', lp: 'vitals', adren: 'vitals', prayer: 'vitals', bar: 'vitals', stat: 'vitals', anim: 'anim', target: 'target', tracker: 'tracker' };
-  const FL_ROWS = 400, FL_COLORS = ['#e0b34c', '#4cc0c0', '#c98cf0', '#e06c6c', '#7f9fbf', '#67c07a'];
+  const FL_TABS = [['overview', 'Overview'], ['dealt', 'Damage done'], ['taken', 'Damage taken'], ['health', 'Health'], ['buffs', 'Buffs'], ['casts', 'Casts'], ['mechs', 'Mechanics'], ['events', 'Events']];
+  const FL_EV_CATS = [['hit', 'Hits'], ['cast', 'Casts'], ['buff', 'Buffs'], ['mech', 'Mechanics'], ['vitals', 'Vitals'], ['anim', 'Animations'], ['fx', 'Effects'], ['target', 'Targets'], ['tracker', 'Trackers'], ['other', 'Other']];
+  const FL_EV_CAT = { hit: 'hit', cast: 'cast', buff: 'buff', channel: 'cast', mech: 'mech', lp: 'vitals', adren: 'vitals', prayer: 'vitals', bar: 'vitals', stat: 'vitals', anim: 'anim', gfx: 'fx', proj: 'fx', sound: 'fx', target: 'target', tracker: 'tracker' };
+  const FL_ROWS = 400, FL_COLORS = ['#e0b34c', '#4cc0c0', '#c98cf0', '#e06c6c', '#7f9fbf', '#67c07a'], FL_MECH = '#ff9f43';
   const FL_STYLE_COLOR = { melee: '#e06c6c', ranged: '#67c07a', magic: '#7f9fbf', necromancy: '#c98cf0', conjure: '#9a7fd0', typeless: '#9aa0ad', poison: '#5fd07a' };
   const fl = { rows: null, rowsAt: 0, char: '', logId: '', fight: -2, tab: 'overview', log: null, loading: '', live: null, liveId: '', liveSeq: 0, liveAt: 0,
-               rec: null, recAt: 0, zoom: null, hl: 0, evFilt: { hit: true, cast: true, buff: true, vitals: false, anim: false, target: true, tracker: false, other: true },
+               rec: null, recAt: 0, zoom: null, hl: 0, mhl: '', evFilt: { hit: true, cast: true, buff: true, mech: true, vitals: false, anim: false, fx: false, target: true, tracker: false, other: true },
                evSearch: '', evShow: FL_ROWS, sig: '', pickSig: '', status: '', confirmDel: 0, drag: null };
   const FL_SPR = new Map(), FL_SPR_PENDING = new Set();
+  const FL_TAC = new Map(), FL_TAC_PENDING = new Set(), FL_TAC_MISS = new Map();
   const S = () => window.combatStats;
+  const FL_CSS = '.fl-chart .mk { stroke: ' + FL_MECH + '; stroke-width: 1.5; }\n.fl-chart .mk.hl { stroke: var(--accent-hi); stroke-width: 2.5; }\n' +
+    '.fl-chart .mkg { stroke: rgba(255,159,67,0.55); stroke-width: 1; stroke-dasharray: 2 3; }\n.fl-chart .mkr { stroke: var(--border); stroke-width: 1; }\n' +
+    '.fl-chart .mkl { font: 9px var(--font-mono); fill: ' + FL_MECH + '; }\n' +
+    '.fl-table.mech { --fl-cols: minmax(0, 1fr) 34px 46px 46px 50px 50px minmax(48px, .7fr); }\n' +
+    '.win.narrow .fl-table.mech { --fl-cols: minmax(0, 1fr) 34px 46px 50px 50px minmax(40px, .5fr); }\n' +
+    '.fl-tr .tl { position: relative; height: 8px; background: var(--bg-elev-2); border-radius: 2px; overflow: hidden; }\n' +
+    '.fl-tr .tl i { position: absolute; top: 0; bottom: 0; width: 2px; margin-left: -1px; background: ' + FL_MECH + '; }\n' +
+    '.fl-ev.mech .e { color: ' + FL_MECH + '; }';
 
   function flHas(name) { const b = bridge(); return !!(b && typeof b[name] === 'function'); }
   // Recorder bridge calls: strings are JSON, booleans and objects pass through, a missing function = null.
@@ -71,6 +80,57 @@
     return dd;
   }
   if (!window._petDDClose) { window._petDDClose = true; document.addEventListener('click', () => document.querySelectorAll('.pet-dd.open').forEach(x => x.classList.remove('open'))); }
+  function flCss() {
+    if (!document.head) return;
+    let s = document.getElementById('flMechCss');
+    if (!s) { s = document.createElement('style'); s.id = 'flMechCss'; document.head.appendChild(s); }
+    if (s.textContent !== FL_CSS) s.textContent = FL_CSS;
+  }
+
+  // Tactic title (struct param 4832) and text (4833) from the user's cache, loaded once per struct. Elements
+  // with data-tac get the text added to their tip when it arrives; a hovered chart marker redraws its label.
+  function flTactic(sid) {
+    if (!sid) return null;
+    if (FL_TAC.has(sid)) return FL_TAC.get(sid);
+    if (FL_TAC_PENDING.has(sid) || Date.now() - (FL_TAC_MISS.get(sid) || 0) < 15000 || typeof rtxData !== 'object' || !flHas('structParams')) return null;
+    FL_TAC_PENDING.add(sid);
+    rtxData.raw('cache.structParams', sid).then(t => {
+      FL_TAC_PENDING.delete(sid);
+      let sp = null;
+      try { sp = typeof t === 'string' ? JSON.parse(t || 'null') : t; } catch (e) { sp = null; }
+      if (!sp || typeof sp !== 'object') { FL_TAC_MISS.set(sid, Date.now()); return; }
+      const strs = sp.strs || {}, v = { title: S().plain(strs['4832']), text: S().plain(strs['4833']) };
+      FL_TAC.set(sid, v);
+      document.querySelectorAll('[data-tac="' + sid + '"]').forEach(x => flTacApply(x, v));
+      const ch = $('flChart');
+      if (ch && ch.__hov && ch.__hov.mech && ch.__hov.mech.tactic === sid) flHover(ch, ch.__hov.px, ch.__hov.py);
+    }).catch(() => { FL_TAC_PENDING.delete(sid); FL_TAC_MISS.set(sid, Date.now()); });
+    return null;
+  }
+  function flTacApply(e, v) { const t = [v.title, v.text].filter(Boolean).join('\n'); e.dataset.tip = (e.dataset.tipb || '') + (t ? '\n\n' + t : ''); }
+  function flTacTip(e, x) {
+    e.dataset.tipb = x.label + '\n' + (x.cues || []).map(q => (S().MECH_KINDS[q.kind] || 'kind ' + q.kind) + ' ' + q.id + (q.n > 1 ? ' x' + q.n : '')).join('\n');
+    e.dataset.tip = e.dataset.tipb;
+    if (!x.tactic) return;
+    e.dataset.tac = x.tactic;
+    const v = flTactic(x.tactic);
+    if (v) flTacApply(e, v);
+  }
+  // Word wrap to at most `max` lines of `cols` characters; a cut ends in "...".
+  function flWrap(text, cols, max) {
+    const out = [];
+    for (const para of String(text || '').split('\n')) {
+      let line = '';
+      for (const w of para.split(/\s+/)) {
+        if (!w) continue;
+        if (line && line.length + 1 + w.length > cols) { out.push(line); line = ''; }
+        line = line ? line + ' ' + w : (w.length > cols ? w.slice(0, cols) : w);
+      }
+      if (line) out.push(line);
+    }
+    if (out.length > max) { out.length = max; out[max - 1] = (out[max - 1].length > cols - 3 ? out[max - 1].slice(0, cols - 3) : out[max - 1]) + '...'; }
+    return out;
+  }
 
   // ---- data: index rows, one log, the open log, the record flag ----------------------------------------
   async function flFetchList(force) {
@@ -174,6 +234,7 @@
   function renderFights() {
     const c = $('content');
     let w = $('flWrap');
+    flCss();
     if (!w) {
       c.innerHTML = ''; fl.sig = ''; fl.pickSig = '';
       w = el('div', 'pk-wrap fl-wrap'); w.id = 'flWrap'; c.appendChild(w);
@@ -205,8 +266,10 @@
     const has = flHas('fightsList');
     const log = flLog(), n = fl.fight;
     flPaintPicker(has);
+    const hasMech = !!(log && S().mechCount && S().mechCount(log) > 0);
+    if (log && !hasMech && fl.tab === 'mechs') fl.tab = 'overview';
     const width = ($('flBody') && $('flBody').clientWidth) || 0;
-    const sig = [has, fl.logId, n, fl.tab, log ? log.events.length : -1, log ? (log.fights || []).length : -1, fl.zoom ? fl.zoom.join(',') : '', fl.hl, fl.evSearch, JSON.stringify(fl.evFilt),
+    const sig = [has, fl.logId, n, fl.tab, log ? log.events.length : -1, log ? (log.fights || []).length : -1, fl.zoom ? fl.zoom.join(',') : '', fl.hl, fl.mhl, fl.evSearch, JSON.stringify(fl.evFilt),
                  fl.evShow, fl.rec, fl.liveId, fl.loading, fl.status, fl.confirmDel, width, flRows().length].join('|');
     if (sig === fl.sig) return;
     fl.sig = sig;
@@ -216,13 +279,13 @@
     if (fl.rec === null) rec.style.display = 'none';
     else { rec.style.display = ''; rec.textContent = 'Record: ' + (fl.rec ? 'on' : 'off'); rec.className = 'fl-rec ' + (fl.rec ? 'on' : 'off'); rec.dataset.tip = fl.rec ? 'Fights are being recorded to disk. Click to stop.' : 'Nothing is recorded. Click to start recording fights.'; }
     $('flLiveChip').className = 'fl-chip' + (fl.live ? ' on' : '');
-    for (const b of $('flTabs').children) b.classList.toggle('on', b.dataset.tab === fl.tab);
+    for (const b of $('flTabs').children) { b.classList.toggle('on', b.dataset.tab === fl.tab); if (b.dataset.tab === 'mechs') b.style.display = hasMech ? '' : 'none'; }
     flPaintStrip(log, n);
     const body = $('flBody'); body.innerHTML = '';
     if (!log) {
       body.appendChild(el('div', 'fl-empty', !has ? '' : fl.loading ? 'Loading...' : flRows().length || fl.live ? 'Select a log.' : 'No fights recorded yet.' + (fl.rec === false ? ' Recording is off.' : '')));
     } else {
-      const r = { overview: flOverview, dealt: flDealt, taken: flTaken, health: flHealth, buffs: flBuffs, casts: flCasts, events: flEvents }[fl.tab] || flOverview;
+      const r = { overview: flOverview, dealt: flDealt, taken: flTaken, health: flHealth, buffs: flBuffs, casts: flCasts, mechs: flMechs, events: flEvents }[fl.tab] || flOverview;
       try { r(log, n, body); } catch (e) { body.appendChild(el('div', 'fl-empty', 'Could not draw this tab: ' + (e && e.message ? e.message : e))); }
     }
     flPaintButtons(log);
@@ -361,13 +424,16 @@
   }
 
   // Health chart: player LP (left axis), target LP % (right axis), adrenaline area, prayer dotted, hits as
-  // ticks above (dealt) and below (taken) the axis, kills and deaths as rules, buffs as a band. Drag zooms.
+  // ticks above (dealt) and below (taken) the axis, kills and deaths as rules, buffs as a band, boss mechanics
+  // as labelled ticks in a row per boss above the plot. Drag zooms.
   function flHealth(log, n, body) {
     const st = S(), se = st.series(log, n);
+    se.mk = st.mechs ? st.mechs(log, n) : null;
     const cont = el('div', 'fl-chart'); cont.id = 'flChart'; body.appendChild(cont);
     const legend = el('div', 'fl-legend');
     const lg = (c, t) => { const s = el('span'); const i = el('i'); i.style.background = c; s.appendChild(i); s.appendChild(document.createTextNode(t)); legend.appendChild(s); };
     lg('#e8eaf0', 'your LP'); lg('rgba(232,194,106,0.8)', 'adrenaline'); lg('#4cc0c0', 'prayer'); lg('#5fd07a', 'dealt'); lg('#ff6b6b', 'taken');
+    if (se.mk && se.mk.uses.length) lg(FL_MECH, 'mechanic');
     const tops = st.summary(log, n).targets.slice(0, 4);
     tops.forEach(([a], i) => { const act = st.actorOf(log, a); lg(FL_COLORS[i % FL_COLORS.length], (act.name || 'NPC') + ' LP %'); });
     body.appendChild(legend);
@@ -378,7 +444,7 @@
       const m = cont.__m; if (!m) return;
       const px = flPx(cont, e);
       if (fl.drag) { fl.drag.x1 = px; const sel = cont.querySelector('#flSel'); if (sel) { const a = Math.min(fl.drag.x0, px), b = Math.max(fl.drag.x0, px); sel.setAttribute('x', a); sel.setAttribute('width', Math.max(1, b - a)); sel.setAttribute('visibility', 'visible'); } return; }
-      flHover(cont, px);
+      flHover(cont, px, flPy(cont, e));
     });
     const up = () => {
       const m = cont.__m, d = fl.drag; fl.drag = null;
@@ -388,17 +454,22 @@
       if (b - a >= 30) { fl.zoom = [Math.floor(a), Math.ceil(b)]; flPaint(); }
     };
     cont.addEventListener('mouseup', up);
-    cont.addEventListener('mouseleave', () => { if (fl.drag) up(); const g = cont.querySelector('#flHov'); if (g) g.innerHTML = ''; });
+    cont.addEventListener('mouseleave', () => { if (fl.drag) up(); cont.__hov = null; const g = cont.querySelector('#flHov'); if (g) g.innerHTML = ''; });
     cont.addEventListener('dblclick', () => { fl.zoom = null; fl.drag = null; flPaint(); });
   }
   function flPx(cont, e) {
     const m = cont.__m, rect = cont.getBoundingClientRect ? cont.getBoundingClientRect() : { left: 0, width: m.W };
     return (e.clientX - rect.left) * (rect.width ? m.W / rect.width : 1);
   }
+  function flPy(cont, e) {
+    const m = cont.__m, rect = cont.getBoundingClientRect ? cont.getBoundingClientRect() : { top: 0, width: m.W };
+    return (e.clientY - rect.top) * (rect.width ? m.W / rect.width : 1);
+  }
   function flDraw(cont, log, n, se, tops) {
     const st = S(), r = se.range;
     const W = Math.max(300, cont.clientWidth || (cont.parentElement && cont.parentElement.clientWidth) || 360);
-    const L = 44, R = 34, PT = 8, PH = 148, TB = 34, AX = 14, BB = 20;
+    const mk = se.mk && se.mk.uses.length ? se.mk : null, mkB = mk ? mk.bosses : [], MR = 12, MT = mkB.length ? 4 + mkB.length * MR : 0;
+    const L = 44, R = 34, PT = 8 + MT, PH = 148, TB = 34, AX = 14, BB = 20;
     const axisY = PT + PH, H = axisY + TB + AX + BB + 2;
     const z0 = fl.zoom ? fl.zoom[0] : r.start, z1 = fl.zoom ? fl.zoom[1] : r.end, span = Math.max(30, z1 - z0);
     const x = c => L + (c - z0) / span * (W - L - R), cOf = px => z0 + (px - L) / (W - L - R) * span;
@@ -449,23 +520,57 @@
       const y = axisY + TB + AX + 2 + i * 3;
       for (const sp of u.spans) { if (sp[1] < z0 || sp[0] > z1) continue; s += '<line class="buffb" stroke="' + (u.type ? '#e06c6c' : FL_COLORS[i % FL_COLORS.length]) + '" x1="' + f1(x(Math.max(z0, sp[0]))) + '" x2="' + f1(x(Math.min(z1, sp[1]))) + '" y1="' + y + '" y2="' + y + '"><title>' + flEsc(u.name) + '</title></line>'; }
     });
+    // mechanic rows: the boss name in the left margin, a tick per use, the label where the next tick leaves room
+    const lblFit = (t, room) => { const k = Math.floor(room / 5.4); return k >= t.length ? t : k >= 5 ? t.slice(0, k - 1) + '.' : ''; };
+    mkB.forEach((boss, bi) => {
+      const y0 = 4 + bi * MR, y1 = y0 + MR - 2;
+      const bn = st.bossName(log, boss);
+      s += '<text class="lbl" x="' + (L - 4) + '" y="' + (y1 - 1) + '" text-anchor="end">' + flEsc(lblFit(/^NPC \d+$/.test(bn) ? String(boss) : bn, L - 6)) + '</text>';
+      s += '<line class="mkr" x1="' + L + '" x2="' + (W - R) + '" y1="' + (y1 + 0.5) + '" y2="' + (y1 + 0.5) + '"/>';
+      const pts = mk.uses.filter(k => k.boss === boss && k.c >= z0 && k.c <= z1);
+      pts.forEach((k, j) => {
+        const px = x(k.c), hl = !!fl.mhl && fl.mhl === k.row;
+        if (hl) s += '<line class="mkg" x1="' + f1(px) + '" x2="' + f1(px) + '" y1="' + PT + '" y2="' + (axisY + TB) + '"/>';
+        s += '<line class="mk' + (hl ? ' hl' : '') + '" x1="' + f1(px) + '" x2="' + f1(px) + '" y1="' + (y0 + 1) + '" y2="' + y1 + '"/>';
+        const t = lblFit(k.label, (j + 1 < pts.length ? x(pts[j + 1].c) : W - 2) - px - 5);
+        if (t) s += '<text class="mkl" x="' + f1(px + 2.5) + '" y="' + (y1 - 1) + '">' + flEsc(t) + '</text>';
+      });
+    });
+    if (mk) for (const row of mk.rows) if (row.tactic) flTactic(row.tactic);
     s += '<rect id="flSel" class="sel" x="0" y="' + PT + '" width="1" height="' + (PH + TB) + '" visibility="hidden"/><g id="flHov" class="hov"></g></svg>';
     cont.innerHTML = s;
-    cont.__m = { W, H, L, R, PT, axisY, TB, x, cOf, z0, z1, r, se, log, n, tops };
+    cont.__m = { W, H, L, R, PT, axisY, TB, x, cOf, z0, z1, r, se, log, n, tops, mk, mkB, MR, MT };
   }
   function flEsc(t) { return String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
-  function flHover(cont, px) {
+  function flHover(cont, px, py) {
     const m = cont.__m, g = cont.querySelector('#flHov'); if (!m || !g) return;
     const st = S(), log = m.log, se = m.se;
     let best = null, bd = 9;
-    const consider = (c, text, cls) => { const d = Math.abs(m.x(c) - px); if (d < bd) { bd = d; best = { c, text, cls }; } };
-    for (const h of se.dealt) if (h[0] >= m.z0 && h[0] <= m.z1) consider(h[0], 'you hit ' + st.actorLabel(log, h[3]) + ' ' + h[1].toLocaleString() + (h[4] ? ' crit' : '') + (h[2] ? ' (' + st.ability(log, h[2]).name + ')' : ''), 'hd');
-    for (const h of se.taken) if (h[0] >= m.z0 && h[0] <= m.z1) consider(h[0], (h[1] ? 'hit on you ' + h[1].toLocaleString() : 'blocked') + (h[2] >= 0 ? '' : ''), 'ht');
-    for (const k of se.kills) if (k[0] >= m.z0 && k[0] <= m.z1) consider(k[0], st.actorLabel(log, k[1]) + ' died', 'kill');
-    for (const d of se.deaths) if (d[0] >= m.z0 && d[0] <= m.z1) consider(d[0], 'you died', 'death');
+    const consider = (c, text, cls, mech) => { const d = Math.abs(m.x(c) - px); if (d < bd) { bd = d; best = { c, text, cls, mech }; } };
+    // over a mechanic row only that row's ticks count
+    const row = m.MT && py != null && py < m.MT + 2 ? m.mkB[Math.max(0, Math.min(m.mkB.length - 1, Math.floor((py - 4) / m.MR)))] : null;
+    if (m.mk) for (const k of m.mk.uses) if (k.c >= m.z0 && k.c <= m.z1 && (row == null || k.boss === row)) consider(k.c, st.bossName(log, k.boss, k.actor) + ': ' + k.label, 'mech', k);
+    if (row == null) {
+      for (const h of se.dealt) if (h[0] >= m.z0 && h[0] <= m.z1) consider(h[0], 'you hit ' + st.actorLabel(log, h[3]) + ' ' + h[1].toLocaleString() + (h[4] ? ' crit' : '') + (h[2] ? ' (' + st.ability(log, h[2]).name + ')' : ''), 'hd');
+      for (const h of se.taken) if (h[0] >= m.z0 && h[0] <= m.z1) consider(h[0], (h[1] ? 'hit on you ' + h[1].toLocaleString() : 'blocked') + (h[2] >= 0 ? '' : ''), 'ht');
+      for (const k of se.kills) if (k[0] >= m.z0 && k[0] <= m.z1) consider(k[0], st.actorLabel(log, k[1]) + ' died', 'kill');
+      for (const d of se.deaths) if (d[0] >= m.z0 && d[0] <= m.z1) consider(d[0], 'you died', 'death');
+    }
+    cont.__hov = { px, py, mech: best ? best.mech || null : null };
     if (!best) { g.innerHTML = ''; return; }
     const lines = [st.fmtMsTenths((best.c - m.r.start) * st.CYCLE_MS) + '  tick ' + (st.cycleTick(log, best.c) - st.cycleTick(log, m.r.start)), best.text];
+    const cols = Math.max(24, Math.min(64, Math.floor((m.W - 24) / 6.2)));
+    if (best.mech) {
+      const seen = [], k = best.mech;
+      for (const q of k.cues) { const t = (st.MECH_KINDS[q.kind] || 'kind ' + q.kind) + ' ' + q.id; if (seen.indexOf(t) < 0) seen.push(t); }
+      for (const l of flWrap(seen.join(', ') + (k.actor >= 0 ? ', ' + st.actorLabel(log, k.actor) : ''), cols, 2)) lines.push(l);
+    }
     const lp = se.lp.filter(p => p[0] <= best.c).pop(); if (lp) lines.push('your LP ' + lp[1].toLocaleString() + ' / ' + lp[2].toLocaleString());
+    const tac = best.mech && best.mech.tactic ? flTactic(best.mech.tactic) : null;
+    if (tac) {
+      if (tac.title) lines.push(tac.title.length > cols ? tac.title.slice(0, cols - 3) + '...' : tac.title);
+      for (const l of flWrap(tac.text, cols, 4)) lines.push(l);
+    }
     const w = Math.max.apply(null, lines.map(l => l.length)) * 6.2 + 12, h = lines.length * 13 + 8;
     let bx = m.x(best.c) + 10; if (bx + w > m.W) bx = m.x(best.c) - w - 10; if (bx < 0) bx = 2;
     let out = '<line class="ax" x1="' + m.x(best.c) + '" x2="' + m.x(best.c) + '" y1="' + m.PT + '" y2="' + (m.axisY + m.TB) + '"/>';
@@ -524,13 +629,39 @@
     body.appendChild(flTable('casts', [['Ability'], ['Casts', 1], ['Avg hit', 1], ['Total', 1], ['Per cast', 1]], rows));
   }
 
+  function flMechs(log, n, body) {
+    const st = S(), mk = st.mechs ? st.mechs(log, n) : null;
+    if (!mk || !mk.rows.length) { body.appendChild(el('div', 'fl-empty', 'No boss mechanics in this fight.')); return; }
+    const r = mk.range, dur = Math.max(1, r.end - r.start), at = c => st.fmtMs((c - r.start) * st.CYCLE_MS);
+    const gap = ms => ms < 10000 ? (ms / 1000).toFixed(1) + 's' : st.fmtMs(ms);
+    for (const boss of mk.bosses) {
+      if (mk.bosses.length > 1) body.appendChild(flH(st.bossName(log, boss)));
+      const rows = [];
+      for (const x of mk.rows) {
+        if (x.boss !== boss) continue;
+        const id = x.id, tr = el('div', 'fl-tr click' + (fl.mhl === id ? ' on' : ''));
+        const nm = el('span', 'n', x.label); flTacTip(nm, x); tr.appendChild(nm);
+        const has = x.gaps.length > 0;
+        flCells(tr, [[String(x.count), 'num'], [at(x.first), 'num'], [at(x.last), 'num'],
+                     [has ? gap(x.avgGap) : '-', 'num', has ? 'Between uses: ' + x.gaps.map(gap).join(', ') : ''], [has ? gap(x.minGap) : '-', 'num', has ? 'Longest ' + gap(x.maxGap) : '']]);
+        const tl = el('span', 'tl'); tl.dataset.tip = x.times.map(at).join(', ');
+        for (const c of x.times) { const i = el('i'); i.style.left = ((c - r.start) / dur * 100).toFixed(2) + '%'; tl.appendChild(i); }
+        tr.appendChild(tl);
+        tr.addEventListener('click', () => { fl.mhl = fl.mhl === id ? '' : id; fl.tab = 'health'; flPaint(); });
+        rows.push(tr);
+      }
+      body.appendChild(flTable('mech', [['Mechanic'], ['Uses', 1], ['First', 1], ['Last', 1], ['Avg gap', 1], ['Min gap', 1], ['Timeline']], rows));
+    }
+    body.appendChild(el('div', 'fl-note2', 'Click a row to mark it on the Health chart.'));
+  }
+
   function flEvRows(log, n) {
     const st = S(), r = st.range(log, n), q = fl.evSearch.trim().toLowerCase(), out = [], counts = {};
     for (let i = 0; i < log.events.length; i++) {
       const e = log.events[i];
       if (e[1] < r.start) continue;
       if (e[1] > r.end) break;
-      const cat = FL_EV_CAT[st.EVENT_NAMES[e[0]]] || 'other';
+      const cat = FL_EV_CAT[st.typeName ? st.typeName(log, e) : st.EVENT_NAMES[e[0]]] || 'other';
       counts[cat] = (counts[cat] || 0) + 1;
       if (!fl.evFilt[cat]) continue;
       const d = st.describe(log, i);
@@ -572,7 +703,7 @@
     if (!rows.length) { list.appendChild(el('div', 'chat-empty', 'No events match.')); return; }
     const frag = document.createDocumentFragment();
     for (const d of rows.slice(0, fl.evShow)) {
-      const cls = d.type === 'hit' ? (/^you hit/.test(d.text) ? 'dealt' : /on you/.test(d.text) ? 'taken' : /healed/.test(d.text) ? 'heal' : 'dim') : d.type === 'cast' ? 'cast' : (d.cat === 'vitals' || d.cat === 'anim' || d.cat === 'tracker') ? 'dim' : '';
+      const cls = d.type === 'hit' ? (/^you hit/.test(d.text) ? 'dealt' : /on you/.test(d.text) ? 'taken' : /healed/.test(d.text) ? 'heal' : 'dim') : d.type === 'cast' ? 'cast' : d.type === 'mech' ? 'mech' : (d.cat === 'vitals' || d.cat === 'anim' || d.cat === 'fx' || d.cat === 'tracker') ? 'dim' : '';
       const row = el('div', 'fl-ev ' + cls);
       row.appendChild(el('span', 't', st.fmtMsTenths(d.ms)));
       row.appendChild(el('span', 'k', String(d.tick)));
