@@ -46,6 +46,7 @@
   const SEQ_CONJURE = 35502, SEQ_COMMAND = 35505;
   // The conjure NPCs, the animation each plays one tick after a Command, and their spawn animations.
   const CONJURE_NPC = { 30265: 'SKELETON', 30266: 'ZOMBIE', 30267: 'GHOST', 31142: 'PHANTOM' };
+  const CONJURE_NAME = { 30265: 'Skeleton Warrior', 30266: 'Putrid Zombie', 30267: 'Vengeful Ghost', 31142: 'Phantom Guardian' };
   const COMMAND_BY = { 35219: [48303, 'Command Skeleton Warrior', 34165], 35243: [48303, 'Command Skeleton Warrior', 34165],
                        24731: [48307, 'Command Vengeful Ghost', 34166], 36215: [32342, 'Command Phantom Guardian', 34168],
                        35251: [48305, 'Command Putrid Zombie', 34167] };
@@ -80,8 +81,21 @@
                 seqs: (log.dict && log.dict.seqs) || {}, attr: null, mechT: {}, mechN: -1, bossN: {} };
     const sc = log.schema || {};
     for (const k in sc) if (Array.isArray(sc[k]) && sc[k][0] === 'mech') c.mechT[k] = 1;
+    for (const a of actors) if (a && a.type === 'npc' && /_/.test(a.name || '') && !/ /.test(a.name || '')) a.name = CONJURE_NAME[a.id] || '';
     log.__cs = c;
     return c;
+  }
+  // Actors that can be a kill: an NPC you hit or targeted. Summons (yours or anyone's) dying or expiring are not kills.
+  function isFoe(log, i) {
+    const c = ctx(log);
+    if (!c.foes) {
+      c.foes = {};
+      for (const e of log.events) {
+        if (e[0] === 0 && hitRole(log, e) === 'dealt') c.foes[e[2]] = 1;
+        else if (e[0] === 3 && e[2] === c.self && e[3] >= 0) c.foes[e[3]] = 1;
+      }
+    }
+    return !!c.foes[i];
   }
   function isMech(log, e) {
     const t = e[0];
@@ -297,7 +311,7 @@
         else if (role === 'taken') { taken += v; if (v === 0) blocked++; }
         else if (role === 'blocked') blocked++;
         else if (role === 'heal') healed += v;
-      } else if (e[0] === 10) { if (e[3] === 2) deaths++; else kills++; }
+      } else if (e[0] === 10) { if (e[3] === 2) deaths++; else if (isFoe(log, e[2])) kills++; }
     }
     for (const k of at.casts) if (k.c >= r.start && k.c <= r.end && (k.src !== 3 || k.resolved)) casts++;
     const durMs = Math.max(1, (r.end - r.start) * CYCLE_MS);
@@ -379,7 +393,7 @@
         const role = hitRole(log, e);
         if (role === 'dealt') out.dealt.push([e[1], e[4] > 0 ? e[4] : 0, at.struct[i], e[2], hmInfo(log, e[3]).crit ? 1 : 0, i]);
         else if (role === 'taken' || role === 'blocked') out.taken.push([e[1], e[4] > 0 ? e[4] : 0, e[2], i]);
-      } else if (e[0] === 10) { if (e[3] === 2) out.deaths.push([e[1]]); else out.kills.push([e[1], e[2]]); }
+      } else if (e[0] === 10) { if (e[3] === 2) out.deaths.push([e[1]]); else if (isFoe(log, e[2])) out.kills.push([e[1], e[2]]); }
     }
     for (const k in out.targets) out.targets[k].segs = out.targets[k].segs.filter(s => s.length);
     return out;
@@ -593,7 +607,7 @@
   // Game text to plain text: <br> becomes a line break, other tags are dropped.
   function plain(s) { return String(s == null ? '' : s).replace(/<br\s*\/?>/gi, '\n').replace(/<[^>]*>/g, '').replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim(); }
 
-  const api = { version: 1, CYCLE_MS, TICK, STYLES, EVENT_NAMES, MECH_KINDS, token, ctx, hmInfo, hitRole, hitStyle, actorOf, actorLabel, cycleMs, cycleTick, range, inRange,
+  const api = { version: 1, CYCLE_MS, TICK, STYLES, EVENT_NAMES, MECH_KINDS, token, ctx, hmInfo, hitRole, isFoe, hitStyle, actorOf, actorLabel, cycleMs, cycleTick, range, inRange,
                 ability, shapeOf, attribute, sourceOf, summary, byAbility, bySource, series, uptimes, casts, trackerCheck, styleSplit, describe, fightSummaries,
                 isMech, typeName, mechInfo, mechCount, bossName, mechs, plain, shortName, fmtNum, fmtMs, fmtMsTenths };
   root.combatStats = api;

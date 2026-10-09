@@ -4647,7 +4647,10 @@ bool cb_read_actor(CombatCtx& c, std::uint64_t sec, bool bars, CombatActorSample
         for (int k = 0; k < 7; ++k) if (a.stats[k] < -100000 || a.stats[k] > 1000000000 || a.base[k] < 0 || a.base[k] > 1000000000) a.haveStats = false;
         if (a.haveStats) { a.lp = a.stats[3] < 0 ? -1 : a.stats[3]; a.lpMax = a.base[3] <= 0 ? -1 : a.base[3]; }
         a.npcTarget = i32(rtx::scn::kNpcTarget);
-        if (a.name.empty() && id >= 0) {
+        // an empty live name, or one that is an id string (summons such as the conjures carry one): the cache
+        // name, which has the readable overrides; nothing when the cache has none either
+        const bool idLike = a.name.find('_') != std::string::npos && a.name.find(' ') == std::string::npos;
+        if ((a.name.empty() || idLike) && id >= 0) {
             auto it = c.st.npcNames.find(id);
             if (it == c.st.npcNames.end()) it = c.st.npcNames.emplace(id, rtx::cache::GetNpc(id).name).first;
             a.name = it->second;
