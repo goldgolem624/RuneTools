@@ -36,7 +36,7 @@ void BuiltinMechanics(std::vector<MechRow>& rows, std::vector<MechBoss>& bosses)
 
 // One server packet the recorder uses, from the companion's event ring.
 struct NetEv {
-    enum Kind { Gfx = 1, Proj = 2, Sound = 3, Hint = 4, Varp = 5, Varbit = 6, Varc = 7 };
+    enum Kind { Gfx = 1, Proj = 2, Sound = 3, Hint = 4, Varp = 5, Varbit = 6, Varc = 7, Script = 8 };
     int kind = 0;
     long long wallMs = 0;                      // capture time, epoch ms
     int id = -1;                               // graphic, sound or var id
@@ -44,6 +44,8 @@ struct NetEv {
     bool tile = false; int x = 0, y = 0, plane = 0;   // its tile: a graphic or sound on a tile, a projectile's source
     bool resend = false;                       // a tile item sent again after its zone was cleared
     int value = 0, form = 0;                   // var value; projectile wire length
+    int a[5] = {};                             // Script: its int arguments in signature order (id = the script)
+    std::string text;                          // Script: its string argument
 };
 // Decodes the packets NetEv covers. Zone items are relative to the zone base the stream set last, and
 // the zone base to the loaded map's base tile (SetMapBase), so records must be fed in ring order.
@@ -112,6 +114,8 @@ public:
     void Feed(const Tick& t);                                                   // one sampling pass
     void FeedLocal(std::uint32_t clock, int anim, int targetUid, long long wallMs);   // the local player between passes
     // Packets since the last call; `clock` and `wallMs` are one paired read (the last pass's) for the cycles.
+    // Casts: script 6570 names the exact ability; a cooldown varc change the packets do not explain is
+    // written one pass later from the varcs alone.
     void FeedNet(const std::vector<NetEv>& evs, std::uint32_t clock, long long wallMs);
     void Close(const char* why);                                                // logout | stop | rotation | recovered
     bool TakeLines(std::vector<std::string>& out);                              // JSONL lines since the last call
@@ -149,6 +153,9 @@ private:
     void push(std::vector<Ev>& evs, int type, long long c, std::initializer_list<long long> f, int a1 = -1, int a2 = -1, const std::string& text = {});
     void route(std::vector<Ev>& evs);
     void routeLate(std::vector<Ev>& evs);
+    struct NetRow { int startTick, endTick; std::size_t ev; int head; long long c; std::string name; int style0; };   // style0: the last cast's style before this row
+    void netCast(std::vector<Ev>& evs, const NetEv& n, long long c, std::vector<NetRow>& rows);
+    void flushCasts(std::vector<Ev>& evs);
     void preroll(Ev&& e);
     int actorOfRef(int ref, int index) const;
     int actorOnTile(int x, int y, int plane) const;
@@ -177,6 +184,18 @@ private:
     std::unordered_map<int, int> byUid_;                 // uid -> actor index (live or recently left)
     std::unordered_map<int, RingMemo> rings_;            // uid -> hitsplat records already logged
     std::unordered_map<int, CastVar> casts_;             // START varc -> family head
+    std::unordered_map<int, int> abilityAt_;             // struct -> index in cfg_.abilities
+    // casts: varc changes waiting one pass for the packet that names them, the rows script 6570 made
+    // (a varc change matching one is the same cast), and the server tick offset (cycle = tick * 30 + offset)
+    struct QueuedCast { int structId = 0; long long c = 0; int ready = -1; int startVarc = 0; int src = 1; long long pass = 0; };
+    struct NetCast { long long c = 0; int structId = 0, startVarc = 0; int startTick = 0, endTick = 0; };
+    std::vector<QueuedCast> castQ_;
+    std::deque<NetCast> netCasts_;
+    std::deque<std::pair<long long, long long>> tickOffs_;   // (cycle, cycle - tick * 30) of recent 6570 records
+    long long tickOff_ = 0; bool haveTickOff_ = false;
+    int lastStyle_ = 0;                                  // param 2806 of the last cast script 6570 named
+    std::map<int, std::vector<int>> coSent_;             // struct -> abilities sent with it for one cast (a shared cooldown)
+    long long passes_ = 0, netCasts0_ = 0, varcCasts_ = 0, restores_ = 0;
     std::vector<BuffVar> buffs_;
     std::unordered_map<int, int> trackers_;              // group << 16 | row << 8 | col -> value
     std::map<std::string, long long> kc_; bool kcKnown_ = false;

@@ -17,6 +17,10 @@ namespace {
 constexpr int kUnknown = -0x7fffffff;
 constexpr int kVarpLp = 13537, kVarpLpMax = 13538, kVarpAdren = 679, kVarpPrayer = 3274, kVarpEncounter = 10946;
 constexpr int kGcdStart = 2091, kGcdEnd = 2092, kGcdStruct = 14881;   // the global cooldown's dummy struct
+constexpr int kScriptCooldown = 6570, kScriptChannel = 18766;   // (struct, start tick, end tick, 1, 1); (side, ticks, id, name)
+constexpr long long kCastMatch = 15;                 // a cooldown varc and script 6570 this many cycles apart are one cast
+constexpr long long kRestoreSlack = 45;              // a 6570 record this much older than the tick offset is a cooldown restore
+bool isGcdStruct(int st) { return st == 14881 || st == 14882 || st == 29145; }
 constexpr int kTypeSound = 19, kTypeMech = 100;      // kTypeMech is written as ["mech", c, boss, key, kind, id, actor]
 constexpr long long kResendMs = 1200;                // tile items this soon after their zone was cleared are the zone sent again
 
@@ -40,6 +44,20 @@ std::string jesc(const std::string& s) {
     return o;
 }
 std::string jstr(const std::string& s) { return "\"" + jesc(s) + "\""; }
+std::string plainText(const std::string& s) {
+    std::string o;
+    for (std::size_t i = 0; i < s.size(); ++i) {
+        const unsigned char c = (unsigned char)s[i];
+        if (c == '<') {
+            const std::size_t e = s.find('>', i);
+            if (e == std::string::npos) break;
+            if (s.compare(i, e - i + 1, "<nbsp>") == 0) o.push_back(' ');
+            i = e;
+        } else if (c == 0xA0) o.push_back(' ');
+        else if (c >= 0x20 && c < 0x80) o.push_back((char)c);
+    }
+    return o;
+}
 
 std::uint64_t stateKey(int type, long long a, long long b = 0) {
     return ((std::uint64_t)(std::uint32_t)type << 56) ^ ((std::uint64_t)(std::uint32_t)a << 24) ^ (std::uint64_t)(std::uint32_t)b;
@@ -81,7 +99,7 @@ bool NetDecoder::Wanted(int op) {
     case s::kZoneBase: case s::kZoneClear: case s::kZoneUpdate: case s::kSpotAnim: case s::kSpotAnim2: case s::kSpotAnimActor: case s::kSpotAnimActor2:
     case s::kProjectile: case s::kProjectile20: case s::kProjectile28: case s::kProjectile29: case s::kSound: case s::kAreaSound: case s::kAreaSoundAbs:
     case s::kHintArrow: case s::kVarpInt: case s::kVarpByte: case s::kVarpLong: case s::kVarbitVarint: case s::kVarbitByte: case s::kVarbitInt:
-    case s::kVarcInt: case s::kVarcByte: case s::kVarcLong:
+    case s::kVarcInt: case s::kVarcByte: case s::kVarcLong: case s::kRunClientScript:
         return true;
     default:
         return false;
@@ -155,6 +173,31 @@ void NetDecoder::Decode(int op, const std::uint8_t* b, std::uint32_t n, long lon
             item(sub, b + p, (std::uint32_t)len, wallMs, out);
             p += (std::uint32_t)len;
         }
+        return;
+    }
+    case s::kRunClientScript: {    // [sig NUL][args in reverse signature order: s = NUL string, else i32 BE][script i32 BE]
+        std::uint32_t p = 0; char sig[8]; int ns = 0;
+        while (p < n && b[p] != 0) { if (ns >= 7) return; sig[ns++] = (char)b[p++]; }
+        if (p >= n) return;
+        ++p;
+        const bool cd = ns == 5 && std::memcmp(sig, "iiiii", 5) == 0, ch = ns == 4 && std::memcmp(sig, "iiis", 4) == 0;
+        if (!cd && !ch) return;
+        NetEv e; e.kind = NetEv::Script; e.wallMs = wallMs;
+        for (int i = ns - 1; i >= 0; --i) {
+            if (sig[i] == 's') {
+                const std::uint32_t s0 = p;
+                while (p < n && b[p] != 0) ++p;
+                if (p >= n) return;
+                e.text.assign(reinterpret_cast<const char*>(b + s0), p - s0);
+                ++p;
+            } else {
+                if (p + 4 > n) return;
+                e.a[i] = (int)nu32(b + p); p += 4;
+            }
+        }
+        if (p + 4 > n) return;
+        e.id = (int)nu32(b + p);
+        if ((cd && e.id == kScriptCooldown) || (ch && e.id == kScriptChannel)) out.push_back(std::move(e));
         return;
     }
     case s::kSpotAnim:      item(0x0B, b, n, wallMs, out); return;
@@ -265,7 +308,9 @@ void WantedVars(const Config& cfg, std::vector<int>& varps, std::vector<int>& va
 
 void Recorder::Configure(const Config& cfg) {
     cfg_ = cfg;
-    casts_.clear(); buffs_.clear();
+    casts_.clear(); buffs_.clear(); abilityAt_.clear();
+    castQ_.clear(); netCasts_.clear(); tickOffs_.clear(); coSent_.clear(); haveTickOff_ = false; lastStyle_ = 0;
+    for (std::size_t i = 0; i < cfg.abilities.size(); ++i) abilityAt_.emplace(cfg.abilities[i].structId, (int)i);
     casts_[kGcdStart] = CastVar{ kGcdStruct, kGcdEnd };
     for (const auto& a : cfg.abilities) {
         if (a.startVarc <= 0 || a.startVarc == kGcdStart) continue;
@@ -513,7 +558,7 @@ std::string Recorder::headerJson() const {
     return "{\"format\":" + std::to_string(kFormat) + ",\"log\":{\"id\":" + jstr(logId_) + ",\"character\":" + jstr(cfg_.character) +
            ",\"launcher\":" + jstr(cfg_.launcher) + ",\"client\":" + jstr(cfg_.client) + ",\"startedAt\":" + std::to_string(startedAt_) +
            ",\"companion\":false},\"clock\":{\"c0\":" + std::to_string(c0_) + ",\"wall0\":" + std::to_string(wall0_) +
-           ",\"phase\":" + std::to_string(phase_) + ",\"tick0\":-1}}";
+           ",\"phase\":" + std::to_string(phase_) + ",\"tick0\":" + std::to_string(haveTickOff_ ? tickOff_ : -1) + "}}";
 }
 
 void Recorder::ensureActor(int i) {
@@ -535,20 +580,20 @@ void Recorder::dictLine(const char* kind, int id, const std::string& json) {
 void Recorder::abilityDict(int st) {
     if (st <= 0 || !dict_.emplace(dictKey(1, st), true).second) return;
     const AbilityDef* d = nullptr;
-    for (const auto& a : cfg_.abilities) if (a.structId == st) { d = &a; break; }
+    if (auto it = abilityAt_.find(st); it != abilityAt_.end()) d = &cfg_.abilities[(std::size_t)it->second];
     auto sint = [&](int p, int def) { return cfg_.names.structInt ? cfg_.names.structInt(st, p, def) : def; };
-    std::string name = d ? d->name : (cfg_.names.structStr ? cfg_.names.structStr(st, 2794) : std::string());
+    std::string name = plainText(d ? d->name : (cfg_.names.structStr ? cfg_.names.structStr(st, 2794) : std::string()));
     if (name.empty() && st == kGcdStruct) name = "Global cooldown";
     const int stat = sint(2806, d ? d->style : 0);
     const char* style = stat == 1 ? "melee" : stat == 3 ? "ranged" : stat == 4 ? "magic" : stat == 6 ? "typeless" : stat == 29 ? "necromancy" : "";
     std::string o = "{\"name\":" + jstr(name) + ",\"icon\":" + std::to_string(d ? d->icon : sint(2802, 0)) + ",\"style\":\"" + style +
-                    "\",\"cd\":" + std::to_string(d ? d->cdTicks : 0) + ",\"varc\":" + std::to_string(d ? d->startVarc : 0);
+                    "\",\"cd\":" + std::to_string(d ? d->cdTicks : sint(2796, 0)) + ",\"varc\":" + std::to_string(d ? d->startVarc : 0);
     std::vector<int> fam;
-    if (d && d->startVarc > 0) {
-        for (const auto& a : cfg_.abilities) if (a.startVarc == d->startVarc) fam.push_back(a.structId);
-        std::sort(fam.begin(), fam.end()); fam.erase(std::unique(fam.begin(), fam.end()), fam.end());
-        if (fam.size() > 1) { o += ",\"family\":["; for (std::size_t i = 0; i < fam.size(); ++i) { if (i) o += ","; o += std::to_string(fam[i]); } o += "]"; }
-    }
+    if (d && d->startVarc > 0) for (const auto& a : cfg_.abilities) if (a.startVarc == d->startVarc) fam.push_back(a.structId);
+    if (auto cs = coSent_.find(st); cs != coSent_.end()) { fam.push_back(st); fam.insert(fam.end(), cs->second.begin(), cs->second.end()); }
+    std::sort(fam.begin(), fam.end()); fam.erase(std::unique(fam.begin(), fam.end()), fam.end());
+    if (fam.size() > 1) { o += ",\"family\":["; for (std::size_t i = 0; i < fam.size(); ++i) { if (i) o += ","; o += std::to_string(fam[i]); } o += "]"; }
+    if (const int anim = sint(2914, 0)) o += ",\"anim\":" + std::to_string(anim);
     if (sint(2801, 0)) o += ",\"channel\":[" + std::to_string(sint(8884, 1)) + "," + std::to_string(sint(8885, 1)) + "]";
     if (sint(5335, 0) || sint(8366, 0)) o += ",\"dot\":" + std::to_string(sint(3740, 0));
     if (sint(2842, 0)) o += ",\"aoe\":1";
@@ -753,15 +798,87 @@ void Recorder::FeedLocal(std::uint32_t clock, int anim, int targetUid, long long
     route(evs);
 }
 
+// One script 6570 record (struct, start tick, end tick, 1, 1). An ability's record is its cast; records with the
+// same ticks in one batch are one cast of abilities sharing a cooldown (the head is the one whose style
+// matches the last cast's); a record with start == end for a struct already rowed in that tick resets it.
+// The global cooldown's records and other structs make no row: the varc path covers the stamp.
+void Recorder::netCast(std::vector<Ev>& evs, const NetEv& n, long long c, std::vector<NetRow>& rows) {
+    const int st = n.a[0], start = n.a[1], end = n.a[2];
+    if (st <= 0 || start <= 0 || end < start || isGcdStruct(st)) return;
+    auto ab = abilityAt_.find(st);
+    if (ab == abilityAt_.end()) return;
+    const AbilityDef& d = cfg_.abilities[(std::size_t)ab->second];
+    if (haveTickOff_ && c - (long long)start * 30 - tickOff_ > kRestoreSlack) { ++restores_; return; }
+    for (auto& r : rows) {
+        if (r.startTick != start) continue;
+        if (r.head == st && start == end) return;                                    // a reset of the row just made
+        if (r.endTick != end) continue;
+        auto& co = coSent_[r.head];
+        if (std::find(co.begin(), co.end(), st) == co.end()) { co.push_back(st); dict_.erase(dictKey(1, r.head)); }
+        if (r.ev < evs.size() && r.style0 && d.style == r.style0) {
+            const auto hi = abilityAt_.find(r.head);
+            const int h = hi != abilityAt_.end() ? cfg_.abilities[(std::size_t)hi->second].style : 0;
+            if (h != r.style0) {                                                     // this one is the cast
+                auto& nco = coSent_[st];
+                if (std::find(nco.begin(), nco.end(), r.head) == nco.end()) nco.push_back(r.head);
+                evs[r.ev].f[0] = st; r.head = st; r.name = plainText(d.name); lastStyle_ = d.style;
+            }
+        }
+        return;
+    }
+    // the cooldown varc change of this cast, seen by this pass or the one before: its cycles are exact
+    long long at = c; int ready = (int)(c + (long long)(end - start) * 30);
+    for (auto it = castQ_.begin(); it != castQ_.end(); ++it) {
+        if (it->src != 1 || d.startVarc <= 0 || it->startVarc != d.startVarc || std::llabs(it->c - c) > kCastMatch) continue;
+        at = it->c; if (it->ready > 0) ready = it->ready;
+        castQ_.erase(it);
+        break;
+    }
+    rows.push_back({ start, end, evs.size(), st, at, plainText(d.name), lastStyle_ });
+    push(evs, 1, at, { st, ready, 0 });
+    netCasts_.push_back({ at, st, d.startVarc, start, end });
+    while (!netCasts_.empty() && netCasts_.front().c < at - 3000) netCasts_.pop_front();
+    if (d.style) lastStyle_ = d.style;
+    phase_ = (int)(((at % 30) + 30) % 30);
+    ++netCasts0_;
+}
+
 // Graphics (13), projectiles (14) and sounds (19) from the packets, and the mechanics they and the
 // hint arrows and var sets match. Cycles come from the capture time against the pass's paired read.
 void Recorder::FeedNet(const std::vector<NetEv>& in, std::uint32_t clock, long long wallMs) {
     if (in.empty()) return;
     std::vector<Ev> evs;
+    auto cycleOf = [&](const NetEv& n) {
+        const long long d = n.wallMs - wallMs;
+        return (long long)clock + (d >= 0 ? d / 20 : -((19 - d) / 20));
+    };
+    // the server tick offset: the smallest (cycle - tick * 30) of the last two minutes, this batch included;
+    // a cast's own record sits on it, a cooldown restored at login or a teleport is older
+    long long newest = 0;
+    for (const NetEv& n : in) {
+        if (n.kind != NetEv::Script || n.id != kScriptCooldown || n.a[1] <= 0) continue;
+        const long long c = cycleOf(n);
+        tickOffs_.push_back({ c, c - (long long)n.a[1] * 30 });
+        if (c > newest) newest = c;
+    }
+    while (!tickOffs_.empty() && (tickOffs_.front().first < newest - 6000 || tickOffs_.size() > 32)) tickOffs_.pop_front();
+    if (!tickOffs_.empty()) {
+        tickOff_ = tickOffs_.front().second;
+        for (const auto& t : tickOffs_) tickOff_ = std::min(tickOff_, t.second);
+        haveTickOff_ = true;
+    }
+    std::vector<NetRow> rows;                        // the ability rows this call made, for co-sent records and channels
     for (const NetEv& n : in) {
         ++netSeen_;
-        const long long d = n.wallMs - wallMs;
-        const long long c = (long long)clock + (d >= 0 ? d / 20 : -((19 - d) / 20));
+        const long long c = cycleOf(n);
+        if (n.kind == NetEv::Script && n.id == kScriptCooldown) { netCast(evs, n, c, rows); continue; }
+        if (n.kind == NetEv::Script && n.id == kScriptChannel) {
+            const std::string name = plainText(n.text);
+            long long at = c;
+            for (auto it = rows.rbegin(); it != rows.rend(); ++it) if (it->name == name) { at = it->c; break; }
+            push(evs, 8, at, { n.a[0], n.a[1] }, selfIdx_, -1, name);
+            continue;
+        }
         switch (n.kind) {
         case NetEv::Gfx: {
             if (n.id < 0 || n.id == kGfxReticle1 || n.id == kGfxReticle2) break;
@@ -812,6 +929,24 @@ void Recorder::FeedNet(const std::vector<NetEv>& in, std::uint32_t clock, long l
     routeLate(evs);
 }
 
+// Varc changes from an earlier pass that no 6570 row took: the ability's family head (src 1); the global
+// cooldown stamp (src 3) only when no ability row sits within a tick of it.
+void Recorder::flushCasts(std::vector<Ev>& evs) {
+    std::vector<QueuedCast> keep;
+    for (const auto& q : castQ_) {
+        if (q.pass >= passes_) { keep.push_back(q); continue; }
+        if (q.src == 3) {
+            bool cast = false;
+            for (const auto& nc : netCasts_) if (std::llabs(nc.c - q.c) <= 30) { cast = true; break; }
+            for (const auto& o : castQ_) if (o.src == 1 && std::llabs(o.c - q.c) <= 30) { cast = true; break; }
+            if (cast) continue;
+        }
+        push(evs, 1, q.c, { q.structId, q.ready, q.src });
+        if (q.src == 1) ++varcCasts_;
+    }
+    castQ_ = std::move(keep);
+}
+
 void Recorder::Feed(const Tick& t) {
     if (!t.ok) { ++readFails_; return; }
     if (t.status != 30) { if (logOpen_ || inFight_) Close("logout"); lastWallMs_ = t.wallMs; return; }
@@ -819,6 +954,8 @@ void Recorder::Feed(const Tick& t) {
     std::vector<Ev> evs;
     if (lastWallMs_ && t.wallMs - lastWallMs_ > 1000) { ++gaps_; push(evs, 16, c, { 2 }, -1, -1, "gap " + std::to_string(t.wallMs - lastWallMs_) + " ms"); }
     lastWallMs_ = t.wallMs; lastC_ = c;
+    ++passes_;
+    flushCasts(evs);
     std::unordered_map<int, int> vp, vc;
     for (const auto& kv : t.varps) vp[kv.first] = kv.second;
     for (const auto& kv : t.varcs) vc[kv.first] = kv.second;
@@ -993,15 +1130,22 @@ void Recorder::Feed(const Tick& t) {
             if (kv.second <= 0 || std::llabs((long long)kv.second - c) > 3000) continue;
         }
         if (kv.first == kGcdStart) { gcdC = kv.second; continue; }
-        auto en = vc.find(cs.endVarc);
-        push(evs, 1, kv.second, { cs.structId, en != vc.end() ? en->second : -1, 1 });
         castCs.push_back(kv.second);
         phase_ = (int)(((kv.second % 30) + 30) % 30);
+        bool named = false;                          // a 6570 row already made this cast
+        for (const auto& nc : netCasts_) if (nc.startVarc == kv.first && std::llabs(nc.c - kv.second) <= kCastMatch) { named = true; break; }
+        if (named) continue;
+        auto en = vc.find(cs.endVarc);
+        castQ_.push_back({ cs.structId, kv.second, en != vc.end() ? en->second : -1, kv.first, 1, passes_ });
     }
     if (gcdC >= 0) {
         bool paired = false;
         for (long long x : castCs) if (std::llabs(x - gcdC) <= 1) paired = true;
-        if (!paired) { auto en = vc.find(kGcdEnd); push(evs, 1, gcdC, { kGcdStruct, en != vc.end() ? en->second : -1, 3 }); castCs.push_back(gcdC); phase_ = (int)(((gcdC % 30) + 30) % 30); }
+        if (!paired) {
+            auto en = vc.find(kGcdEnd);
+            castQ_.push_back({ kGcdStruct, gcdC, en != vc.end() ? en->second : -1, kGcdStart, 3, passes_ });
+            castCs.push_back(gcdC); phase_ = (int)(((gcdC % 30) + 30) % 30);
+        }
     }
     if (!castCs.empty() && selfIdx_ >= 0) {
         const int tgt = actors_[(std::size_t)selfIdx_].target;
@@ -1070,6 +1214,7 @@ void Recorder::Feed(const Tick& t) {
             by = !myHits.empty() ? "hit" : hitOnSelf ? "taken" : "cast";
             startC = c;
             for (const auto& e : evs) if ((e.type == 0 && (e.a1 == selfIdx_ || std::find(myHits.begin(), myHits.end(), e.a1) != myHits.end())) || e.type == 1) startC = std::min(startC, e.c);
+            if (castAtTarget) for (long long x : castCs) startC = std::min(startC, x);   // their rows come a pass later
         } else if (enc_ != kUnknown && enc_ != -1 && (encBegan || !logOpen_)) by = "encounter";
         if (by) {
             openFight(startC, by, t.wallMs, evs);
@@ -1102,6 +1247,8 @@ std::string Recorder::DiagJson() const {
     std::string o = "{\"clock\":" + std::to_string(lastC_) + ",\"phase\":" + std::to_string(phase_) + ",\"lp\":" + std::to_string(lp_) + ",\"lpMax\":" + std::to_string(lpMax_) +
                     ",\"adren\":" + std::to_string(adren_) + ",\"prayer\":" + std::to_string(prayer_ == kUnknown ? -1 : prayer_) + ",\"encounter\":" + std::to_string(enc_ == kUnknown ? -2 : enc_) +
                     ",\"castVarsSeen\":" + std::to_string(castsSeen) + ",\"buffVarsSeen\":" + std::to_string(buffsSeen) + ",\"buffsOn\":" + std::to_string(buffsOn) +
+                    ",\"casts\":{\"script\":" + std::to_string(netCasts0_) + ",\"varc\":" + std::to_string(varcCasts_) + ",\"restores\":" + std::to_string(restores_) +
+                    ",\"tick0\":" + std::to_string(haveTickOff_ ? tickOff_ : -1) + "}" +
                     ",\"trackerCells\":" + std::to_string(trackers_.size()) + ",\"preroll\":" + std::to_string(preroll_.size()) + ",\"baseline\":" + std::to_string(baseline_.size()) +
                     ",\"net\":{\"seen\":" + std::to_string(netSeen_) + ",\"gfx\":" + std::to_string(netGfx_) + ",\"proj\":" + std::to_string(netProj_) +
                     ",\"sound\":" + std::to_string(netSound_) + ",\"repeats\":" + std::to_string(netDup_) + ",\"mechs\":" + std::to_string(mechs_) + ",\"bosses\":[";

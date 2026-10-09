@@ -3209,14 +3209,29 @@ bool build_config() {
     if (!by || by->t != rtx::health::JVal::Obj || by->o.empty()) return false;
     Config c;
     c.launcher = running_version();
+    // every ability struct with its own cooldown varc pair, then the named abilities that have none
+    std::unordered_set<int> paired;
+    for (const auto& kv : rtx::cache::AbilityCooldownVarcs()) {
+        if (kv.first <= 0 || kv.second.first <= 0 || kv.second.first == 2091) continue;   // 2091: the global cooldown's pair
+        AbilityDef d;
+        d.structId = kv.first; d.startVarc = kv.second.first; d.endVarc = kv.second.second;
+        rtx::cache::StructStrParam(d.structId, 2794, d.name);
+        d.icon = rtx::cache::StructIntParamOr(d.structId, 2802, 0);
+        d.style = rtx::cache::StructIntParamOr(d.structId, 2806, 0);
+        d.cdTicks = rtx::cache::StructIntParamOr(d.structId, 2796, 0);
+        paired.insert(d.structId);
+        c.abilities.push_back(std::move(d));
+    }
     for (const auto& kv : by->o) {
         const rtx::health::JVal& v = kv.second;
         AbilityDef d;
-        d.structId = (int)v.num("s", -1); d.name = v.str("n"); d.icon = std::atoi(kv.first.c_str());
+        d.structId = (int)v.num("s", -1);
+        if (d.structId <= 0 || paired.count(d.structId)) continue;
+        d.name = v.str("n"); d.icon = std::atoi(kv.first.c_str());
         d.style = (int)v.num("st", 0); d.cdTicks = (int)v.num("c", 0);
-        if (const rtx::health::JVal* pv = v.get("v"); pv && pv->a.size() == 2) { d.startVarc = std::atoi(pv->a[0].s.c_str()); d.endVarc = std::atoi(pv->a[1].s.c_str()); }
-        if (d.structId > 0) c.abilities.push_back(std::move(d));
+        c.abilities.push_back(std::move(d));
     }
+    std::sort(c.abilities.begin(), c.abilities.end(), [](const AbilityDef& a, const AbilityDef& b) { return a.structId < b.structId; });
     for (const auto& b : loot::kBosses) {
         BossDef x; x.name = b.name; if (b.m1[0]) { x.name += "|"; x.name += b.m1; }
         std::memcpy(x.kc, b.kc, sizeof(x.kc)); std::memcpy(x.pr, b.pr, sizeof(x.pr));

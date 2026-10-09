@@ -3,6 +3,7 @@
 #include "MapLocations.h"
 
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -199,6 +200,8 @@ bool IfaceCompDefLookup(int group_id, int comp_id, IfaceCompDefLite& out);
 std::string EnumJson(int enum_id);
 
 std::string AbilityConfigsJson();
+// Every ability struct with its own cooldown varc pair (start, end) from client script 6506.
+std::unordered_map<int, std::pair<int, int>> AbilityCooldownVarcs();
 std::string BuffCatalogJson();
 
 std::string NpcJson(int npc_id);

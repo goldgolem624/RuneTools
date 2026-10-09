@@ -3113,6 +3113,12 @@ std::unordered_map<int, std::pair<int, int>> AbilityCooldownVarcsLocked() {
     return AbilityCooldownVarcsFrom(g_store ? g_store->Get(kIndexClientScript) : nullptr);
 }
 
+std::unordered_map<int, std::pair<int, int>> AbilityCooldownVarcs() {
+    std::lock_guard<std::mutex> lk(g_mu);
+    EnsureInit();
+    return AbilityCooldownVarcsLocked();
+}
+
 std::string g_buff_catalog_json;   // under g_mu; cleared on cache update
 std::string BuffCatalogJson() {
     std::lock_guard<std::mutex> lk(g_mu);
@@ -3200,7 +3206,7 @@ std::string AbilityConfigsJson() {
             auto itU = ds.strs.find(4650);
             if (itU != ds.strs.end() && !itU->second.empty()) out += ",\"u\":" + jstr(itU->second);
             // "c" = cooldown in game ticks (param 2796), "i" = ability id at widget+0x188 (param 2802),
-            // "s" = struct id (script 6506 switch key), "g" = param 2976 set (uses the global-cooldown varc pair).
+            // "s" = struct id (script 6506 switch key), "g" = param 2976 set (an item ability: 6506 gives it the item pair 2215/2216).
             auto itCd = ds.ints.find(2796);
             if (itCd != ds.ints.end() && itCd->second > 0) out += ",\"c\":" + std::to_string(itCd->second);
             auto itId = ds.ints.find(2802);

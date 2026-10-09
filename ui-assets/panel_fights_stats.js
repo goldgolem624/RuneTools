@@ -20,8 +20,42 @@
     SNIPE: [1, 2], RAPID_FIRE: [0, 1, 2, 3, 4], SMOKE_TENDRILS: [0, 1, 2, 3], SUNSHINE: [], METAMORPHOSIS: [], DEATHS_SWIFTNESS: [],
     ANTICIPATION: [], FREEDOM: [], PREPARATION: [], RESONANCE: [], REFLECT: [], DEVOTION: [], BARRICADE: [], IMMORTALITY: [],
     SURGE: [], ESCAPE: [], DIVE: [], BLADED_DIVE: [0, 1], LIMITLESS: [], NATURAL_INSTINCT: [], BERSERK: [], REJUVENATE: [], GUTHIXS_BLESSING: [],
-    INCITE: [], PROVOKE: [], REGENERATE: [], DEBILITATE: [0, 1], GLOBAL_COOLDOWN: [0, 1, 2]
+    INCITE: [], PROVOKE: [], REGENERATE: [], DEBILITATE: [0, 1], GLOBAL_COOLDOWN: [],
+    // necromancy, from the 2026-10-09 dummy log (ticks after the cast row, 3 cycles of slack)
+    TOUCH_OF_DEATH: [1], SOUL_SAP: [1], BLOAT: [2], VOLLEY_OF_SOULS: [2], LIVING_DEATH: [], CONJURE: [], COMMAND: [],
+    // necromancy, not seen yet: confirm on a log that has them
+    FINGER_OF_DEATH: [1], SOUL_STRIKE: [1], DEATH_SKULLS: [1, 2, 3, 4, 5, 6], SPECTRAL_SCYTHE: [1], SPECTRAL_SCYTHE_RECAST_1: [1], SPECTRAL_SCYTHE_RECAST_2: [1]
   };
+  // Hits one cast can own at its shape ticks (Volley of Souls: one per residual soul, all in one cycle).
+  const CAP = { TOUCH_OF_DEATH: 1, SOUL_SAP: 1, FINGER_OF_DEATH: 1, SOUL_STRIKE: 1, BLOAT: 1, VOLLEY_OF_SOULS: 5 };
+  // Damage over time with a fixed value per application, ticking on the target every 3 ticks: the ticks after
+  // the cast it can run for. A later cast of the same ability on the target replaces the value.
+  const DOT = { BLOAT: 36 };
+  // Hit kinds that are never the player's own cast: one row each, under a negative struct.
+  const KIND_ROW = { conjure: -1, 'conjure crit': -1, poison: -2 };
+  const KIND_NAME = { '-1': 'Conjures', '-2': 'Poison' }, KIND_ICON = { '-1': 31336, '-2': 0 };   // 31336 = the conjure hitsplat skull
+  // Cast animation -> ability [struct, name, icon] (struct params 2914, 2794, 2802), for cast rows that are only a
+  // global cooldown stamp. Conjure (35502) and Command (35505) are shared animations; the conjures' reaction names
+  // the member.
+  const NECRO_SEQ = {
+    35456: [48296, 'Touch of Death', 30076], 35458: [48297, 'Finger of Death', 30077], 35461: [48298, 'Soul Sap', 30080],
+    35466: [48299, 'Soul Strike', 30082], 35469: [48301, 'Volley of Souls', 30088], 35477: [48308, 'Bloat', 30016],
+    35482: [48309, 'Blood Siphon', 30017], 35489: [48311, 'Spectral Scythe', 30084], 35472: [48314, 'Death Skulls', 30074],
+    35475: [48324, 'Living Death', 30078], 35502: [33965, 'Conjure Undead Army', 32988], 35505: [-3, 'Command', 0]
+  };
+  const SEQ_CONJURE = 35502, SEQ_COMMAND = 35505;
+  // The conjure NPCs, the animation each plays one tick after a Command, and their spawn animations.
+  const CONJURE_NPC = { 30265: 'SKELETON', 30266: 'ZOMBIE', 30267: 'GHOST', 31142: 'PHANTOM' };
+  const COMMAND_BY = { 35219: [48303, 'Command Skeleton Warrior', 34165], 35243: [48303, 'Command Skeleton Warrior', 34165],
+                       24731: [48307, 'Command Vengeful Ghost', 34166], 36215: [32342, 'Command Phantom Guardian', 34168],
+                       35251: [48305, 'Command Putrid Zombie', 34167] };
+  const CONJURE_SPAWN = { 35216: 1, 35240: 1, 35256: 1, 24724: 1, 24725: 1, 36213: 1 };
+  const CONJURE_BY = { SKELETON: [48302, 'Conjure Skeleton Warrior', 34169], ZOMBIE: [48304, 'Conjure Putrid Zombie', 34173],
+                       GHOST: [48306, 'Conjure Vengeful Ghost', 34171], PHANTOM: [31820, 'Conjure Phantom Guardian', 34175] };
+  const FALLBACK_AB = {};
+  for (const k in NECRO_SEQ) FALLBACK_AB[NECRO_SEQ[k][0]] = { name: NECRO_SEQ[k][1], icon: NECRO_SEQ[k][2], style: 'necromancy' };
+  for (const k in COMMAND_BY) FALLBACK_AB[COMMAND_BY[k][0]] = { name: COMMAND_BY[k][1], icon: COMMAND_BY[k][2], style: 'necromancy' };
+  for (const k in CONJURE_BY) FALLBACK_AB[CONJURE_BY[k][0]] = { name: CONJURE_BY[k][1], icon: CONJURE_BY[k][2], style: 'necromancy' };
   const EVENT_NAMES = ['hit', 'cast', 'anim', 'target', 'lp', 'adren', 'prayer', 'buff', 'channel', 'tracker', 'death', 'actor', 'encounter', 'gfx', 'proj', 'xp', 'mark', 'bar', 'stat', 'sound'];
   // Boss mechanic rows: ["mech", c, boss, key, kind, id, actor]; kind indexes this list.
   const MECH_KINDS = ['', 'animation', 'graphic', 'tile graphic', 'projectile', 'sound', 'hint arrow', 'var', 'spawn'];
@@ -92,11 +126,17 @@
   // Ability dictionary helpers.
   function ability(log, struct) {
     const a = ctx(log).abilities[struct];
-    return a || { name: struct === 14881 || struct === 14882 ? 'Global cooldown' : 'Ability ' + struct, icon: 0, style: '' };
+    if (a) return a;
+    // a Putrid Zombie in the log: its attacks are what poisons the target (34179 = its buff icon)
+    if (struct === -2 && ctx(log).actors.some(x => x && x.type === 'npc' && x.id === 30266)) return { name: 'Poison (Putrid Zombie)', icon: 34179, style: '', kind: 1 };
+    if (KIND_NAME[struct]) return { name: KIND_NAME[struct], icon: KIND_ICON[struct], style: '', kind: 1 };
+    if (FALLBACK_AB[struct]) return FALLBACK_AB[struct];
+    return { name: struct === 14881 || struct === 14882 ? 'Global cooldown' : 'Ability ' + struct, icon: 0, style: '' };
   }
   function shapeOf(log, struct) {
     const a = ability(log, struct), t = token(a.name);
     if (SHAPES[t]) return SHAPES[t];
+    if (/^(CONJURE|COMMAND)_/.test(t)) return [];
     if (a.channel) { const n = Math.max(1, (a.channel[0] || 1) * (a.channel[1] || 1)) + 1; const s = []; for (let i = 0; i <= n; i++) s.push(i); return s; }
     if (a.dot != null) { const n = Math.max(a.dot || 0, 5); const s = []; for (let i = 0; i <= n; i++) s.push(i); return s; }
     return [0, 1, 2];
@@ -116,16 +156,47 @@
       for (const [ac, seq] of anims) { if (ac >= cc && ac < cc + TICK) return seq; if (ac < cc) best = seq; else break; }
       return -1;
     }
+    // the conjures' own animations: a Command's reaction one tick later, a Conjure's spawns
+    const reacts = [];
+    for (let i = 0; i < ev.length; i++) {
+      const e = ev[i];
+      if (e[0] !== 2 || e[3] < 0 || e[2] === c.self) continue;
+      const who = CONJURE_NPC[actorOf(log, e[2]).id];
+      if (who) reacts.push([e[1], who, e[3]]);
+    }
+    // a cast row that is only a global cooldown stamp: the cast tick's animation names the ability
+    function fromStamp(cc, seqId) {
+      const hit = NECRO_SEQ[seqId];
+      if (!hit) return 0;
+      if (seqId === SEQ_COMMAND) {
+        for (const [rc, , s] of reacts) { if (rc <= cc) continue; if (rc > cc + 2 * TICK + 15) break; if (COMMAND_BY[s]) return COMMAND_BY[s][0]; }
+      } else if (seqId === SEQ_CONJURE) {
+        const kinds = {};
+        for (const [rc, who, s] of reacts) { if (rc <= cc) continue; if (rc > cc + 4 * TICK) break; if (CONJURE_SPAWN[s]) kinds[who] = 1; }
+        const k = Object.keys(kinds);
+        if (k.length === 1) return CONJURE_BY[k[0]][0];
+      }
+      return hit[0];
+    }
+    // a log with real ability rows: a stamp in the same tick as one is that cast, never a second one
+    const abC = [];
+    for (const x of ev) if (x[0] === 1 && x[2] !== 14881 && x[2] !== 14882) abC.push(x[1]);
     const casts = [];
     for (let i = 0; i < ev.length; i++) {
       if (ev[i][0] !== 1) continue;
-      let struct = ev[i][2];
+      let struct = ev[i][2], resolved = false;
       const a = c.abilities[struct];
-      const seq = c.seqs[animAt(ev[i][1])] || '';
+      const seqId = animAt(ev[i][1]), seq = c.seqs[seqId] || '';
       if (a && a.family && seq) {
         for (const m of a.family) { const ma = c.abilities[m]; if (ma && seqHasToken(seq, token(ma.name))) { struct = m; break; } }
       }
-      casts.push({ i, c: ev[i][1], struct, src: ev[i][4], seq, shape: shapeOf(log, struct), style: ability(log, struct).style || '' });
+      if ((struct === 14881 || struct === 14882) && !abC.some(x => Math.abs(x - ev[i][1]) <= TICK)) {
+        const s = fromStamp(ev[i][1], seqId);
+        if (s) { struct = s; resolved = true; }
+      }
+      const tok = token(ability(log, struct).name);
+      casts.push({ i, c: ev[i][1], struct, src: ev[i][4], resolved, seq, shape: shapeOf(log, struct), style: ability(log, struct).style || '',
+                   cap: CAP[tok] || 0, dot: DOT[tok] || 0, used: 0 });
     }
     // two cooldown stamps in one tick (Corruption Blast and Shot move together): keep the one the animation
     // names; a pair with no animation sample follows the choice made for the same pair elsewhere in the log
@@ -142,17 +213,42 @@
       }
     }
     const castStruct = casts.map(k => k.struct);
+    // damage over time: two hits of one hitmark on one target, 2 to 4 ticks apart, with the same value
+    const dot = new Array(ev.length).fill(false), byT = {};
+    for (let i = 0; i < ev.length; i++) {
+      const e = ev[i];
+      if (e[0] === 0 && hitRole(log, e) === 'dealt' && KIND_ROW[hmInfo(log, e[3]).kind] == null) (byT[e[2]] = byT[e[2]] || []).push(i);
+    }
+    const same = (x, y) => Math.abs(x - y) <= 3;
+    for (const t in byT) {
+      const L = byT[t];
+      for (let a = 0; a < L.length; a++) for (let b = a + 1; b < L.length; b++) {
+        const ea = ev[L[a]], eb = ev[L[b]], gap = eb[1] - ea[1];
+        if (gap > 4 * TICK + 3) break;
+        if (gap >= 2 * TICK - 3 && ea[3] === eb[3] && ea[4] === eb[4]) dot[L[a]] = dot[L[b]] = true;
+      }
+    }
+    // a lone tick whose value matches a series on the same target within 12 ticks (the first or last tick)
+    for (const t in byT) for (const i of byT[t]) {
+      if (dot[i]) continue;
+      if (byT[t].some(j => dot[j] && j !== i && Math.abs(ev[j][1] - ev[i][1]) <= 12 * TICK && same(ev[j][4], ev[i][4]))) dot[i] = 'tail';
+    }
     let ci = 0;
     for (let i = 0; i < ev.length; i++) {
       const e = ev[i];
       if (e[0] !== 0 || hitRole(log, e) !== 'dealt') continue;
-      const S = e[1], style = hitStyle(log, e);
-      if (style === 'conjure') { reason[i] = 'conjure'; continue; }
+      const S = e[1], style = hitStyle(log, e), kr = KIND_ROW[hmInfo(log, e[3]).kind];
+      if (kr != null) { out[i] = kr; reason[i] = 'kind'; continue; }
       while (ci < casts.length && casts[ci].c <= S) ci++;
+      if (dot[i]) {
+        let owner = null;
+        for (let k = ci - 1; k >= 0 && !owner; k--) { const K = casts[k]; if (K.dot && S - K.c >= 3 * TICK - 3 && S - K.c <= K.dot * TICK) owner = K; }
+        if (owner) { out[i] = owner.struct; reason[i] = 'dot'; continue; }
+      }
       let exact = null, loose = null;
       for (let k = ci - 1; k >= 0 && S - casts[k].c <= 9 * TICK; k--) {
-        const K = casts[k], L = Math.floor((S - K.c) / TICK);
-        if (!K.shape.length) continue;
+        const K = casts[k], L = Math.floor((S - K.c + 3) / TICK);
+        if (!K.shape.length || (K.cap && K.used >= K.cap)) continue;
         if (K.style && style && style !== 'typeless' && style !== 'poison' && K.style !== style && K.style !== 'typeless') continue;
         if (style === 'typeless' && !(ability(log, K.struct).dot != null)) continue;
         if (K.shape.indexOf(L) >= 0) {
@@ -160,10 +256,10 @@
           if (!exact) exact = K;
           else if (K.c !== exact.c) break;
           else if (!seqHasToken(exact.seq, token(ability(log, exact.struct).name)) && seqHasToken(K.seq, token(ability(log, K.struct).name))) exact = K;
-        } else if (!loose && L <= 2) loose = K;
+        } else if (!loose && L <= 2 && !K.cap) loose = K;
       }
       const pick = exact || loose;
-      if (pick) { out[i] = pick.struct; reason[i] = exact ? 'cast' : 'near'; }
+      if (pick) { out[i] = pick.struct; reason[i] = exact ? 'cast' : 'near'; pick.used++; }
       else reason[i] = style === 'typeless' ? 'proc' : 'none';
     }
     c.attr = { struct: out, reason, casts, castStruct };
@@ -203,7 +299,7 @@
         else if (role === 'heal') healed += v;
       } else if (e[0] === 10) { if (e[3] === 2) deaths++; else kills++; }
     }
-    for (const k of at.casts) if (k.c >= r.start && k.c <= r.end && k.src !== 3) casts++;
+    for (const k of at.casts) if (k.c >= r.start && k.c <= r.end && (k.src !== 3 || k.resolved)) casts++;
     const durMs = Math.max(1, (r.end - r.start) * CYCLE_MS);
     const top = Object.keys(byAb).filter(k => k !== '0').map(k => [Number(k), byAb[k]]).sort((a, b) => b[1] - a[1]).slice(0, 5);
     const targets = Object.keys(byT).map(k => [Number(k), byT[k]]).sort((a, b) => b[1] - a[1]);
@@ -222,7 +318,7 @@
       row.hits++; row.total += v; if (v > row.max) row.max = v; if (hmInfo(log, e[3]).crit) row.crits++;
       total += v;
     }
-    for (const k of at.casts) if (k.c >= r.start && k.c <= r.end && k.src !== 3 && rows[k.struct]) rows[k.struct].casts++;
+    for (const k of at.casts) if (k.c >= r.start && k.c <= r.end && (k.src !== 3 || k.resolved) && rows[k.struct]) rows[k.struct].casts++;
     const out = Object.keys(rows).map(k => rows[k]);
     for (const row of out) { row.avg = row.hits ? row.total / row.hits : 0; row.share = total ? row.total / total : 0; row.perCast = row.casts ? row.total / row.casts : 0; }
     out.sort((a, b) => (a.struct === 0) - (b.struct === 0) || b.total - a.total);
@@ -336,14 +432,14 @@
     for (const k of at.casts) {
       if (k.c < r.start || k.c > r.end) continue;
       const a = ability(log, k.struct), shape = k.shape;
-      list.push({ c: k.c, tick: Math.floor((k.c - r.start) / TICK), struct: k.struct, name: a.name, icon: a.icon || 0, src: k.src, style: a.style || '',
+      list.push({ c: k.c, tick: Math.floor((k.c - r.start) / TICK), struct: k.struct, name: a.name, icon: a.icon || 0, src: k.src, resolved: k.resolved, style: a.style || '',
                   span: a.channel ? Math.max(1, (a.channel[0] || 1) * (a.channel[1] || 1) + 1) : (shape.length > 3 ? shape[shape.length - 1] + 1 : 1) });
     }
     let idle = 0, prev = null;
     for (const k of list) { if (prev != null && k.tick - prev > 3) idle += k.tick - prev - 3; prev = k.tick; }
     const table = ab.rows.filter(x => x.struct).map(x => ({ struct: x.struct, name: x.name, icon: x.icon, casts: x.casts, avg: x.avg, total: x.total, perCast: x.perCast }));
-    for (const k of list) if (k.src !== 3 && !table.some(t => t.struct === k.struct)) table.push({ struct: k.struct, name: k.name, icon: k.icon, casts: 0, avg: 0, total: 0, perCast: 0 });
-    for (const t of table) t.casts = list.filter(k => k.struct === t.struct && k.src !== 3).length;
+    for (const k of list) if ((k.src !== 3 || k.resolved) && !table.some(t => t.struct === k.struct)) table.push({ struct: k.struct, name: k.name, icon: k.icon, casts: 0, avg: 0, total: 0, perCast: 0 });
+    for (const t of table) t.casts = list.filter(k => k.struct === t.struct && (k.src !== 3 || k.resolved)).length;
     for (const t of table) t.perCast = t.casts ? t.total / t.casts : 0;
     table.sort((a, b) => b.total - a.total || b.casts - a.casts);
     return { list, ticks, idle, table, range: r };
@@ -406,7 +502,7 @@
         if (e[5] >= 0) row.text += ' (+' + e[6] + ' soaked)';
         break;
       }
-      case 1: { const ki = at.casts.findIndex(k => k.i === i), s = ki >= 0 ? at.casts[ki].struct : e[2]; row.ability = ability(log, s).name; row.kind = ki < 0 ? 'paired stamp' : (['exact', 'cooldown', 'animation', 'gcd'][e[4]] || ''); row.text = (ki < 0 ? 'paired stamp ' + row.ability : e[4] === 3 ? 'global cooldown' : 'cast ' + row.ability) + (e[3] > 0 ? ', ready in ' + fmtMs((e[3] - e[1]) * CYCLE_MS) : ''); break; }
+      case 1: { const ki = at.casts.findIndex(k => k.i === i), s = ki >= 0 ? at.casts[ki].struct : e[2]; row.ability = ability(log, s).name; row.kind = ki < 0 ? 'paired stamp' : (['exact', 'cooldown', 'animation', 'gcd'][e[4]] || ''); row.text = (ki < 0 ? 'paired stamp ' + row.ability : e[4] === 3 && !at.casts[ki].resolved ? 'global cooldown' : 'cast ' + row.ability) + (e[3] > 0 ? ', ready in ' + fmtMs((e[3] - e[1]) * CYCLE_MS) : ''); break; }
       case 2: row.actor = actorLabel(log, e[2]); row.value = e[3]; row.text = e[3] < 0 ? 'animation ends' : 'animation ' + (c.seqs[e[3]] || e[3]); break;
       case 3: row.actor = actorLabel(log, e[2]); row.text = e[3] < -1 ? 'targets index ' + (-e[3] - 2) : e[3] < 0 ? 'no target' : 'targets ' + actorLabel(log, e[3]); break;
       case 4: row.actor = actorLabel(log, e[2]); row.value = e[3]; row.text = 'life points ' + e[3] + ' / ' + e[4]; break;
