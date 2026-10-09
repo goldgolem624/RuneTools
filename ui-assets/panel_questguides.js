@@ -16,6 +16,11 @@
         const data = JSON.parse(txt.slice(a, b + 1));
         window.QUEST_GUIDES = window.QUEST_GUIDES || {};
         for (const k in data) if (!window.QUEST_GUIDES[k]) window.QUEST_GUIDES[k] = data[k];
+        // pages that share a title carry a suffix the game's quest name lacks ("Tears of Guthix (quest)")
+        for (const k in data) {
+          const m = /^(.*) \((?:quest|miniquest|saga|lore activity)\)$/.exec(k);
+          if (m && !window.QUEST_GUIDES[m[1]]) window.QUEST_GUIDES[m[1]] = data[k];
+        }
         _qgByLower = null;          // rebuilt on the next lookup now the set has grown
       }
     } catch (e) { /* leave whatever panels registered themselves */ }
