@@ -28,11 +28,13 @@ constexpr int kAny = -1;
 constexpr const auto& kStubSig = rtx::sig::kTooltipStub;
 constexpr std::size_t kStubLen = sizeof(kStubSig) / sizeof(kStubSig[0]);
 
-// Hover object: three strings of 24 bytes each, the library's small-string layout. The last byte
-// has its top bit set when the text lives on the heap (pointer at +0, length at +8), otherwise
-// the text is inline. The interface slot the hover is over sits after them.
+// Hover object: the target and verb strings, 24 bytes each in the library's small-string layout
+// (the last byte has its top bit set when the text lives on the heap, pointer at +0, length at +8,
+// otherwise the text is inline), the verb type byte at +0x30, the action descriptor at +0x38 (a
+// static object in the client image), then the interface slot the hover is over.
 constexpr std::size_t kObjSize = 0x2E8;
 constexpr std::size_t kTarget = 0x00, kStrFlag = 0x17, kStrLen = 0x08, kStrCap = 0x10;
+constexpr std::size_t kDesc = 0x38;
 constexpr std::size_t kRef = 0x48, kSlot = 0x4C, kComp = 0x50;
 constexpr std::uint64_t kHeapFlag = 0x8000000000000000ull;
 
@@ -43,7 +45,7 @@ bool   g_installed = false;
 // Layout self-check (boot record line `check: hover-object`): every hover object the routine is
 // handed must read as the layout above (three strings, then the interface slot). Counted on the
 // script thread, judged by TakeLog; a layout that fails turns the text injection off.
-std::atomic<std::uint32_t> g_hoverSeen{ 0 }, g_hoverBad{ 0 }, g_hoverWhy{ 0 };   // why bits: 1 target, 2 verb, 4 third string, 8 ref, 16 slot, 32 comp
+std::atomic<std::uint32_t> g_hoverSeen{ 0 }, g_hoverBad{ 0 }, g_hoverWhy{ 0 };   // why bits: 1 target, 2 verb, 4 descriptor, 8 ref, 16 slot, 32 comp
 std::atomic<bool> g_layoutOk{ true };
 
 bool StringReads(const std::uint8_t* s) {
@@ -55,12 +57,24 @@ bool StringReads(const std::uint8_t* s) {
     volatile char c = p[0]; (void)c;   // a heap string must be readable
     return true;
 }
+// True when `p` points inside the client image.
+bool InImage(std::uint64_t p) {
+    static std::uint64_t base = 0, end = 0;
+    if (!base) {
+        const auto* b = reinterpret_cast<const std::uint8_t*>(GetModuleHandleW(nullptr));
+        const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS*>(b + reinterpret_cast<const IMAGE_DOS_HEADER*>(b)->e_lfanew);
+        end = reinterpret_cast<std::uint64_t>(b) + nt->OptionalHeader.SizeOfImage;
+        base = reinterpret_cast<std::uint64_t>(b);
+    }
+    return p >= base && p < end;
+}
 // The hover object against the layout; false when it does not read as one (counted).
 bool ObjectReads(const std::uint8_t* obj) {
     unsigned bad = 0;
     if (!StringReads(obj + kTarget)) bad |= 1;
     if (!StringReads(obj + 0x18)) bad |= 2;
-    if (!StringReads(obj + 0x30)) bad |= 4;
+    std::uint64_t desc; std::memcpy(&desc, obj + kDesc, sizeof(desc));
+    if (!InImage(desc)) bad |= 4;
     std::int32_t ref, slot; std::uint32_t comp;
     std::memcpy(&ref, obj + kRef, 4); std::memcpy(&slot, obj + kSlot, 4); std::memcpy(&comp, obj + kComp, 4);
     if (ref < -1 || ref > 0xFFFF) bad |= 8;
@@ -223,7 +237,7 @@ bool TakeLog(char* out, std::size_t cap) {
         state = 2;
         const unsigned why = g_hoverWhy.load(std::memory_order_relaxed);
         std::snprintf(detail, sizeof(detail), "FORMAT: hover object 0x%zx: %u of %u objects failed (%s%s%s%s%s%s); tooltip text off", kObjSize, bad, seen,
-                      why & 1 ? "target string " : "", why & 2 ? "verb string " : "", why & 4 ? "third string " : "",
+                      why & 1 ? "target string " : "", why & 2 ? "verb string " : "", why & 4 ? "descriptor " : "",
                       why & 8 ? "ref " : "", why & 16 ? "slot " : "", why & 32 ? "interface id " : "");
         g_layoutOk.store(false, std::memory_order_relaxed);
     } else {
