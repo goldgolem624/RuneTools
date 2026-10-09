@@ -4,7 +4,7 @@
 // functions (older launcher) the panel shows one line and nothing else.
 (function () {
 
-  const FL_TABS = [['overview', 'Overview'], ['dealt', 'Damage done'], ['taken', 'Damage taken'], ['health', 'Health'], ['buffs', 'Buffs'], ['casts', 'Casts'], ['mechs', 'Mechanics'], ['events', 'Events']];
+  const FL_TABS = [['overview', 'Overview'], ['dealt', 'Dealt'], ['taken', 'Taken'], ['health', 'Health'], ['buffs', 'Buffs'], ['casts', 'Casts'], ['mechs', 'Mechanics'], ['events', 'Events']];
   const FL_EV_CATS = [['hit', 'Hits'], ['cast', 'Casts'], ['buff', 'Buffs'], ['mech', 'Mechanics'], ['vitals', 'Vitals'], ['anim', 'Animations'], ['fx', 'Effects'], ['target', 'Targets'], ['tracker', 'Trackers'], ['other', 'Other']];
   const FL_EV_CAT = { hit: 'hit', cast: 'cast', buff: 'buff', channel: 'cast', mech: 'mech', lp: 'vitals', adren: 'vitals', prayer: 'vitals', bar: 'vitals', stat: 'vitals', anim: 'anim', gfx: 'fx', proj: 'fx', sound: 'fx', target: 'target', tracker: 'tracker' };
   const FL_ROWS = 400, FL_COLORS = ['#e0b34c', '#4cc0c0', '#c98cf0', '#e06c6c', '#7f9fbf', '#67c07a'], FL_MECH = '#ff9f43';
@@ -18,8 +18,8 @@
   const FL_CSS = '.fl-chart .mk { stroke: ' + FL_MECH + '; stroke-width: 1.5; }\n.fl-chart .mk.hl { stroke: var(--accent-hi); stroke-width: 2.5; }\n' +
     '.fl-chart .mkg { stroke: rgba(255,159,67,0.55); stroke-width: 1; stroke-dasharray: 2 3; }\n.fl-chart .mkr { stroke: var(--border); stroke-width: 1; }\n' +
     '.fl-chart .mkl { font: 9px var(--font-mono); fill: ' + FL_MECH + '; }\n' +
-    '.fl-table.mech { --fl-cols: minmax(0, 1fr) 34px 46px 46px 50px 50px minmax(48px, .7fr); }\n' +
-    '.win.narrow .fl-table.mech { --fl-cols: minmax(0, 1fr) 34px 46px 50px 50px minmax(40px, .5fr); }\n' +
+    '.fl-table.mech { --fl-cols: minmax(0, 1fr) 34px 46px 46px 50px 50px minmax(56px, .8fr); }\n' +
+    '.fl-narrow .fl-table.mech { --fl-cols: minmax(0, 1fr) 34px 50px minmax(64px, .9fr); }\n' +
     '.fl-tr .tl { position: relative; height: 8px; background: var(--bg-elev-2); border-radius: 2px; overflow: hidden; }\n' +
     '.fl-tr .tl i { position: absolute; top: 0; bottom: 0; width: 2px; margin-left: -1px; background: ' + FL_MECH + '; }\n' +
     '.fl-ev.mech .e { color: ' + FL_MECH + '; }';
@@ -44,14 +44,14 @@
     if (!sid) return;
     e.dataset.spr = sid;
     const u = FL_SPR.get(sid);
-    if (u) { e.style.backgroundImage = "url('" + u + "')"; return; }
+    if (u) { e.style.backgroundImage = "url('" + u + "')"; e.classList.add('img'); return; }
     if (FL_SPR_PENDING.has(sid) || typeof rtxData !== 'object') return;
     FL_SPR_PENDING.add(sid);
     rtxData.raw('cache.sprite', sid).then(url => {
       FL_SPR_PENDING.delete(sid);
       if (!url) return;
       FL_SPR.set(sid, url);
-      document.querySelectorAll('[data-spr="' + sid + '"]').forEach(x => { x.style.backgroundImage = "url('" + url + "')"; });
+      document.querySelectorAll('[data-spr="' + sid + '"]').forEach(x => { x.style.backgroundImage = "url('" + url + "')"; x.classList.add('img'); });
     }).catch(() => FL_SPR_PENDING.delete(sid));
   }
   function flDd(onChange) {
@@ -244,7 +244,8 @@
       fl.ddFight = flDd(v => { fl.fight = Number(v); fl.zoom = null; fl.hl = 0; flPaint(); });
       const live = el('span', 'fl-chip', 'Live'); live.id = 'flLiveChip'; live.dataset.tip = 'The recorder has an open fight for this client. The view refreshes every second.';
       const rec = el('button', 'fl-rec'); rec.id = 'flRec'; rec.type = 'button'; rec.addEventListener('click', flRecToggle);
-      pick.appendChild(fl.ddChar); pick.appendChild(fl.ddLog); pick.appendChild(fl.ddFight); pick.appendChild(live); pick.appendChild(rec);
+      const side = el('div', 'fl-pick-r'); side.appendChild(live); side.appendChild(rec);
+      pick.appendChild(fl.ddChar); pick.appendChild(fl.ddLog); pick.appendChild(fl.ddFight); pick.appendChild(side);
       w.appendChild(pick);
       const note = el('div', 'fl-note'); note.id = 'flNote'; w.appendChild(note);
       const strip = el('div', 'fl-strip'); strip.id = 'flStrip'; w.appendChild(strip);
@@ -262,6 +263,8 @@
 
   function flPaint() {
     const w = $('flWrap'); if (!w) return;
+    const ww = w.clientWidth || 0;
+    if (ww) w.classList.toggle('fl-narrow', ww < 440);
     if (!S()) { $('flNote').textContent = 'panel_fights_stats.js did not load.'; return; }
     const has = flHas('fightsList');
     const log = flLog(), n = fl.fight;
@@ -308,7 +311,11 @@
     fl.ddLog.setItems(items, fl.logId);
     const fi = [];
     if (fights.length > 1) fi.push({ value: -1, label: 'Whole log' });
-    for (const f of fights) fi.push({ value: f.n, label: '#' + (f.n + 1) + ' ' + (f.boss || (f.kind === 'kills' ? 'kills x' + (f.kills || 0) : f.kind || '')) + ' ' + S().fmtMs((f.end - f.start) * 20) });
+    for (const f of fights) {
+      let what = f.boss || '';
+      if (!what && f.kind === 'kills') { let k = f.kills || 0; if (log) { try { k = S().summary(log, f.n).kills; } catch (e) {} } what = k + (k === 1 ? ' kill' : ' kills'); }
+      fi.push({ value: f.n, label: '#' + (f.n + 1) + ' ' + (what || f.kind || '') + ' ' + S().fmtMs((f.end - f.start) * 20) });
+    }
     if (!fi.length) fi.push({ value: -1, label: fl.logId === 'live' ? 'Open fight' : 'Whole log' });
     fl.ddFight.setItems(fi, fl.fight);
     $('flPick').style.display = has || fl.live ? '' : 'none';
@@ -327,13 +334,13 @@
     const f = n >= 0 && log.fights ? log.fights.find(x => x.n === n) : null;
     const parts = [];
     if (f && f.boss) parts.push(f.boss);
-    else parts.push('kills x' + sm.kills);
     const tg = {};
     for (const [a] of sm.targets) { const act = st.actorOf(log, a); const key = (act.name || 'NPC') + (act.id >= 0 ? ' (' + act.id + ')' : ''); tg[key] = (tg[key] || 0) + 1; }
     const tk = Object.keys(tg);
     if (tk.length) parts.push(tk.slice(0, 3).map(k => k + (tg[k] > 1 ? ' x' + tg[k] : '')).join(', ') + (tk.length > 3 ? ' +' + (tk.length - 3) : ''));
-    parts.push('companion ' + (log.log && log.log.companion ? 'yes' : 'no'));
+    parts.push(sm.kills + (sm.kills === 1 ? ' kill' : ' kills'));
     line.textContent = parts.join('  \u00b7  ');
+    line.dataset.tip = line.textContent;
   }
   function flPaintButtons(log) {
     const btns = $('flBtns'); btns.innerHTML = '';
@@ -343,20 +350,27 @@
     const row = flRows().find(r => r.id === id);
     if (flHas('fightUpload') && flHas('fightUploadStatus') && !(row && row.upload)) mk('Upload', 'gold', async () => { fl.status = 'Uploading...'; flPaint(); try { const r = await flCall('fightUpload', id); fl.status = r && r.ok ? 'Upload queued.' : 'Upload failed.'; } catch (e) { fl.status = 'Upload failed.'; } fl.rowsAt = 0; flPaint(); });
     if (flHas('fightExport')) mk('Export', '', async () => { try { const r = await flCall('fightExport', id, true); fl.status = r && r.ok ? 'Exported to ' + (r.path || 'the export folder') + '.' : (r && r.error ? String(r.error) : ''); } catch (e) { fl.status = 'Export failed.'; } flPaint(); }, 'Save the log as .json.gz (Save As)');
-    if (flHas('fightOpenFolder')) mk('Open folder', '', () => { flCall('fightOpenFolder'); });
+    if (flHas('fightOpenFolder')) mk('Folder', '', () => { flCall('fightOpenFolder'); }, 'Open the folder that holds the logs');
     if (flHas('fightDelete')) {
       const now = Date.now();
-      if (fl.confirmDel && now - fl.confirmDel < 4000) mk('Confirm delete', 'warn', async () => { fl.confirmDel = 0; try { await flCall('fightDelete', id); } catch (e) {} fl.logId = ''; fl.log = null; fl.rowsAt = 0; fl.status = 'Deleted.'; await flFetchList(true); flPaint(); });
+      if (fl.confirmDel && now - fl.confirmDel < 4000) mk('Confirm', 'warn', async () => { fl.confirmDel = 0; try { await flCall('fightDelete', id); } catch (e) {} fl.logId = ''; fl.log = null; fl.rowsAt = 0; fl.status = 'Deleted.'; await flFetchList(true); flPaint(); });
       else mk('Delete', '', () => { fl.confirmDel = Date.now(); flPaint(); setTimeout(() => { if (fl.confirmDel && Date.now() - fl.confirmDel >= 4000) { fl.confirmDel = 0; paneRun('fights', flPaint); } }, 4200); });
     }
   }
 
   // ---- tabs --------------------------------------------------------------------------------------------------
   function flH(text) { return el('div', 'fl-h', text); }
-  function flIcon(sid) { const i = el('span', 'fl-ico'); flSprite(i, sid); return i; }
+  function flIcon(sid) { const i = el('span', 'fl-ico' + (sid ? '' : ' none')); flSprite(i, sid); return i; }
+  // A name cell: the icon, or an empty slot of the same size when `slot` asks for alignment, then the text.
+  function flName(cls, text, icon, slot) {
+    const nm = el('span', cls);
+    if (icon || slot) nm.appendChild(flIcon(icon));
+    nm.appendChild(el('span', 'nt', text));
+    return nm;
+  }
   function flBar(label, value, total, cls, icon) {
     const st = S(), row = el('div', 'fl-bar' + (cls ? ' ' + cls : ''));
-    const nm = el('span', 'n'); if (icon) nm.appendChild(flIcon(icon)); nm.appendChild(document.createTextNode(label)); nm.dataset.tip = label;
+    const nm = flName('n', label, icon, icon !== undefined); nm.dataset.tip = label;
     const b = el('span', 'b'); const i = el('i'); i.style.width = (total ? value / total * 100 : 0).toFixed(1) + '%'; b.appendChild(i);
     const v = el('span', 'v'); v.textContent = st.fmtNum(value); const sm = el('small', '', (total ? value / total * 100 : 0).toFixed(1) + '%'); v.appendChild(sm);
     v.dataset.tip = value.toLocaleString();
@@ -367,13 +381,13 @@
     const st = S(), ss = st.styleSplit(log, n), sm = st.summary(log, n), ab = st.byAbility(log, n), tc = st.trackerCheck(log, n);
     body.appendChild(flH('Damage by style'));
     const g = el('div', 'fl-bars');
-    for (const s of st.STYLES) { if (!ss.split[s]) continue; const r = flBar(s, ss.split[s], ss.total, ''); r.querySelector('i').style.background = FL_STYLE_COLOR[s] || ''; g.appendChild(r); }
+    for (const s of st.STYLES) { if (!ss.split[s]) continue; const r = flBar(s.charAt(0).toUpperCase() + s.slice(1), ss.split[s], ss.total, ''); r.querySelector('i').style.background = FL_STYLE_COLOR[s] || ''; g.appendChild(r); }
     if (!ss.total) g.appendChild(el('div', 'fl-empty', 'No damage dealt.'));
     body.appendChild(g);
     body.appendChild(flH('Top abilities'));
     const g2 = el('div', 'fl-bars');
-    for (const row of ab.rows.filter(r => r.struct).slice(0, 5)) g2.appendChild(flBar(row.name, row.total, ab.total, '', row.icon));
-    if (sm.unattributed) g2.appendChild(flBar('Unattributed', sm.unattributed, ab.total, 'dim'));
+    for (const row of ab.rows.filter(r => r.struct).slice(0, 5)) g2.appendChild(flBar(row.name, row.total, ab.total, '', row.icon || 0));
+    if (sm.unattributed) g2.appendChild(flBar('Unattributed', sm.unattributed, ab.total, 'dim', 0));
     body.appendChild(g2);
     body.appendChild(flH('Game tracker'));
     const t = el('div', 'fl-strip');
@@ -388,11 +402,18 @@
   }
   function flTable(cls, head, rows) {
     const t = el('div', 'fl-table' + (cls ? ' ' + cls : ''));
-    const h = el('div', 'fl-tr h'); for (const x of head) h.appendChild(el('span', x[1] ? 'num' : '', x[0])); t.appendChild(h);
+    const h = el('div', 'fl-tr h'); for (const x of head) h.appendChild(el('span', ((x[1] ? 'num' : '') + (x[2] ? ' opt' : '')).trim(), x[0])); t.appendChild(h);
     for (const r of rows) t.appendChild(r);
     return t;
   }
   function flCells(row, cells) { for (const [text, cls, tip] of cells) { const s = el('span', cls || '', text); if (tip) s.dataset.tip = tip; row.appendChild(s); } }
+  // Tooltip for an ability row; rows under a negative struct are hit kinds, not casts.
+  function flRowTip(r) {
+    if (r.struct === -1) return r.name + '\nSpirit damage from your conjures; the game gives no source per hit.';
+    if (r.struct === -2) return r.name + '\nPoison ticks every 1.8 s; with a Putrid Zombie up, its stench.';
+    if (!r.struct) return r.name + '\nHits no cast explains: procs, bleeds, hits before the first cast';
+    return r.name + ' (struct ' + r.struct + ')';
+  }
   function flShare(share) { const s = el('span', 'sh'); const i = el('i'); i.style.width = (share * 100).toFixed(1) + '%'; s.appendChild(i); s.dataset.tip = (share * 100).toFixed(1) + '%'; return s; }
   function flDealt(log, n, body) {
     const st = S(), ab = st.byAbility(log, n);
@@ -400,13 +421,13 @@
     const rows = [];
     for (const r of ab.rows) {
       const tr = el('div', 'fl-tr click' + (r.struct ? '' : ' dim') + (fl.hl && fl.hl === r.struct ? ' on' : ''));
-      const nm = el('span', 'n'); if (r.icon) nm.appendChild(flIcon(r.icon)); nm.appendChild(document.createTextNode(r.name)); nm.dataset.tip = r.name + (r.struct ? ' (struct ' + r.struct + ')' : '\nHits no cast explains: procs, bleeds, hits before the first cast'); tr.appendChild(nm);
-      flCells(tr, [[String(r.hits), 'num'], [String(r.crits), 'num'], [st.fmtNum(r.avg), 'num', Math.round(r.avg).toLocaleString()], [st.fmtNum(r.max), 'num', r.max.toLocaleString()], [st.fmtNum(r.total), 'num tot', r.total.toLocaleString()]]);
+      const nm = flName('n', r.name, r.icon, true); nm.dataset.tip = flRowTip(r); tr.appendChild(nm);
+      flCells(tr, [[String(r.hits), 'num'], [String(r.crits), 'num opt'], [st.fmtNum(r.avg), 'num opt', Math.round(r.avg).toLocaleString()], [st.fmtNum(r.max), 'num opt', r.max.toLocaleString()], [st.fmtNum(r.total), 'num tot', r.total.toLocaleString()]]);
       tr.appendChild(flShare(r.share));
       tr.addEventListener('click', () => { fl.hl = fl.hl === r.struct ? 0 : r.struct; fl.tab = 'health'; flPaint(); });
       rows.push(tr);
     }
-    body.appendChild(flTable('', [['Ability'], ['Hits', 1], ['Crits', 1], ['Avg', 1], ['Max', 1], ['Total', 1], ['Share', 1]], rows));
+    body.appendChild(flTable('', [['Ability'], ['Hits', 1], ['Crits', 1, 1], ['Avg', 1, 1], ['Max', 1, 1], ['Total', 1], ['Share', 1]], rows));
     body.appendChild(el('div', 'fl-note2', 'Click a row to mark its hits on the Health chart.'));
   }
   function flTaken(log, n, body) {
@@ -415,12 +436,12 @@
     const rows = [];
     for (const r of bs.rows) {
       const tr = el('div', 'fl-tr' + (r.actor < 0 ? ' dim' : ''));
-      const nm = el('span', 'n', r.name + (r.id >= 0 ? ' (' + r.id + ')' : '')); nm.dataset.tip = r.actor < 0 ? 'No NPC targeted you at that tick' : 'actor ' + r.actor; tr.appendChild(nm);
-      flCells(tr, [[String(r.hits), 'num'], [String(r.blocked), 'num'], [st.fmtNum(r.avg), 'num', Math.round(r.avg).toLocaleString()], [st.fmtNum(r.max), 'num', r.max.toLocaleString()], [st.fmtNum(r.total), 'num tot', r.total.toLocaleString()]]);
+      const nm = flName('n', r.name + (r.id >= 0 ? ' (' + r.id + ')' : '')); nm.dataset.tip = r.actor < 0 ? 'No NPC targeted you at that tick' : 'actor ' + r.actor; tr.appendChild(nm);
+      flCells(tr, [[String(r.hits), 'num'], [String(r.blocked), 'num opt'], [st.fmtNum(r.avg), 'num opt', Math.round(r.avg).toLocaleString()], [st.fmtNum(r.max), 'num opt', r.max.toLocaleString()], [st.fmtNum(r.total), 'num tot', r.total.toLocaleString()]]);
       tr.appendChild(flShare(r.share));
       rows.push(tr);
     }
-    body.appendChild(flTable('taken', [['Source'], ['Hits', 1], ['Blocked', 1], ['Avg', 1], ['Max', 1], ['Total', 1], ['Share', 1]], rows));
+    body.appendChild(flTable('taken', [['Source'], ['Hits', 1], ['Blocked', 1, 1], ['Avg', 1, 1], ['Max', 1, 1], ['Total', 1], ['Share', 1]], rows));
   }
 
   // Health chart: player LP (left axis), target LP % (right axis), adrenaline area, prayer dotted, hits as
@@ -435,7 +456,12 @@
     lg('#e8eaf0', 'your LP'); lg('rgba(232,194,106,0.8)', 'adrenaline'); lg('#4cc0c0', 'prayer'); lg('#5fd07a', 'dealt'); lg('#ff6b6b', 'taken');
     if (se.mk && se.mk.uses.length) lg(FL_MECH, 'mechanic');
     const tops = st.summary(log, n).targets.slice(0, 4);
-    tops.forEach(([a], i) => { const act = st.actorOf(log, a); lg(FL_COLORS[i % FL_COLORS.length], (act.name || 'NPC') + ' LP %'); });
+    const tnames = tops.map(([a]) => st.actorOf(log, a).name || 'NPC'), tseen = {};
+    tops.forEach((t, i) => {
+      const nm = tnames[i], dup = tnames.filter(x => x === nm).length > 1;
+      tseen[nm] = (tseen[nm] || 0) + 1;
+      lg(FL_COLORS[i % FL_COLORS.length], nm + (dup ? ' ' + tseen[nm] : '') + ' LP %');
+    });
     body.appendChild(legend);
     body.appendChild(el('div', 'fl-note2', fl.zoom ? 'Zoomed. Double-click to reset.' : 'Drag to zoom. Hover for the nearest hit.'));
     flDraw(cont, log, n, se, tops.map(t => t[0]));
@@ -457,19 +483,26 @@
     cont.addEventListener('mouseleave', () => { if (fl.drag) up(); cont.__hov = null; const g = cont.querySelector('#flHov'); if (g) g.innerHTML = ''; });
     cont.addEventListener('dblclick', () => { fl.zoom = null; fl.drag = null; flPaint(); });
   }
-  function flPx(cont, e) {
-    const m = cont.__m, rect = cont.getBoundingClientRect ? cont.getBoundingClientRect() : { left: 0, width: m.W };
-    return (e.clientX - rect.left) * (rect.width ? m.W / rect.width : 1);
+  // The chart's rect in screen px, the units of clientX/Y: getBoundingClientRect alone is divided by the window
+  // body's zoom (font size), which put the hover line and drag zoom off the pointer.
+  function flRect(cont) {
+    if (typeof uiScreenRect === 'function') return uiScreenRect(cont);
+    return cont.getBoundingClientRect ? cont.getBoundingClientRect() : { left: 0, top: 0, width: cont.__m.W };
   }
-  function flPy(cont, e) {
-    const m = cont.__m, rect = cont.getBoundingClientRect ? cont.getBoundingClientRect() : { top: 0, width: m.W };
-    return (e.clientY - rect.top) * (rect.width ? m.W / rect.width : 1);
+  function flPx(cont, e) {
+    const m = cont.__m, r = flRect(cont);
+    return (e.clientX - r.left) * (r.width ? m.W / r.width : 1);
+  }
+  function flPy(cont, e) {   // the chart keeps its aspect, so the width ratio holds for y too
+    const m = cont.__m, r = flRect(cont);
+    return (e.clientY - r.top) * (r.width ? m.W / r.width : 1);
   }
   function flDraw(cont, log, n, se, tops) {
     const st = S(), r = se.range;
     const W = Math.max(300, cont.clientWidth || (cont.parentElement && cont.parentElement.clientWidth) || 360);
     const mk = se.mk && se.mk.uses.length ? se.mk : null, mkB = mk ? mk.bosses : [], MR = 12, MT = mkB.length ? 4 + mkB.length * MR : 0;
-    const L = 44, R = 34, PT = 8 + MT, PH = 148, TB = 34, AX = 14, BB = 20;
+    const bossLbl = mkB.map(b => { const bn = st.bossName(log, b); return /^NPC \d+$/.test(bn) ? String(b) : bn; });
+    const L = Math.round(Math.max(44, Math.min(W * 0.2, 8 + 5.4 * Math.max(0, ...bossLbl.map(t => t.length))))), R = 34, PT = 8 + MT, PH = 148, TB = 34, AX = 14, BB = 20;
     const axisY = PT + PH, H = axisY + TB + AX + BB + 2;
     const z0 = fl.zoom ? fl.zoom[0] : r.start, z1 = fl.zoom ? fl.zoom[1] : r.end, span = Math.max(30, z1 - z0);
     const x = c => L + (c - z0) / span * (W - L - R), cOf = px => z0 + (px - L) / (W - L - R) * span;
@@ -524,14 +557,14 @@
     const lblFit = (t, room) => { const k = Math.floor(room / 5.4); return k >= t.length ? t : k >= 5 ? t.slice(0, k - 1) + '.' : ''; };
     mkB.forEach((boss, bi) => {
       const y0 = 4 + bi * MR, y1 = y0 + MR - 2;
-      const bn = st.bossName(log, boss);
-      s += '<text class="lbl" x="' + (L - 4) + '" y="' + (y1 - 1) + '" text-anchor="end">' + flEsc(lblFit(/^NPC \d+$/.test(bn) ? String(boss) : bn, L - 6)) + '</text>';
+      s += '<text class="lbl" x="' + (L - 4) + '" y="' + (y1 - 1) + '" text-anchor="end">' + flEsc(lblFit(bossLbl[bi], L - 6)) + '</text>';
       s += '<line class="mkr" x1="' + L + '" x2="' + (W - R) + '" y1="' + (y1 + 0.5) + '" y2="' + (y1 + 0.5) + '"/>';
       const pts = mk.uses.filter(k => k.boss === boss && k.c >= z0 && k.c <= z1);
       pts.forEach((k, j) => {
         const px = x(k.c), hl = !!fl.mhl && fl.mhl === k.row;
         if (hl) s += '<line class="mkg" x1="' + f1(px) + '" x2="' + f1(px) + '" y1="' + PT + '" y2="' + (axisY + TB) + '"/>';
         s += '<line class="mk' + (hl ? ' hl' : '') + '" x1="' + f1(px) + '" x2="' + f1(px) + '" y1="' + (y0 + 1) + '" y2="' + y1 + '"/>';
+        if (j > 0 && pts[j - 1].label === k.label) return;
         const t = lblFit(k.label, (j + 1 < pts.length ? x(pts[j + 1].c) : W - 2) - px - 5);
         if (t) s += '<text class="mkl" x="' + f1(px + 2.5) + '" y="' + (y1 - 1) + '">' + flEsc(t) + '</text>';
       });
@@ -585,7 +618,7 @@
     const dur = Math.max(1, up.range.end - up.range.start), g = el('div', 'fl-gantt');
     for (const u of up.rows) {
       const row = el('div', 'fl-gr' + (u.type ? ' debuff' : ''));
-      const nm = el('span', 'n'); if (u.icon) nm.appendChild(flIcon(u.icon)); nm.appendChild(document.createTextNode(u.name)); nm.dataset.tip = (u.fullName || u.name) + '\n' + (u.type ? 'debuff' : 'buff') + ', struct ' + u.struct + ', ' + u.spans.length + ' span' + (u.spans.length === 1 ? '' : 's');
+      const nm = flName('n', u.name, u.icon, true); nm.dataset.tip = (u.fullName || u.name) + '\n' + (u.type ? 'debuff' : 'buff') + ', struct ' + u.struct + ', ' + u.spans.length + ' span' + (u.spans.length === 1 ? '' : 's');
       const bar = el('span', 'g');
       for (const sp of u.spans) { const i = el('i'); i.style.left = ((sp[0] - up.range.start) / dur * 100).toFixed(2) + '%'; i.style.width = Math.max(0.3, (sp[1] - sp[0]) / dur * 100).toFixed(2) + '%'; i.dataset.tip = st.fmtMs((sp[0] - up.range.start) * st.CYCLE_MS) + ' to ' + st.fmtMs((sp[1] - up.range.start) * st.CYCLE_MS); bar.appendChild(i); }
       row.appendChild(nm); row.appendChild(bar); row.appendChild(el('span', 'v', (u.uptime * 100).toFixed(0) + '%'));
@@ -622,11 +655,11 @@
     const rows = [];
     for (const r of ca.table) {
       const tr = el('div', 'fl-tr');
-      const nm = el('span', 'n'); if (r.icon) nm.appendChild(flIcon(r.icon)); nm.appendChild(document.createTextNode(r.name)); nm.dataset.tip = r.name + ' (struct ' + r.struct + ')'; tr.appendChild(nm);
-      flCells(tr, [[String(r.casts), 'num'], [st.fmtNum(r.avg), 'num', Math.round(r.avg).toLocaleString()], [st.fmtNum(r.total), 'num tot', r.total.toLocaleString()], [st.fmtNum(r.perCast), 'num', Math.round(r.perCast).toLocaleString()]]);
+      const nm = flName('n', r.name, r.icon, true); nm.dataset.tip = flRowTip(r); tr.appendChild(nm);
+      flCells(tr, [[String(r.casts), 'num'], [st.fmtNum(r.avg), 'num opt', Math.round(r.avg).toLocaleString()], [st.fmtNum(r.total), 'num tot', r.total.toLocaleString()], [st.fmtNum(r.perCast), 'num', Math.round(r.perCast).toLocaleString()]]);
       rows.push(tr);
     }
-    body.appendChild(flTable('casts', [['Ability'], ['Casts', 1], ['Avg hit', 1], ['Total', 1], ['Per cast', 1]], rows));
+    body.appendChild(flTable('casts', [['Ability'], ['Casts', 1], ['Avg hit', 1, 1], ['Total', 1], ['Per cast', 1]], rows));
   }
 
   function flMechs(log, n, body) {
@@ -640,17 +673,17 @@
       for (const x of mk.rows) {
         if (x.boss !== boss) continue;
         const id = x.id, tr = el('div', 'fl-tr click' + (fl.mhl === id ? ' on' : ''));
-        const nm = el('span', 'n', x.label); flTacTip(nm, x); tr.appendChild(nm);
+        const nm = flName('n', x.label); flTacTip(nm, x); tr.appendChild(nm);
         const has = x.gaps.length > 0;
-        flCells(tr, [[String(x.count), 'num'], [at(x.first), 'num'], [at(x.last), 'num'],
-                     [has ? gap(x.avgGap) : '-', 'num', has ? 'Between uses: ' + x.gaps.map(gap).join(', ') : ''], [has ? gap(x.minGap) : '-', 'num', has ? 'Longest ' + gap(x.maxGap) : '']]);
+        flCells(tr, [[String(x.count), 'num'], [at(x.first), 'num opt'], [at(x.last), 'num opt'],
+                     [has ? gap(x.avgGap) : '-', 'num', has ? 'Between uses: ' + x.gaps.map(gap).join(', ') : ''], [has ? gap(x.minGap) : '-', 'num opt', has ? 'Longest ' + gap(x.maxGap) : '']]);
         const tl = el('span', 'tl'); tl.dataset.tip = x.times.map(at).join(', ');
         for (const c of x.times) { const i = el('i'); i.style.left = ((c - r.start) / dur * 100).toFixed(2) + '%'; tl.appendChild(i); }
         tr.appendChild(tl);
         tr.addEventListener('click', () => { fl.mhl = fl.mhl === id ? '' : id; fl.tab = 'health'; flPaint(); });
         rows.push(tr);
       }
-      body.appendChild(flTable('mech', [['Mechanic'], ['Uses', 1], ['First', 1], ['Last', 1], ['Avg gap', 1], ['Min gap', 1], ['Timeline']], rows));
+      body.appendChild(flTable('mech', [['Mechanic'], ['Uses', 1], ['First', 1, 1], ['Last', 1, 1], ['Avg gap', 1], ['Min gap', 1, 1], ['Timeline']], rows));
     }
     body.appendChild(el('div', 'fl-note2', 'Click a row to mark it on the Health chart.'));
   }
@@ -672,10 +705,10 @@
     return { rows: out, counts };
   }
   function flEvents(log, n, body) {
-    const st = S(), tb = el('div', 'chat-toolbar');
+    const st = S(), tb = el('div', 'fl-evbar');
     const search = el('input', 'pet-search'); search.placeholder = 'Search: text, ability, kind, value'; search.value = fl.evSearch;
     search.addEventListener('input', () => { fl.evSearch = search.value; fl.evShow = FL_ROWS; flEvList(log, n); });
-    const copy = el('button', 'pet-chip', 'Copy rows'); copy.type = 'button'; copy.dataset.tip = 'Copy the matching rows as tab-separated text.';
+    const copy = el('button', 'fl-btn', 'Copy rows'); copy.type = 'button'; copy.dataset.tip = 'Copy the matching rows as tab-separated text.';
     copy.addEventListener('click', () => {
       const rows = flEvRows(log, n).rows;
       const lines = ['time\ttick\tcycle\ttype\tactor\tevent\tkind\tvalue\thitmark\tability'];
@@ -710,7 +743,7 @@
       row.appendChild(el('span', 'e', d.text));
       row.appendChild(el('span', 'v', d.value === '' ? '' : (typeof d.value === 'number' ? st.fmtNum(d.value) : String(d.value))));
       const a = el('span', 'a', d.ability || d.kind || ''); if (d.ability) a.dataset.tip = d.ability; row.appendChild(a);
-      row.dataset.tip = 'cycle ' + d.c + (d.hitmark !== '' ? '  hitmark ' + d.hitmark : '') + (d.actor ? '  ' + d.actor : '') + '  ' + d.type;
+      row.dataset.tip = d.text + '\ncycle ' + d.c + (d.hitmark !== '' ? '  hitmark ' + d.hitmark : '') + (d.actor ? '  ' + d.actor : '') + '  ' + d.type;
       frag.appendChild(row);
     }
     list.appendChild(frag);
