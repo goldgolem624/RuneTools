@@ -669,6 +669,16 @@
   // under that name replaced it, so every quest listed here lost its guide.
   const QG_STEP_FNS = { 'Visions of Havenhythe': vohStep, 'Hearts of Sanguine': hosStep, 'Hermit Permits': hpStep, 'Secrets of Amberfell': () => amberStep(), 'Wiz Kid': () => wizkidStep(), 'Necromancy!': () => necroStep(), 'The Restless Ghost': () => rgStep(), 'Making History': () => mhStep(), 'New Foundations': () => nfStep(), "There's No Place Like Home...": () => tnpStep(), 'Murder on the Border': () => motbStep(), 'Heralds of Crimson': () => hocStep(), 'Death Plateau': () => dpStep() };   // focused quest name -> step fn (later-spliced panels' steps are called via lazy arrows)
   (function () { function guideLoop() { questGuideTick().catch(function () {}); setTimeout(guideLoop, 700); } setTimeout(guideLoop, 900); })();   // first tick deferred so PLUGIN_API (declared later) is ready
+  // Live guidance: a step function, an auto-tick checklist or a data track. Data tracks count once loaded.
+  function qgHasLiveGuide(name) {
+    if (!name || typeof name !== 'string') return false;
+    const own = (o, k) => !!o && Object.prototype.hasOwnProperty.call(o, k);
+    if (own(QG_STEP_FNS, name) || own(QG_AUTO, name)) return true;
+    try { return typeof qtHasTrack === 'function' && qtHasTrack(name) === true; } catch (e) { return false; }
+  }
+  function qgLiveGuideReady() {
+    try { return typeof qtTracksReady === 'function' && qtTracksReady() === true; } catch (e) { return false; }
+  }
 
-Object.assign(window, { QG_AUTO, hudSet, qgClearAll, qgClrDlg, qgClrItem, qgClrNpc, qgClrTiles, qgDialogNpc, qgEquipCount, qgExtraAction, qgIdMarks, qgIfaceComp, qgInInstance, qgInvCount, qgItem, qgItems, qgLodestone, qgNpc, qgObject, qgObjectById, qgOv, qgRand, qgScene, qgSceneNpc, qgTile });
+Object.assign(window, { QG_AUTO, hudSet, qgClearAll, qgClrDlg, qgClrItem, qgClrNpc, qgClrTiles, qgDialogNpc, qgEquipCount, qgExtraAction, qgHasLiveGuide, qgIdMarks, qgIfaceComp, qgInInstance, qgInvCount, qgItem, qgItems, qgLiveGuideReady, qgLodestone, qgNpc, qgObject, qgObjectById, qgOv, qgRand, qgScene, qgSceneNpc, qgTile });
 })();

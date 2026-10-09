@@ -178,7 +178,7 @@
         b.textContent = nm; b.dataset.val = i; chips.appendChild(b);
       });
       const search = document.createElement('input'); search.className = 'pet-search'; search.id = 'questSearch';
-      search.placeholder = 'Search quest, id, or "guide"...'; search.value = questFSearch;
+      search.placeholder = 'Search quest, id, "guide" or "live"...'; search.value = questFSearch;
       tb.appendChild(chips); tb.appendChild(search); wrap.appendChild(tb);
       const cnt = document.createElement('div'); cnt.id = 'questCnt'; cnt.className = 'pet-count'; wrap.appendChild(cnt);
       const list = document.createElement('div'); list.id = 'questList'; list.className = 'pet-list'; wrap.appendChild(list);
@@ -195,6 +195,17 @@
   function questHasVisualGuide(name) {
     try { return typeof QUEST_GUIDES === 'object' && !!QUEST_GUIDES[name]; } catch (e) { return false; }
   }
+  // in-game step tracking and marks; false when the guide panels are absent
+  function questHasLiveGuide(name) {
+    try { return typeof qgHasLiveGuide === 'function' && qgHasLiveGuide(name) === true; } catch (e) { return false; }
+  }
+  // part of the render signatures: chips redraw once the data tracks and walkthroughs have loaded
+  function questGuideSig() {
+    let live = 0, text = 0;
+    try { live = (typeof qgLiveGuideReady === 'function' && qgLiveGuideReady() === true) ? 1 : 0; } catch (e) {}
+    try { text = (typeof questGuidesReady === 'function' && questGuidesReady()) ? 1 : 0; } catch (e) {}
+    return live + '' + text;
+  }
   function renderQuestList() {
     const list = $('questList'); if (!list) return;
     const d = questsData;
@@ -202,10 +213,11 @@
     const ready = {};   // computed lazily only for not-started quests (closure walk)
     const idSearch = /^\d+$/.test(questFSearch);   // digits = also match config ids by prefix
     const guidedSearch = questFSearch.length >= 3 && 'guide'.indexOf(questFSearch) === 0;
+    const liveSearch = questFSearch.length >= 3 && 'live guide'.indexOf(questFSearch) === 0;
     const items = QUESTS.filter(q => {
       if (questFSearch) {
         const idHit = idSearch && String(q.id).indexOf(questFSearch) === 0;
-        const gHit = guidedSearch && questHasVisualGuide(q.n);
+        const gHit = (guidedSearch && questHasVisualGuide(q.n)) || (liveSearch && questHasLiveGuide(q.n));
         if (!idHit && !gHit && q.n.toLowerCase().indexOf(questFSearch) < 0) return false;
       }
       const st = d.st[q.id];
@@ -220,7 +232,7 @@
     const cnt = $('questCnt');
     if (cnt) cnt.textContent = doneN + '/' + QUESTS.length + ' completed  ·  ' + progN + ' in progress  ·  ' +
       d.qp + ' quest points' + (items.length !== QUESTS.length ? '  ·  ' + items.length + ' shown' : '');
-    const sig = questFStatus + '|' + questFSearch + '|' + items.map(q => q.id + ':' + d.st[q.id]).join(',');
+    const sig = questFStatus + '|' + questFSearch + '|' + questGuideSig() + '|' + items.map(q => q.id + ':' + d.st[q.id]).join(',');
     if (sig === questListSig) return;
     questListSig = sig;
     list.innerHTML = '';
@@ -239,6 +251,7 @@
       top.appendChild(nm); info.appendChild(top);
       const chips = document.createElement('div'); chips.className = 'bs-chips';
       const chip = (cls, txt) => { const s = document.createElement('span'); s.className = 'bs-chip ' + cls; s.textContent = txt; chips.appendChild(s); };
+      if (questHasLiveGuide(q.n)) chip('ql', 'Live guide');   // in-game step tracking and marks
       if (questHasVisualGuide(q.n)) chip('qg', 'Guide');   // a walkthrough exists in quest_guides.js (368 of 361 quests; not an in-world marker guide)
       if (q.p) chip('m1', q.p + ' QP');
       if (q.d !== undefined) chip('lg', QDIFF[q.d] || ('Diff ' + q.d));
@@ -263,8 +276,7 @@
     const q = QUEST_BY_ID ? QUEST_BY_ID.get(questView) : null;
     const d = questsData;
     // renderPane() polls every 250 ms; rebuild only on real change or hover flickers and scroll resets.
-    const sig = questView + '|' + questNav.join(',') + '|' + (d ? d.sig : '') + '|' +
-                ((typeof questGuidesReady === 'function' && questGuidesReady()) ? 1 : 0);
+    const sig = questView + '|' + questNav.join(',') + '|' + (d ? d.sig : '') + '|' + questGuideSig();
     if (sig === questDetailSig && $('questDetailWrap')) return;
     questDetailSig = sig;
     c.innerHTML = '';
@@ -307,6 +319,7 @@
     }
     const meta = document.createElement('div'); meta.className = 'bs-chips'; meta.style.marginBottom = '10px';
     const mchip = (cls, txt) => { const s = document.createElement('span'); s.className = 'bs-chip ' + cls; s.textContent = txt; meta.appendChild(s); };
+    if (questHasLiveGuide(q.n)) mchip('ql', 'Live guide');
     if (questHasVisualGuide(q.n)) mchip('qg', 'Guide available');
     mchip('m1', (q.p || 0) + ' quest point' + (q.p === 1 ? '' : 's'));
     mchip('lg', 'ID ' + q.id);

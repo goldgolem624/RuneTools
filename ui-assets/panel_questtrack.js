@@ -515,16 +515,25 @@
       if (!qtWarned.has(name)) { qtWarned.add(name); try { console.warn('[qt] ' + name + ': ' + ((e && e.message) || e)); } catch (e2) {} }
     } finally { qtBusy.delete(name); }
   }
-  function qtStepFor(name) {
-    if (!name || typeof name !== 'string' || QT_HAND.indexOf(name) >= 0) return null;
-    if (typeof QG_AUTO !== 'undefined' && QG_AUTO && qtHas(QG_AUTO, name)) return null;
+  // true when data drives this quest; asks for the data while it is not loaded yet
+  function qtHasTrack(name) {
+    if (!name || typeof name !== 'string' || QT_HAND.indexOf(name) >= 0) return false;
+    if (typeof QG_AUTO !== 'undefined' && QG_AUTO && qtHas(QG_AUTO, name)) return false;
     const t = qtTracks();
-    if (!t) { qtLoad(); return null; }
-    if (!t || !qtHas(t, name) || !t[name] || typeof t[name] !== 'object') return null;
+    if (!t) { qtLoad(); return false; }
+    return qtHas(t, name) && !!t[name] && typeof t[name] === 'object';
+  }
+  function qtTracksReady() {
+    if (qtTracks()) return true;
+    qtLoad();
+    return false;
+  }
+  function qtStepFor(name) {
+    if (!qtHasTrack(name)) return null;
     let fn = qtFns.get(name);
     if (!fn) { fn = () => qtTick(name); qtFns.set(name, fn); }
     return fn;
   }
 
-Object.assign(window, { qtCond, qtDraw, qtEval, qtLoad, qtNeeds, qtSnapshot, qtStepFor });
+Object.assign(window, { qtCond, qtDraw, qtEval, qtHasTrack, qtLoad, qtNeeds, qtSnapshot, qtStepFor, qtTracksReady });
 })();
