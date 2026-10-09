@@ -9009,6 +9009,9 @@ struct HCtx {
     std::uint64_t wv = 0, worker = 0;
     bool cli = false;
     std::string runtimePins;
+    bool fxRead = false;                // the type-4 effects below were read from the scene
+    int t4Seen = 0;                     // type-4 effects in the scene
+    std::map<int, int> t4Gfx;           // graphic -> type-4 effects with it that validated
 };
 
 std::string hx(std::uint64_t v) { return rtx::health::Hex(v); }
@@ -9059,6 +9062,30 @@ void scene_secs(const HCtx& c, std::vector<std::pair<std::uint64_t, std::uint64_
         auto sec = rpm<std::uint64_t>(c.h, ep + rtx::scn::kSecPtr);
         if (sec && *sec > 0x10000) out.emplace_back(ep, *sec);
     }
+}
+
+// A type-4 effect validates when its graphic is a cache spotanim and it sits within a map of the player.
+bool t4_valid(HANDLE h, std::uint64_t sec, float px, float py, int& gfx) {
+    gfx = rpm<std::int32_t>(h, sec + rtx::scn::kT4Gfx).value_or(-1);
+    const int ex = rpm<std::int32_t>(h, sec + rtx::scn::kT4PosE).value_or(0), en = rpm<std::int32_t>(h, sec + rtx::scn::kT4PosN).value_or(0);
+    if (gfx < 0 || rtx::cache::PinFingerprint("spotanim", std::to_string(gfx), "").empty()) return false;
+    return std::fabs(ex - px) <= 104 * 512 && std::fabs(en - py) <= 104 * 512;
+}
+
+// The scene's type-4 effects into c, once per run: the scene group fills them while it reads the
+// scene, and a run where it did not reads them here.
+void scene_t4(HCtx& c) {
+    if (c.fxRead || !c.inWorld || !c.worker) return;
+    std::vector<std::pair<std::uint64_t, std::uint64_t>> secs; scene_secs(c, secs);
+    const float px = c.localSec ? rpm<float>(c.h, c.localSec + rtx::scn::kPosX).value_or(0) : 0.f;
+    const float py = c.localSec ? rpm<float>(c.h, c.localSec + rtx::scn::kPosY).value_or(0) : 0.f;
+    for (const auto& es : secs) {
+        if (rpm<std::uint8_t>(c.h, es.second + rtx::scn::kType).value_or(0xFF) != 4) continue;
+        ++c.t4Seen;
+        int gfx = -1;
+        if (t4_valid(c.h, es.second, px, py, gfx)) ++c.t4Gfx[gfx];
+    }
+    c.fxRead = true;
 }
 
 template <class S> struct ShareMap {
@@ -9220,15 +9247,19 @@ void health_build(HCtx& c, rtx::health::Run& run) {
                     det += "; the cache's " + newestName + " were packed after the export: export again";
                 }
             }
-            // exact: the cache's script count, and the indexes the export reads written after it started
-            const auto fr = rtx::cs2fresh::Check(date);
+            // exact: the cache's script count, and the indexes the export reads whose stored reference
+            // table or archives changed since it started (the state the launcher recorded then; write
+            // times without one)
+            const auto fr = rtx::cs2fresh::Check(date, read_small(dir + L"cache_state.json"));
             const std::string stale = rtx::cs2fresh::Why(fr, std::atoi(mv.str("total").c_str()));
             run.Fact("cs2.cacheScripts", std::to_string(fr.cacheScripts));
-            run.Fact("cs2.newerIndexes", fr.newer);
+            run.Fact("cs2.newerIndexes", fr.newer + (fr.newer.empty() || fr.written.empty() ? "" : ", ") + fr.written);
+            run.Fact("cs2.cacheState", fr.recorded ? "recorded" : "none");
             if (!stale.empty()) {
                 if (k == kPass) k = kWarn;
                 det += "; " + stale + (det.find("export again") == std::string::npos ? ": export again" : "");
             }
+            if (!fr.recorded) det += "; no cache state recorded with this export, file write times compared: export once to record the cache state";
         }
         std::string lab = label;
         while (!lab.empty() && (lab.back() == '\n' || lab.back() == '\r' || lab.back() == ' ')) lab.pop_back();
@@ -9842,6 +9873,7 @@ void health_scene(HCtx& c, rtx::health::Run& run) {
     const float px = c.localSec ? rpm<float>(h, c.localSec + rtx::scn::kPosX).value_or(0) : 0.f;
     const float py = c.localSec ? rpm<float>(h, c.localSec + rtx::scn::kPosY).value_or(0) : 0.f;
     const int seqMax = rtx::cache::IndexInfo(20).maxArchive;
+    c.t4Seen = 0; c.t4Gfx.clear();
     for (const auto& es : secs) {
         const std::uint64_t sec = es.second;
         const int t = rpm<std::uint8_t>(h, sec + rtx::scn::kType).value_or(0xFF);
@@ -9902,10 +9934,10 @@ void health_scene(HCtx& c, rtx::health::Run& run) {
             ++fxN;
             bool ok = true;
             if (t == 4) {
-                const int gfx = rpm<std::int32_t>(h, sec + rtx::scn::kT4Gfx).value_or(-1);
-                const int ex = rpm<std::int32_t>(h, sec + rtx::scn::kT4PosE).value_or(0), en = rpm<std::int32_t>(h, sec + rtx::scn::kT4PosN).value_or(0);
-                if (gfx < 0 || rtx::cache::PinFingerprint("spotanim", std::to_string(gfx), "").empty()) ok = false;
-                if (std::fabs(ex - px) > 104 * 512 || std::fabs(en - py) > 104 * 512) ok = false;
+                int gfx = -1;
+                ok = t4_valid(h, sec, px, py, gfx);
+                ++c.t4Seen;
+                if (ok) ++c.t4Gfx[gfx];
                 if (!ok && fxBad.size() < 60) fxBad += " gfx " + std::to_string(gfx);
             } else {   // the source tile, stored as fine ints like the type-4 position
                 const int sx = rpm<std::int32_t>(h, sec + rtx::scn::kProjSrcX).value_or(0), sy = rpm<std::int32_t>(h, sec + rtx::scn::kProjSrcY).value_or(0);
@@ -9917,6 +9949,7 @@ void health_scene(HCtx& c, rtx::health::Run& run) {
             if (ok) ++fxOk;
         }
     }
+    c.fxRead = true;
     {
         std::string hist; bool unknown = false;
         for (const auto& kv : types) {
@@ -10671,14 +10704,37 @@ void health_companion(HCtx& c, rtx::health::Run& run) {
             run.Fact("hook." + hk.name, hk.state + (hk.rva ? "@" + hx(hk.rva) : std::string()));
             run.Add(G, "comp.hook." + hk.name, "Hook " + hk.name, ok, dd, "", "ATTACHED", hk.state, "comp.boot");
         }
-        // heartbeat: a graphic id that never changes reads the wrong field
+        // heartbeat: a graphic id that never changes reads the wrong field, unless every effect around
+        // the player shows that graphic; the reader's own scene read tells the two apart. The companion
+        // keeps the last graphic it saw, and a scan ring one (6841..6843) until another ring replaces it,
+        // so a constant one with no effect showing it now proves nothing either way.
         if (b.beats.size() >= 3) {
             std::set<std::string> gfx;
             for (const auto& s : b.beats) { const std::size_t p = s.find("gfx="); if (p != std::string::npos) gfx.insert(s.substr(p + 4, s.find(' ', p) - p - 4)); }
             const bool constant = gfx.size() == 1 && *gfx.begin() != "0";
-            run.Add(G, "comp.heartbeat", "Heartbeat", constant ? kWarn : kPass,
-                    constant ? "type-4 graphic reads " + *gfx.begin() + " in every beat (graphic field offset wrong in the running companion)" : std::to_string(b.beats.size()) + " recent beats",
-                    "Specials: clue scan ring", "", "", "comp.boot");
+            int beatOk = kPass; std::string beatD = std::to_string(b.beats.size()) + " recent beats";
+            if (constant) {
+                const std::string& g = *gfx.begin();
+                const int gi = (int)std::strtoul(g.c_str(), nullptr, 10);   // logged unsigned
+                scene_t4(c);
+                const auto it = c.t4Gfx.find(gi);
+                beatD = "type-4 graphic reads " + g + " in every beat; ";
+                if (!c.fxRead) { beatOk = kUnchecked; beatD += std::string("scene not read (") + (c.inWorld ? "no scene worker" : "not in the world") + "), nothing to compare it with"; }
+                else if (c.t4Seen == 0) { beatOk = kUnchecked; beatD += "the reader's scene read sees no type-4 effects to compare it with"; }
+                else if (it != c.t4Gfx.end()) {
+                    beatD += "the reader's scene read sees it too (" + std::to_string(it->second) + "/" + std::to_string(c.t4Seen) + " type-4 effects), so the scene holds that graphic";
+                } else if (gi >= 6841 && gi <= 6843) {
+                    beatOk = kUnchecked;
+                    beatD += "a scan ring graphic, which the companion keeps once seen, not in the reader's scene read now: nothing to compare it with";
+                } else {
+                    beatOk = kWarn;
+                    std::string seen; int n = 0;
+                    for (const auto& kv : c.t4Gfx) { if (++n > 4) { seen += " ..."; break; } seen += " " + std::to_string(kv.first); }
+                    beatD += "the reader's scene read sees " + std::to_string(c.t4Seen) + " type-4 effects and none with it (" +
+                             (seen.empty() ? std::string("none validated") : "validated:" + seen) + "): graphic field offset wrong in the running companion";
+                }
+            }
+            run.Add(G, "comp.heartbeat", "Heartbeat", beatOk, beatD, "Specials: clue scan ring", "", "", "comp.boot");
         }
         for (const auto& n : b.notes)
             if (n.find("are from game build") != std::string::npos || n.find("not extracted") != std::string::npos)

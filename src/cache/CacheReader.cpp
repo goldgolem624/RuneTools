@@ -5330,6 +5330,18 @@ IndexFacts IndexInfo(int index) {
     return f;
 }
 
+IndexStored IndexStoredNow(int index) {
+    IndexStored s;
+    std::lock_guard<std::mutex> lk(g_mu);
+    EnsureInit();
+    auto* idx = PinIndexLocked(index);
+    if (!idx) return s;
+    std::uint64_t hash = 0;
+    s.ok = idx->StoredState(s.refVersion, s.refCrc, s.rows, hash);
+    s.hash = hash;
+    return s;
+}
+
 int ArchiveRevision(int index, int archive) {
     std::lock_guard<std::mutex> lk(g_mu);
     EnsureInit();

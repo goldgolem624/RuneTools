@@ -74,6 +74,11 @@ std::string CacheProbeUnknownOps();
 std::string PinFingerprint(const std::string& kind, const std::string& key, const std::string& want);
 struct IndexFacts { bool open = false; int archives = 0, maxArchive = -1, maxFile = -1, protocol = 0, revision = 0, failed = 0; };
 IndexFacts IndexInfo(int index);
+// What the jcache stores for an index now: its reference table's VERSION and CRC, its archive row
+// count, and a hash of the table and of each row's key, VERSION and CRC (SqliteIndexFile::StoredState).
+// ok = false when the index cannot be read now. Reads every archive row of the index.
+struct IndexStored { bool ok = false; long long refVersion = 0, refCrc = 0; int rows = 0; unsigned long long hash = 0; };
+IndexStored IndexStoredNow(int index);
 int ArchiveRevision(int index, int archive);   // the archive's reference-table version, -1 when absent
 std::string CacheRoot();
 int MaxId(const std::string& kind);             // largest id in use: item, npc, loc, enum, struct, varbit, param, sprite, iface, achievement, script

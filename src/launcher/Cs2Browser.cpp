@@ -1,6 +1,7 @@
 #include "Cs2Browser.h"
 
 #include "../cache/Names.h"
+#include "../reader/Cs2Fresh.h"
 
 #include <windows.h>
 
@@ -63,6 +64,8 @@ bool   g_cancelled = false;   // the last run was stopped from the panel
 std::string g_exit;        // why the last run ended, empty while it is healthy
 std::string g_build;       // the game build when the last run started
 FILETIME    g_tableAt{};   // opcodes.json's write time when the last run started, zero if there was none
+std::string g_cacheState;  // what the cache stored for the read indexes when the last run started (cs2fresh::StateNow)
+FILETIME    g_metaAt{};    // meta.json's write time when the last run started, zero if there was none
 
 fs::path log_path() {
     wchar_t buf[MAX_PATH]{};
@@ -123,6 +126,28 @@ void label_table_locked() {
     }
 }
 
+// cache_state.json: what the cache stored for the indexes the export reads (reference table and
+// archive rows) when the run started, under the date of the meta.json the run wrote. The health
+// check compares it with the cache to tell a content change from a file the game client only
+// rewrote. A run that left meta.json as it was leaves the state as it was.
+void record_cache_state_locked() {
+    std::string state;
+    state.swap(g_cacheState);
+    const fs::path dir = OutDir();
+    WIN32_FILE_ATTRIBUTE_DATA t{};
+    if (state.empty() || !GetFileAttributesExW((dir / L"meta.json").c_str(), GetFileExInfoStandard, &t) ||
+        CompareFileTime(&t.ftLastWriteTime, &g_metaAt) == 0) return;
+    const std::string date = rtx::cs2fresh::DateOf(read_file(dir / L"meta.json"));
+    if (date.empty()) return;
+    const fs::path tmp = dir / L"cache_state.json.tmp";
+    {
+        std::ofstream f(tmp, std::ios::binary | std::ios::trunc);
+        f << rtx::cs2fresh::StateFile(date, state);
+        if (!f.flush()) return;
+    }
+    MoveFileExW(tmp.c_str(), (dir / L"cache_state.json").c_str(), MOVEFILE_REPLACE_EXISTING);
+}
+
 bool proc_running_locked() {
     if (!g_proc) return false;
     if (WaitForSingleObject(g_proc, 0) == WAIT_TIMEOUT) return true;
@@ -140,6 +165,7 @@ bool proc_running_locked() {
     else if (code != 0) g_exit = "sidecar exited with code " + std::to_string((int)code);
     else if (!fs::exists(fs::path(OutDir()) / L"meta.json")) g_exit = "sidecar exited without writing anything";
     label_table_locked();
+    record_cache_state_locked();
     return false;
 }
 
@@ -263,6 +289,14 @@ std::string StartExtract() {
         WIN32_FILE_ATTRIBUTE_DATA t{};
         if (GetFileAttributesExW((fs::path(OutDir()) / L"opcodes.json").c_str(), GetFileExInfoStandard, &t))
             g_tableAt = t.ftLastWriteTime;
+    }
+    // The cache as the run reads it, kept for record_cache_state_locked when the run ends.
+    g_cacheState = rtx::cs2fresh::StateNow();
+    g_metaAt = {};
+    {
+        WIN32_FILE_ATTRIBUTE_DATA t{};
+        if (GetFileAttributesExW((fs::path(OutDir()) / L"meta.json").c_str(), GetFileExInfoStandard, &t))
+            g_metaAt = t.ftLastWriteTime;
     }
 
     g_exit.clear();

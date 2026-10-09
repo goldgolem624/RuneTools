@@ -47,6 +47,8 @@ void SqliteIndexFile::DropDb() const {
     if (stmt_ref_table_) { sqlite3_finalize(stmt_ref_table_); stmt_ref_table_ = nullptr; }
     if (stmt_archive_)   { sqlite3_finalize(stmt_archive_);   stmt_archive_   = nullptr; }
     if (stmt_keys_)      { sqlite3_finalize(stmt_keys_);      stmt_keys_      = nullptr; }
+    if (stmt_ref_row_)   { sqlite3_finalize(stmt_ref_row_);   stmt_ref_row_   = nullptr; }
+    if (stmt_rows_)      { sqlite3_finalize(stmt_rows_);      stmt_rows_      = nullptr; }
     if (db_)             { sqlite3_close(db_);                db_             = nullptr; }
 }
 
@@ -130,6 +132,41 @@ bool SqliteIndexFile::RefTableChanged() {
     if (blob.empty()) return false;        // busy or mid-write: keep the old mtime so we look again
     ref_mtime_ = m;
     return Fnv1a(blob) != ref_fp_;
+}
+
+bool SqliteIndexFile::StoredState(long long& version, long long& crc, int& rows, std::uint64_t& hash) const {
+    std::lock_guard<std::mutex> lk(db_mu_);
+    sqlite3_stmt* stmt = Prepare("SELECT `VERSION`, `CRC`, `DATA` FROM `cache_index` WHERE `KEY` = 1;", stmt_ref_row_);
+    if (!stmt) return false;
+    int rc = sqlite3_step(stmt);
+    const bool ref = rc == SQLITE_ROW;
+    std::uint64_t h = 1469598103934665603ull;
+    if (ref) {
+        version = (long long)sqlite3_column_int64(stmt, 0);
+        crc     = (long long)sqlite3_column_int64(stmt, 1);
+        const auto* blob = (const std::uint8_t*)sqlite3_column_blob(stmt, 2);
+        const int size = sqlite3_column_bytes(stmt, 2);
+        for (int i = 0; blob && i < size; ++i) { h ^= blob[i]; h *= 1099511628211ull; }
+    }
+    sqlite3_reset(stmt);   // release the read lock between calls
+    NoteResult(rc);
+    if (!ref) return false;
+    stmt = Prepare("SELECT `KEY`, `VERSION`, `CRC` FROM `cache` ORDER BY `KEY`;", stmt_rows_);
+    if (!stmt) return false;
+    int n = 0;
+    while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
+        for (int col = 0; col < 3; ++col) {
+            const std::uint64_t v = (std::uint64_t)sqlite3_column_int64(stmt, col);
+            for (int b = 0; b < 64; b += 8) { h ^= (v >> b) & 0xff; h *= 1099511628211ull; }
+        }
+        ++n;
+    }
+    sqlite3_reset(stmt);
+    NoteResult(rc);
+    if (rc != SQLITE_DONE) return false;
+    rows = n;
+    hash = h;
+    return true;
 }
 
 SqliteIndexFile::~SqliteIndexFile() {

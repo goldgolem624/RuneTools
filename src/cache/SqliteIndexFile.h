@@ -40,6 +40,13 @@ public:
     // could not be opened, or had no table yet), so the owner rebuilds it ready.
     bool RefTableChanged();
 
+    // What the jcache stores now, read through the open connection: the VERSION and CRC of its
+    // reference table, its archive row count, and a hash of the table and of each row's KEY, VERSION
+    // and CRC. The client rewrites the file without changing any of them when nothing changed, and
+    // stores an archive after the table that lists it. false when they cannot be read (busy,
+    // unopenable or not written yet). Reads every archive row.
+    bool StoredState(long long& version, long long& crc, int& rows, std::uint64_t& hash) const;
+
     std::vector<std::uint8_t> ReadRawArchive(int archive_id);
 
     std::vector<int> ArchiveIdsFrom(int from_key, int limit) const;
@@ -87,6 +94,8 @@ private:
     mutable sqlite3_stmt*          stmt_ref_table_ = nullptr;
     mutable sqlite3_stmt*          stmt_archive_   = nullptr;
     mutable sqlite3_stmt*          stmt_keys_      = nullptr;
+    mutable sqlite3_stmt*          stmt_ref_row_   = nullptr;
+    mutable sqlite3_stmt*          stmt_rows_      = nullptr;
     mutable bool                   db_error_       = false;
 
     mutable std::mutex             archive_cache_mu_;
