@@ -160,6 +160,8 @@ const char* const kFiles[] = {
     "panel_mysteries.js",  // Archaeology mysteries (requirements + focused mystery)
     "panel_chatlog.js",
     "panel_combatlog.js",  // Combat Log (hitsplat stream from the reader's combat log)
+    "panel_fights_stats.js", // Fight Logs statistics (shared with the website; registers no tab)
+    "panel_fights.js",     // Fight Logs (recorded fights: summary, damage, health, buffs, casts, events)
     "panel_achievements.js",
     "panel_areatasks.js",   // shared task scaffold (also used by panel_gimtasks.js)
     "panel_gimtasks.js",

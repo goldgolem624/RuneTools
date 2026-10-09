@@ -43,6 +43,8 @@
 
 using namespace ultralight;
 
+namespace rtx::launcher { std::string CombatRecordRun(std::uint32_t pid, int seconds, const std::wstring& outdir); }   // Bridge.cpp
+
 namespace {
 
 void boot_log(const std::string& msg) { rtx::log::Launcher(msg); }
@@ -544,6 +546,19 @@ int APIENTRY wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
                 out = rtx::reader::InterfaceGroupsJson(pid);
             }
             { std::ofstream f("iface-dump.txt", std::ios::binary | std::ios::trunc); f << diag << out; }
+            return headless_exit(0);
+        }
+        // --combat-record <pid> <seconds> <outdir>: the combat recorder against a running client for that
+        // long, read only, its logs under <outdir> (the same files the launcher keeps under
+        // RuneToolsX\combat), a summary to combat-record.txt. Runs beside a launcher that owns the client.
+        if (argv && argc >= 5 && std::wstring(argv[1]) == L"--combat-record") {
+            std::uint32_t pid = (std::uint32_t)_wtoi(argv[2]);
+            int seconds = _wtoi(argv[3]);
+            if (seconds < 1) seconds = 1;
+            if (seconds > 3600) seconds = 3600;
+            rtx::reader::SampleAll();
+            const std::string out = rtx::launcher::CombatRecordRun(pid, seconds, argv[4]);
+            { std::ofstream f("combat-record.txt", std::ios::binary | std::ios::trunc); f << out; }
             return headless_exit(0);
         }
         // --scene-dump <pid> [range]: the scene as plugins receive it, to scene-dump.txt. For

@@ -78,6 +78,12 @@
     <ClCompile Include="..\src\launcher\Bridge.cpp">
       <Filter>Launcher</Filter>
     </ClCompile>
+    <ClCompile Include="..\src\launcher\CombatRecorder.cpp">
+      <Filter>Launcher</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\launcher\Fights.cpp">
+      <Filter>Launcher</Filter>
+    </ClCompile>
     <ClCompile Include="..\src\launcher\Companion.cpp">
       <Filter>Launcher</Filter>
     </ClCompile>
@@ -192,6 +198,12 @@
       <Filter>Launcher</Filter>
     </ClInclude>
     <ClInclude Include="..\src\launcher\Bridge.h">
+      <Filter>Launcher</Filter>
+    </ClInclude>
+    <ClInclude Include="..\src\launcher\CombatRecorder.h">
+      <Filter>Launcher</Filter>
+    </ClInclude>
+    <ClInclude Include="..\src\launcher\Fights.h">
       <Filter>Launcher</Filter>
     </ClInclude>
     <ClInclude Include="..\src\launcher\Crypto.h">

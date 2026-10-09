@@ -4241,10 +4241,12 @@ static bool actor_true_tile(HANDLE h, std::uint64_t sec, int& tx, int& ty) {
     return true;
 }
 
-// Overhead object of an actor: hitsplat ring and the first head bar. splats = JSON array of
-// [hitmark, value, startCycle, durationCycles] for records that hold a hit (an expired record stays
-// until reused, so consumers key on start+value); bar = fill 0..255 of head-bar slot 0, -1 when none.
-static void actor_overhead_json(HANDLE h, std::uint64_t sec, std::string& splats, int& bar) {
+// Overhead object of an actor: hitsplat ring and one head bar. splats = JSON array of
+// [hitmark, value, startCycle, durationCycles] for records that hold a hit; the ring stores the EXPIRY
+// cycle, start = expiry - duration (an expired record stays until reused, so consumers key on
+// start+value). bar = fill 0..255 of head-bar slot `barSlot`, -1 when none: NPCs draw health in slot 0,
+// the local player draws adrenaline in slot 0 and health in slot 1.
+static void actor_overhead_json(HANDLE h, std::uint64_t sec, std::string& splats, int& bar, int barSlot = 0) {
     splats = "[]"; bar = -1;
     auto hb = rpm<std::uint64_t>(h, sec + rtx::scn::kOverhead);
     if (!hb || *hb <= 0x10000 || *hb > 0x00007FFFFFFFFFFFull) return;
@@ -4257,7 +4259,7 @@ static void actor_overhead_json(HANDLE h, std::uint64_t sec, std::string& splats
                 const std::int32_t* r = rec + i * 6;
                 if (r[0] < 0 || r[1] < 0 || r[2] <= 0 || r[5] <= 0 || r[0] > 100000 || r[1] > 100000000) continue;
                 char b[96];
-                std::snprintf(b, sizeof(b), "%s[%d,%d,%d,%d]", first ? "" : ",", r[0], r[1], r[2], r[5]);
+                std::snprintf(b, sizeof(b), "%s[%d,%d,%d,%d]", first ? "" : ",", r[0], r[1], r[2] - r[5], r[5]);
                 out += b; first = false;
             }
             out += "]"; splats = out;
@@ -4265,8 +4267,13 @@ static void actor_overhead_json(HANDLE h, std::uint64_t sec, std::string& splats
     }
     auto slots = rpm<std::uint64_t>(h, *hb + rtx::scn::kOvSlots);
     if (slots && *slots > 0x10000 && *slots < 0x00007FFFFFFFFFFFull) {
-        auto fill = rpm<std::int32_t>(h, *slots + rtx::scn::kBarFill);
-        auto stamp = rpm<std::int32_t>(h, *slots + rtx::scn::kBarStamp);
+        std::uint64_t el = *slots;
+        if (barSlot > 0) {
+            auto se = rpm<std::uint64_t>(h, *hb + rtx::scn::kOvSlots + 8);
+            if (se && *se >= *slots + (std::uint64_t)(barSlot + 1) * rtx::scn::kBarStride) el += (std::uint64_t)barSlot * rtx::scn::kBarStride;
+        }
+        auto fill = rpm<std::int32_t>(h, el + rtx::scn::kBarFill);
+        auto stamp = rpm<std::int32_t>(h, el + rtx::scn::kBarStamp);
         if (fill && stamp && *fill >= 0 && *fill <= 255 && *stamp > 0) bar = *fill;
     }
 }
@@ -4288,9 +4295,11 @@ static void actor_bar_state(HANDLE h, std::uint64_t sec, int cycleNow, int& stam
     if (!rpm_bytes(h, *ring, rec, sizeof(rec))) return;
     for (int i = 0; i < 6; ++i) {
         const std::int32_t* r = rec + i * 6;
-        if (r[0] < 0 || r[1] <= 0 || r[2] <= 0 || r[2] > cycleNow || r[5] <= 0 || r[0] > 100000 || r[1] > 100000000) continue;
-        if (r[2] > hitCycle) hitCycle = r[2];
-        if (stamp > 0 && r[2] > stamp) sinceStamp += r[1];
+        if (r[0] < 0 || r[1] <= 0 || r[2] <= 0 || r[5] <= 0 || r[0] > 100000 || r[1] > 100000000) continue;
+        const int start = r[2] - r[5];           // the ring stores the expiry cycle
+        if (start > cycleNow) continue;
+        if (start > hitCycle) hitCycle = start;
+        if (stamp > 0 && start > stamp) sinceStamp += r[1];
     }
 }
 
@@ -4316,9 +4325,10 @@ static std::uint64_t local_player_sec_fast(HANDLE h, std::uint64_t root, int loc
 // Combat log. Every hitsplat the game draws on an actor in the scene becomes one event in an
 // append-only stream that developers read with state.combatLog(sinceSeq). The launcher polls
 // CombatLogPoll at 5 Hz; a record lives 60 cycles (1.2 s) in the actor's ring, so no hit is missed.
-// Records are keyed on (ring slot, start cycle, value, hitmark) per actor and compared with the
+// Records are keyed on (ring slot, expiry cycle, value, hitmark) per actor and compared with the
 // previous poll, which logs each hit exactly once even though expired records linger in the ring
-// until the game overwrites them.
+// until the game overwrites them. The ring stores each record's EXPIRY cycle; the event carries the
+// creation cycle (expiry - duration), the cycle of the server tick the hit landed in.
 namespace {
 struct CombatEvent {
     std::uint64_t seq; long long t;          // t = wall clock, ms since the Unix epoch
@@ -4327,7 +4337,7 @@ struct CombatEvent {
     int uid, id;                             // actor uid; NPC config id (-1 for players)
     std::string name;
     int x, y, plane;
-    int hitmark, value, cycle, dur;          // raw ring record
+    int hitmark, value, cycle, dur;          // ring record; cycle = creation (the ring's expiry - dur)
     int lp, lpMax;                           // NPC life points at the poll (-1 unknown)
 };
 struct CombatLogState {
@@ -4359,6 +4369,7 @@ void CombatLogPoll(std::uint32_t pid) {
     };
     auto root = rpm<std::uint64_t>(h, mgva);
     if (!root || *root <= 0x10000) return;
+    const int clockNow = (int)rpm<std::uint32_t>(h, *root + kOffClientClock).value_or(0);   // CLIENTCLOCK, 50/s
     auto pdata = deref(root, rtx::scn::kPlayerData);
     int local_uid = (pdata && *pdata > 0x10000) ? rpm<std::int32_t>(h, *pdata + rtx::scn::kLocalUid).value_or(-1) : -1;
     auto cont = deref(root, rtx::scn::kContainer);
@@ -4403,13 +4414,8 @@ void CombatLogPoll(std::uint32_t pid) {
         if (!ring || *ring <= 0x10000 || *ring > 0x00007FFFFFFFFFFFull) continue;
         std::int32_t rec[6 * 6];
         if (!rpm_bytes(h, *ring, rec, sizeof(rec))) continue;
-        // An actor seen for the first time may carry old records; on NPCs the actor's own cycle
-        // clock (+0x1330) tells which records are fresh (started within the last 300 ms).
-        int freshAfter = -1;
-        if (!old && type == 1) {
-            int clk = rpm<std::int32_t>(h, *sec + 0x1330).value_or(0);
-            if (clk > 15) freshAfter = clk - 15;
-        }
+        // An actor seen for the first time may carry old records: only the ones still live (expiry
+        // ahead of the client clock) are hits that just landed.
         bool actorRead = false; CombatEvent base{};
         for (int s = 0; s < 6; ++s) {
             const std::int32_t* r = rec + s * 6;
@@ -4418,7 +4424,7 @@ void CombatLogPoll(std::uint32_t pid) {
                               ^ ((std::uint64_t)(std::uint32_t)r[0] << 52) ^ ((std::uint64_t)s << 60);
             keys.push_back(key);
             if (old && std::find(old->begin(), old->end(), key) != old->end()) continue;   // seen before
-            if (!old && (freshAfter < 0 || r[2] < freshAfter)) continue;   // first sight: only records that just started
+            if (!old && (clockNow <= 0 || r[2] <= clockNow)) continue;    // first sight: only records still live
             if (!actorRead) {
                 actorRead = true;
                 base.type = type; base.uid = uid; base.self = (type == 2 && uid == local_uid);
@@ -4449,7 +4455,7 @@ void CombatLogPoll(std::uint32_t pid) {
                 }
             }
             CombatEvent ev = base;
-            ev.t = now; ev.hitmark = r[0]; ev.value = r[1]; ev.cycle = r[2]; ev.dur = r[5];
+            ev.t = now; ev.hitmark = r[0]; ev.value = r[1]; ev.cycle = r[2] - r[5]; ev.dur = r[5];
             fresh.push_back(std::move(ev));
         }
     }
@@ -4494,6 +4500,365 @@ std::string CombatLogJson(std::uint32_t pid, std::uint64_t since, int max_events
     return out;
 }
 
+
+// ---------------------------------------------------------------------------------------------
+// Combat recorder reads. One pass reads every actor in the scene with one block read of the actor
+// object (type, uid, name, tile, animation, target, NPC id, stats, visible level, overhead pointer),
+// then the overhead header, the hitsplat ring and, when asked, the head bars. Watched vars are read
+// through their map nodes: the node addresses are resolved once (again when the map grows or a node
+// stops matching) and read in coalesced windows, so a pass costs a handful of reads however many
+// vars it watches. Everything here is read only.
+namespace {
+constexpr std::uint64_t kCbSecRead   = 0x1380;   // actor object bytes covering every field read below
+constexpr std::uint64_t kCbNameLen   = 0x98;
+constexpr std::uint64_t kCbAnim      = 0xA90;
+constexpr std::uint64_t kCbTargetUid = 0x1B4;
+constexpr std::uint64_t kCbNpcStats  = 0x1140, kCbNpcBase = 0x115C, kCbNpcVis = 0x1178;
+constexpr std::uint64_t kCbVarNode   = 0x30;     // var map node: id +0, value +8, type +0x20, next +0x28
+constexpr std::uint64_t kCbWindowGap = 0x8000, kCbWindowMax = 0x80000;
+
+struct CombatVarDomain {
+    std::vector<int> wanted;
+    std::vector<std::pair<std::uint64_t, int>> nodes;          // (node address, id), sorted by address
+    std::vector<std::pair<std::uint64_t, std::uint32_t>> windows;
+    std::uint64_t elements = 0;                                // map element count at the last resolve
+    unsigned long long resolvedAt = 0;
+    bool dirty = true;
+};
+struct CombatEpEntry { std::uint64_t sec = 0; int type = -1; };
+struct CombatReadState {
+    std::unordered_map<std::uint64_t, CombatEpEntry> eps;      // entity node -> its actor object and type
+    std::unordered_map<int, std::string> npcNames;             // NPC id -> cache name
+    std::uint64_t localSec = 0;                                // the local player's object from the last pass
+    CombatVarDomain vp, vc;
+};
+std::mutex g_cbMu;
+std::unordered_map<std::uint32_t, CombatReadState> g_cb;
+
+inline bool cb_heap(std::uint64_t p) { return p > 0x10000 && p < 0x00007FFFFFFFFFFFull; }
+
+// Map header: buckets +8, bucket count +0x10, element count +0x18. Every wanted id's node is found by
+// walking its bucket chain, from one read of the bucket array.
+void cb_resolve(HANDLE h, std::uint64_t hdr, CombatVarDomain& d, int& reads, int& fails) {
+    d.nodes.clear(); d.windows.clear(); d.dirty = false;
+    std::uint8_t hb[0x20];
+    ++reads;
+    if (!rpm_bytes(h, hdr, hb, sizeof(hb))) { ++fails; return; }
+    const std::uint64_t ba = *reinterpret_cast<const std::uint64_t*>(hb + 8);
+    const std::uint64_t nb = *reinterpret_cast<const std::uint64_t*>(hb + 0x10);
+    d.elements = *reinterpret_cast<const std::uint64_t*>(hb + 0x18);
+    if (!cb_heap(ba) || nb == 0 || nb > 2000000) return;
+    std::vector<std::uint64_t> buckets((std::size_t)nb);
+    ++reads;
+    if (!rpm_bytes(h, ba, buckets.data(), buckets.size() * 8)) { ++fails; return; }
+    for (int id : d.wanted) {
+        if (id < 0) continue;
+        std::uint64_t node = buckets[(std::size_t)((std::uint64_t)id % nb)];
+        for (int i = 0; i < 128 && cb_heap(node); ++i) {
+            std::uint8_t nbuf[kCbVarNode];
+            ++reads;
+            if (!rpm_bytes(h, node, nbuf, sizeof(nbuf))) { ++fails; break; }
+            if (*reinterpret_cast<const std::int32_t*>(nbuf) == id) { d.nodes.push_back({ node, id }); break; }
+            std::memcpy(&node, nbuf + kVarNodeNext, 8);
+        }
+    }
+    std::sort(d.nodes.begin(), d.nodes.end());
+    for (const auto& n : d.nodes) {
+        const std::uint64_t a = n.first;
+        if (!d.windows.empty()) {
+            auto& w = d.windows.back();
+            const std::uint64_t prevEnd = w.first + w.second;
+            if (a + kCbVarNode - w.first <= kCbWindowMax && a - prevEnd <= kCbWindowGap) { w.second = (std::uint32_t)(a + kCbVarNode - w.first); continue; }
+        }
+        d.windows.push_back({ a, (std::uint32_t)kCbVarNode });
+    }
+}
+
+// (id, value) of every watched var whose node exists and holds an int. A window that fails to read
+// falls back to its nodes one by one; a node whose id no longer matches schedules a resolve.
+void cb_read_vars(HANDLE h, std::uint64_t hdr, CombatVarDomain& d, unsigned long long now,
+                  std::vector<std::pair<int, int>>& out, int& reads, int& fails) {
+    if (d.wanted.empty()) return;
+    std::uint8_t hb[0x20];
+    ++reads;
+    if (rpm_bytes(h, hdr, hb, sizeof(hb))) {
+        if (*reinterpret_cast<const std::uint64_t*>(hb + 0x18) != d.elements) d.dirty = true;
+    } else ++fails;
+    if (d.dirty && (d.resolvedAt == 0 || now - d.resolvedAt >= 2000)) { cb_resolve(h, hdr, d, reads, fails); d.resolvedAt = now; }
+    std::vector<std::uint8_t> buf;
+    std::size_t ni = 0;
+    for (const auto& w : d.windows) {
+        buf.resize(w.second);
+        ++reads;
+        const bool ok = rpm_bytes(h, w.first, buf.data(), w.second);
+        if (!ok) ++fails;
+        for (; ni < d.nodes.size() && d.nodes[ni].first + kCbVarNode <= w.first + w.second; ++ni) {
+            const std::uint64_t a = d.nodes[ni].first; const int id = d.nodes[ni].second;
+            std::uint8_t one[kCbVarNode]; const std::uint8_t* nb = nullptr;
+            if (ok) nb = buf.data() + (a - w.first);
+            else { ++reads; if (rpm_bytes(h, a, one, sizeof(one))) nb = one; else { ++fails; d.dirty = true; continue; } }
+            if (*reinterpret_cast<const std::int32_t*>(nb) != id) { d.dirty = true; continue; }
+            if (nb[0x20] != 0) continue;                                   // long or string typed: not a cycle or count
+            out.push_back({ id, *reinterpret_cast<const std::int32_t*>(nb + 8) });
+        }
+    }
+}
+
+// The live name: the string's length field when plausible, else the buffer up to its NUL (the read the
+// combat log uses).
+void cb_name(const std::uint8_t* b, std::uint64_t len, std::string& out) {
+    out.clear();
+    if (len == 0 || len > 48) len = 40;
+    for (std::uint64_t j = 0; j < len; ++j) {
+        const unsigned char c = b[j];
+        if (c == 0) break;
+        if (c >= 0x20 && c <= 0x7e) out.push_back((char)c);
+        else if (c == 0xA0) out.push_back(' ');
+    }
+}
+
+struct CombatCtx { HANDLE h; std::uint64_t root; CombatReadState& st; CombatSample& out; };
+
+// One actor from its object: false when the block is not an actor's (type byte) or has no plausible tile.
+// The head bars are read when `bars` asks (every other pass) and always for the local player.
+bool cb_read_actor(CombatCtx& c, std::uint64_t sec, bool bars, CombatActorSample& a) {
+    std::uint8_t b[kCbSecRead];
+    ++c.out.reads;
+    if (!rpm_bytes(c.h, sec, b, sizeof(b))) { ++c.out.fails; return false; }
+    auto i32 = [&](std::uint64_t o) { return *reinterpret_cast<const std::int32_t*>(b + o); };
+    auto u64 = [&](std::uint64_t o) { return *reinterpret_cast<const std::uint64_t*>(b + o); };
+    auto f32 = [&](std::uint64_t o) { return *reinterpret_cast<const float*>(b + o); };
+    const int type = b[rtx::scn::kType];
+    if (type != 1 && type != 2) return false;
+    const float fx = f32(rtx::scn::kPosX), fy = f32(rtx::scn::kPosY);
+    if (!(fx > 0.f && fx < 1e8f && fy > 0.f && fy < 1e8f)) return false;
+    a.type = type; a.tx = (int)(fx / 512.f); a.ty = (int)(fy / 512.f); a.plane = i32(rtx::scn::kPlane);
+    a.uid = i32(rtx::scn::kUid); a.anim = i32(kCbAnim); a.targetUid = i32(kCbTargetUid);
+    cb_name(b + rtx::scn::kName, u64(kCbNameLen), a.name);
+    a.self = (type == 2 && a.uid == c.out.localUid);
+    if (type == 1) {
+        int id = i32(rtx::scn::kNpcCur);
+        if (id < 0) id = i32(rtx::scn::kConfig);
+        a.id = id;
+        std::memcpy(a.stats, b + kCbNpcStats, 28); std::memcpy(a.base, b + kCbNpcBase, 28); a.vis = i32(kCbNpcVis);
+        a.haveStats = true;
+        for (int k = 0; k < 7; ++k) if (a.stats[k] < -100000 || a.stats[k] > 1000000000 || a.base[k] < 0 || a.base[k] > 1000000000) a.haveStats = false;
+        if (a.haveStats) { a.lp = a.stats[3] < 0 ? -1 : a.stats[3]; a.lpMax = a.base[3] <= 0 ? -1 : a.base[3]; }
+        a.npcTarget = i32(rtx::scn::kNpcTarget);
+        if (a.name.empty() && id >= 0) {
+            auto it = c.st.npcNames.find(id);
+            if (it == c.st.npcNames.end()) it = c.st.npcNames.emplace(id, rtx::cache::GetNpc(id).name).first;
+            a.name = it->second;
+        }
+    } else {
+        const int cb = i32(rtx::scn::kCombat);
+        a.combat = (cb >= 0 && cb <= 5000) ? cb : -1;
+    }
+    const std::uint64_t ov = u64(rtx::scn::kOverhead);
+    if (cb_heap(ov)) {
+        std::uint8_t hb[0x40];
+        ++c.out.reads;
+        if (rpm_bytes(c.h, ov, hb, sizeof(hb))) {
+            const std::uint64_t ring = *reinterpret_cast<const std::uint64_t*>(hb + rtx::scn::kOvRing);
+            if (cb_heap(ring)) {
+                std::int32_t rec[6 * 6];
+                ++c.out.reads;
+                if (rpm_bytes(c.h, ring, rec, sizeof(rec))) {
+                    a.haveRing = true;
+                    for (int s = 0; s < 6; ++s) {
+                        const std::int32_t* r = rec + s * 6;
+                        CombatHitRec& hr = a.ring[s];
+                        if (r[0] < 0 || r[0] > 100000 || r[1] < 0 || r[1] > 100000000 || r[2] <= 0 || r[5] <= 0 || r[5] > 1000) { hr = CombatHitRec{}; continue; }
+                        hr.hitmark = r[0]; hr.value = r[1]; hr.expiry = r[2]; hr.hm2 = r[3]; hr.value2 = r[4]; hr.dur = r[5];
+                    }
+                } else ++c.out.fails;
+            }
+            if (bars || a.self) {
+                const std::uint64_t sb = *reinterpret_cast<const std::uint64_t*>(hb + rtx::scn::kOvSlots);
+                const std::uint64_t se = *reinterpret_cast<const std::uint64_t*>(hb + rtx::scn::kOvSlots + 8);
+                if (cb_heap(sb) && se >= sb && (se - sb) % rtx::scn::kBarStride == 0) {
+                    const int n = (int)std::min<std::uint64_t>((se - sb) / rtx::scn::kBarStride, 4);
+                    if (n > 0) {
+                        std::uint8_t bb[4 * rtx::scn::kBarStride];
+                        ++c.out.reads;
+                        if (rpm_bytes(c.h, sb, bb, (std::size_t)n * rtx::scn::kBarStride)) {
+                            a.nbars = n;
+                            for (int k = 0; k < n; ++k) {
+                                a.barStamp[k] = *reinterpret_cast<const std::int32_t*>(bb + k * rtx::scn::kBarStride + rtx::scn::kBarStamp);
+                                a.barFill[k]  = *reinterpret_cast<const std::int32_t*>(bb + k * rtx::scn::kBarStride + rtx::scn::kBarFill);
+                            }
+                        } else ++c.out.fails;
+                    }
+                }
+            }
+        } else ++c.out.fails;
+    }
+    return true;
+}
+}  // namespace
+
+void CombatWatch(std::uint32_t pid, const std::vector<int>& varps, const std::vector<int>& varcs) {
+    std::lock_guard<std::mutex> lk(g_cbMu);
+    auto& st = g_cb[pid];
+    st.vp = CombatVarDomain{}; st.vp.wanted = varps;
+    st.vc = CombatVarDomain{}; st.vc.wanted = varcs;
+}
+
+void CombatForget(std::uint32_t pid) {
+    std::lock_guard<std::mutex> lk(g_cbMu);
+    g_cb.erase(pid);
+}
+
+bool CombatRead(std::uint32_t pid, bool bars, CombatSample& out) {
+    out = CombatSample{};
+    auto ps = snap_proc(pid);
+    if (!ps) return false;
+    HANDLE h = ps.h;
+    auto root = rpm<std::uint64_t>(h, ps.mgva);
+    if (!root || *root <= 0x10000) return false;
+    std::lock_guard<std::mutex> lk(g_cbMu);
+    CombatReadState& st = g_cb[pid];
+    CombatCtx c{ h, *root, st, out };
+    using namespace std::chrono;
+    auto clk = rpm<std::uint32_t>(h, *root + kOffClientClock);
+    out.wallMs = duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count();
+    ++out.reads;
+    if (!clk) { ++out.fails; return false; }
+    out.clock = *clk;
+    auto deref = [&](std::optional<std::uint64_t> p, std::uint64_t off) -> std::optional<std::uint64_t> {
+        if (!p || *p <= 0x10000) return std::nullopt;
+        ++out.reads;
+        return rpm<std::uint64_t>(h, *p + off);
+    };
+    auto pdata = deref(root, rtx::scn::kPlayerData);
+    out.localUid = (pdata && *pdata > 0x10000) ? rpm<std::int32_t>(h, *pdata + rtx::scn::kLocalUid).value_or(-1) : -1;
+    ++out.reads;
+    auto cont = deref(root, rtx::scn::kContainer);
+    auto idx  = (cont && *cont > 0x10000) ? rpm<std::int32_t>(h, *cont + rtx::scn::kActiveIdx) : std::nullopt;
+    auto arr  = deref(cont, rtx::scn::kEntryArr);
+    std::optional<std::uint64_t> wv, worker, vb, ve;
+    if (idx && *idx >= 0 && arr && *arr > 0x10000) {
+        wv = rpm<std::uint64_t>(h, *arr + (std::uint64_t)*idx * 0x10 + rtx::scn::kEntryWv);
+        if (wv && *wv > 0x10000) worker = scene_worker(h, pid, *wv, nullptr);
+        vb = deref(worker, rtx::scn::kVecBegin);
+        ve = deref(worker, rtx::scn::kVecEnd);
+    }
+    if (!(vb && ve && *vb > 0x10000 && *ve >= *vb)) return false;
+    std::uint64_t n = (*ve - *vb) / 8;
+    if (n > 20000) n = 20000;
+    std::vector<std::uint64_t> eps((std::size_t)n);
+    if (n) {
+        ++out.reads;
+        if (!rpm_bytes(h, *vb, eps.data(), eps.size() * 8)) { ++out.fails; return false; }
+    }
+    const unsigned long long now = GetTickCount64();
+    std::unordered_set<std::uint64_t> live; live.reserve(eps.size());
+    bool selfSeen = false;
+    for (std::uint64_t ep : eps) {
+        if (!cb_heap(ep)) continue;
+        live.insert(ep);
+        ++out.reads;
+        const std::uint64_t sec = rpm<std::uint64_t>(h, ep + rtx::scn::kSecPtr).value_or(0);
+        if (!cb_heap(sec)) continue;
+        CombatEpEntry& e = st.eps[ep];
+        if (e.sec != sec || e.type < 0) {
+            e.sec = sec;
+            ++out.reads;
+            e.type = (int)rpm<std::uint8_t>(h, sec + rtx::scn::kType).value_or(0xff);
+        }
+        if (e.type != 1 && e.type != 2) continue;
+        CombatActorSample a;
+        if (!cb_read_actor(c, sec, bars, a)) { e.type = -1; continue; }
+        if (a.self) { selfSeen = true; st.localSec = sec; }
+        out.actors.push_back(std::move(a));
+    }
+    if (st.eps.size() > live.size() + 64) {
+        for (auto it = st.eps.begin(); it != st.eps.end();) it = live.count(it->first) ? std::next(it) : st.eps.erase(it);
+    }
+    if (!selfSeen && out.localUid >= 0) {        // the local player through the registry when the vector did not have it
+        const std::uint64_t psec = local_player_sec_fast(h, *root, out.localUid);
+        out.reads += 5;
+        if (psec) {
+            CombatActorSample a;
+            if (cb_read_actor(c, psec, true, a) && a.self) { st.localSec = psec; out.actors.push_back(std::move(a)); }
+        }
+    }
+    const std::uint64_t vcStore = rpm<std::uint64_t>(h, *root + kOffVarcStore).value_or(0);
+    ++out.reads;
+    cb_read_vars(h, *root + kOffVarpHash, st.vp, now, out.varps, out.reads, out.fails);
+    if (vcStore > 0x10000) cb_read_vars(h, vcStore + kVarcHashOff, st.vc, now, out.varcs, out.reads, out.fails);
+    out.ok = true;
+    return true;
+}
+
+bool CombatReadLocal(std::uint32_t pid, std::uint32_t& clock, int& anim, int& targetUid) {
+    std::uint64_t sec = 0;
+    {
+        std::lock_guard<std::mutex> lk(g_cbMu);
+        auto it = g_cb.find(pid);
+        if (it == g_cb.end()) return false;
+        sec = it->second.localSec;
+    }
+    if (!sec) return false;
+    auto ps = snap_proc(pid);
+    if (!ps) return false;
+    auto root = rpm<std::uint64_t>(ps.h, ps.mgva);
+    if (!root || *root <= 0x10000) return false;
+    auto clk = rpm<std::uint32_t>(ps.h, *root + kOffClientClock);
+    auto an = rpm<std::int32_t>(ps.h, sec + kCbAnim);
+    auto tg = rpm<std::int32_t>(ps.h, sec + kCbTargetUid);
+    if (!clk || !an || !tg) return false;
+    clock = *clk; anim = *an; targetUid = *tg;
+    return true;
+}
+
+// Tracker grid: [MainData+kOffTracker] -> {begin, end} of 0x68-byte groups {id +0, column ids +8/+0x10,
+// row ids +0x20/+0x28, rows +0x50/+0x58 as 24-byte {values begin, values end, ..} entries}. Group 4
+// (one row per skill) is skipped.
+bool CombatTrackers(std::uint32_t pid, std::vector<CombatTrackerCell>& out) {
+    out.clear();
+    auto ps = snap_proc(pid);
+    if (!ps) return false;
+    HANDLE h = ps.h;
+    auto root = rpm<std::uint64_t>(h, ps.mgva);
+    if (!root || *root <= 0x10000) return false;
+    const std::uint64_t mgr = rpm<std::uint64_t>(h, *root + kOffTracker).value_or(0);
+    if (mgr <= 0x10000) return false;
+    const std::uint64_t gb = rpm<std::uint64_t>(h, mgr).value_or(0), ge = rpm<std::uint64_t>(h, mgr + 8).value_or(0);
+    if (gb <= 0x10000 || ge < gb || (ge - gb) % kTrackerGroupSize || (ge - gb) / kTrackerGroupSize > 16) return false;
+    std::vector<std::uint8_t> G((std::size_t)(ge - gb));
+    if (!G.empty() && !rpm_bytes(h, gb, G.data(), G.size())) return false;
+    auto ids = [&](std::uint64_t b, std::uint64_t e, std::vector<int>& v) {
+        v.clear();
+        if (b <= 0x10000 || e < b || (e - b) % 4 || (e - b) / 4 > 64) return;
+        v.resize((std::size_t)((e - b) / 4));
+        if (!v.empty() && !rpm_bytes(h, b, v.data(), v.size() * 4)) v.clear();
+    };
+    for (std::size_t off = 0; off + kTrackerGroupSize <= G.size(); off += kTrackerGroupSize) {
+        const std::uint8_t* g = G.data() + off;
+        auto u64 = [&](std::size_t o) { return *reinterpret_cast<const std::uint64_t*>(g + o); };
+        const int gid = *reinterpret_cast<const std::int32_t*>(g);
+        if (gid == 4) continue;
+        std::vector<int> cols, rows;
+        ids(u64(0x08), u64(0x10), cols); ids(u64(0x20), u64(0x28), rows);
+        if (cols.empty() || rows.empty()) continue;
+        const std::uint64_t ob = u64(0x50), oe = u64(0x58);
+        if (ob <= 0x10000 || oe < ob || (oe - ob) % 24 || (oe - ob) / 24 > 16) continue;
+        std::vector<std::uint8_t> outer((std::size_t)(oe - ob));
+        if (!rpm_bytes(h, ob, outer.data(), outer.size())) continue;
+        const std::size_t nrows = outer.size() / 24;
+        for (std::size_t r = 0; r < nrows && r < rows.size(); ++r) {
+            const std::uint64_t ib = *reinterpret_cast<const std::uint64_t*>(outer.data() + r * 24);
+            const std::uint64_t ie = *reinterpret_cast<const std::uint64_t*>(outer.data() + r * 24 + 8);
+            if (ib <= 0x10000 || ie < ib || ie - ib > 256 || (ie - ib) % 4) continue;
+            std::vector<std::int32_t> vals((std::size_t)((ie - ib) / 4));
+            if (vals.empty() || !rpm_bytes(h, ib, vals.data(), vals.size() * 4)) continue;
+            for (std::size_t k = 0; k < vals.size() && k < cols.size(); ++k)
+                out.push_back({ gid, rows[r], cols[k], vals[k] });
+        }
+    }
+    return true;
+}
 
 // ---------------------------------------------------------------------------------------------
 // Live terrain heights. The game places every actor with the routine at exe+0x357A50 (actor, xy): plane =
@@ -9266,7 +9631,7 @@ std::string PlayerInfoJson(std::uint32_t pid) {
     std::string out = buf; out += interactJson;
     {   // Overhead (incoming hitsplats + head bar), world id, mouse, modifier keys, map loading.
         std::string pSplats; int pBar = -1;
-        actor_overhead_json(h, psec, pSplats, pBar);
+        actor_overhead_json(h, psec, pSplats, pBar, 1);   // slot 1: the local player's health bar (slot 0 is adrenaline)
         int world = -1, mx = -1, my = -1, mb = 0, mods = 0, loadPct = -1, loadScreen = 0;
         if (root && *root > 0x10000) {
             auto w = rpm<std::uint64_t>(h, *root + kOffWorld);

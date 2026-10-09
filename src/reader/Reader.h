@@ -122,6 +122,45 @@ bool LiveCornerHeights(std::uint32_t pid, int wx, int wy, int plane, std::int32_
 void CombatLogPoll(std::uint32_t pid);
 std::string CombatLogJson(std::uint32_t pid, std::uint64_t since, int max_events);
 
+// Combat recorder reads: one pass over every actor in the scene, one block read per actor object,
+// plus the overhead header, the hitsplat ring and (when asked) the head bars. Watched vars are read
+// through their map nodes in coalesced windows. Hit records carry the EXPIRY cycle the game stores;
+// creation = expiry - dur. All cycles are CLIENTCLOCK (MainData+0x528, 50/s, 30 per server tick).
+struct CombatHitRec { int hitmark = -1, value = -1, expiry = 0, hm2 = -1, value2 = -1, dur = 0; };
+struct CombatActorSample {
+    int  type = 0;                 // 1 NPC, 2 player
+    bool self = false;             // the local player
+    int  uid = -1, id = -1;        // actor uid; NPC current type id (-1 for players)
+    std::string name;              // live name (NPCs: the cache name when the live one is empty)
+    int  tx = 0, ty = 0, plane = 0;
+    int  anim = -1;                // sec+0xA90
+    int  targetUid = -1;           // sec+0x1B4 (players)
+    int  npcTarget = -1;           // sec+0x1364 (NPCs)
+    int  combat = -1;              // players
+    bool haveStats = false; int stats[7] = {}, base[7] = {}; int vis = -1;   // NPCs
+    int  lp = -1, lpMax = -1;      // NPC stats[3] / base[3]
+    bool haveRing = false; CombatHitRec ring[6];
+    int  nbars = 0; int barStamp[4] = {}, barFill[4] = {};   // head bar slots (cycle stamp, fill 0..255)
+};
+struct CombatTrackerCell { int group = 0, row = 0, col = 0, value = 0; };
+struct CombatSample {
+    bool ok = false;               // the client was attached and its scene readable
+    long long wallMs = 0;          // system time of the clock read, ms since the epoch
+    std::uint32_t clock = 0;       // CLIENTCLOCK
+    int localUid = -1;
+    std::vector<CombatActorSample> actors;
+    std::vector<std::pair<int, int>> varps, varcs;   // watched vars whose node exists: (id, value)
+    int reads = 0, fails = 0;
+};
+// The vars every CombatSample of this client reads. Call once per client (again to change the set).
+void CombatWatch(std::uint32_t pid, const std::vector<int>& varps, const std::vector<int>& varcs);
+bool CombatRead(std::uint32_t pid, bool bars, CombatSample& out);
+// Three reads for the local player between passes: the clock, its animation and its target uid.
+bool CombatReadLocal(std::uint32_t pid, std::uint32_t& clock, int& anim, int& targetUid);
+// The game's own tracker grid (groups 1..3: skills, combat, loot) as (group, row, column, value) cells.
+bool CombatTrackers(std::uint32_t pid, std::vector<CombatTrackerCell>& out);
+void CombatForget(std::uint32_t pid);
+
 std::string GroundItemsJson(std::uint32_t pid);
 
 // Every scene entity's class pointer and the entry its class holds for the height the game

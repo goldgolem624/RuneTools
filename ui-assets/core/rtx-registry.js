@@ -96,8 +96,14 @@
 
   const RTX = window.RTX = window.RTX || {};
   RTX.panels = RTX.panels || {};
+  // Tabs that a panel file registers itself (label, cat, icon on its registerTab def), placed after a
+  // fixed row above instead of at the end; the tab exists only when its file is spliced.
+  const TAB_AFTER = { fights: 'combatlog' };   // Fight Logs (panel_fights.js) next to Combat Log
   function tabAdopt(d) {
-    if (d.label && !TABS.some(t => t.id === d.id)) TABS.push({ id: d.id, label: d.label, cat: d.cat || 'Utility', icon: d.icon || '' });
+    if (!d.label || TABS.some(t => t.id === d.id)) return;
+    const row = { id: d.id, label: d.label, cat: d.cat || 'Utility', icon: d.icon || '' };
+    const at = TAB_AFTER[d.id] ? TABS.findIndex(t => t.id === TAB_AFTER[d.id]) : -1;
+    if (at >= 0) TABS.splice(at + 1, 0, row); else TABS.push(row);
   }
   function registerTab(def) {
     if (def && def.id) { RTX.panels[def.id] = def; tabAdopt(def); }

@@ -40,6 +40,10 @@
 #include "LuaHost.h"
 #include "Link.h"
 #include "Loot.h"
+#include "LootBosses.h"
+#include "CombatRecorder.h"
+#include "Fights.h"
+#include "../reader/BuffVars.h"
 #include "Music.h"
 
 #include <Ultralight/Ultralight.h>
@@ -3145,18 +3149,253 @@ JSValueRef ScarabCached(JSContextRef ctx, JSObjectRef, JSObjectRef,
     return utf8_to_js(ctx, g_scarab_json);
 }
 
+// ---- combat recorder (opt-in): the 200 ms pass and the 100 ms local sub-pass feed one Recorder per
+// client; its JSONL lines go to the open log and a closed log is compacted into the combat folder ----
+namespace combatrec {
+using namespace rtx::launcher::combat;
+
+struct Client {
+    Recorder rec; fights::OpenLog file;
+    std::string character, version;
+    bool configured = false; int passes = 0;
+};
+std::mutex g_mu;
+std::map<std::uint32_t, Client> g_clients;
+std::atomic<bool> g_active{ true };          // the session start/stop switch; the setting gates it
+Config g_cfg; bool g_cfgOk = false;
+std::vector<fights::IndexRow> g_saved;       // logs compacted this session (the headless report reads it)
+bool g_enabled = false; long long g_enabledAt = 0;
+bool g_recovered = false;
+
+long long wall_ms() { using namespace std::chrono; return duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count(); }
+
+bool enabled(long long now) {
+    if (now - g_enabledAt >= 2000) { g_enabled = fights::RecordEnabled(); g_enabledAt = now; }
+    return g_enabled;
+}
+void set_enabled(bool on) { fights::SetRecordEnabled(on); std::lock_guard<std::mutex> lk(g_mu); g_enabled = on; g_enabledAt = (long long)GetTickCount64(); }
+
+// The ability pairs, boss kill counts, varbit definitions and name lookups the recorder needs; the
+// cache has to be open, so this is retried until it is.
+bool build_config() {
+    rtx::health::JVal j;
+    if (!rtx::health::ParseJson(rtx::cache::AbilityConfigsJson(), j) || j.t != rtx::health::JVal::Obj) return false;
+    const rtx::health::JVal* by = j.get("_byId");
+    if (!by || by->t != rtx::health::JVal::Obj || by->o.empty()) return false;
+    Config c;
+    c.launcher = running_version();
+    for (const auto& kv : by->o) {
+        const rtx::health::JVal& v = kv.second;
+        AbilityDef d;
+        d.structId = (int)v.num("s", -1); d.name = v.str("n"); d.icon = std::atoi(kv.first.c_str());
+        d.style = (int)v.num("st", 0); d.cdTicks = (int)v.num("c", 0);
+        if (const rtx::health::JVal* pv = v.get("v"); pv && pv->a.size() == 2) { d.startVarc = std::atoi(pv->a[0].s.c_str()); d.endVarc = std::atoi(pv->a[1].s.c_str()); }
+        if (d.structId > 0) c.abilities.push_back(std::move(d));
+    }
+    for (const auto& b : loot::kBosses) {
+        BossDef x; x.name = b.name; if (b.m1[0]) { x.name += "|"; x.name += b.m1; }
+        std::memcpy(x.kc, b.kc, sizeof(x.kc)); std::memcpy(x.pr, b.pr, sizeof(x.pr));
+        c.bosses.push_back(x);
+        if (b.kc2[0] > 0) { BossDef y; y.name = std::string(b.name) + "|" + b.m2; std::memcpy(y.kc, b.kc2, sizeof(y.kc)); std::memcpy(y.pr, b.pr2, sizeof(y.pr)); c.bosses.push_back(y); }
+    }
+    auto varbit = [&](const rtx::buffvars::Entry& e) {
+        if (e.kind != 3) return;
+        int vp = -1, lsb = -1, msb = -1;
+        if (rtx::cache::GetVarbit(e.var, vp, lsb, msb) && vp >= 0) c.varbits.push_back({ e.var, vp, lsb, msb });
+    };
+    for (const auto& e : rtx::buffvars::kTimer) varbit(e);
+    for (const auto& e : rtx::buffvars::kCount) varbit(e);
+    c.names.official = [](const char* kind, int id) { return rtx::names::Name(kind, id); };
+    c.names.structStr = [](int s, int p) { std::string v; rtx::cache::StructStrParam(s, p, v); return v; };
+    c.names.structInt = [](int s, int p, int def) { int v = 0; return rtx::cache::StructIntParam(s, p, v) ? v : def; };
+    c.newLogId = [] { return fights::NewLogId(); };
+    g_cfg = std::move(c); g_cfgOk = true;
+    return true;
+}
+
+// Lines to the file. Returns the path of a log the recorder closed, for compact_closed.
+std::filesystem::path flush(std::uint32_t pid, Client& c) {
+    std::vector<std::string> lines;
+    c.rec.TakeLines(lines);
+    if (c.rec.LogOpen() && !c.file.IsOpen()) {
+        if (c.file.Open(c.character, pid)) rtx::log::Launcher("combat: recording " + c.character + " to log " + c.rec.LogId());
+        else rtx::log::Launcher("combat: cannot open the log file for " + c.character);
+    }
+    if (!lines.empty() && c.file.IsOpen()) c.file.Append(lines);
+    std::filesystem::path closed;
+    if (!c.rec.LogOpen() && c.file.IsOpen()) { closed = c.file.Path(); c.file.Close(); }
+    return closed;
+}
+
+using Closed = std::vector<std::pair<std::filesystem::path, std::string>>;   // (JSONL path, log id)
+
+// Closed logs into the store. Runs with g_mu released: the gzip of a long log takes a while and the
+// pages' calls must not wait on it.
+void compact_closed(const Closed& closed) {
+    for (const auto& x : closed) {
+        fights::IndexRow row;
+        if (fights::Compact(x.first, "logout", &row)) {
+            { std::lock_guard<std::mutex> lk(g_mu); g_saved.push_back(row); }
+            rtx::log::Launcher("combat: log " + row.id + " saved, " + std::to_string(row.fights.size()) + " fight(s), " + std::to_string(row.events) + " events, " + std::to_string(row.bytes) + " bytes");
+        } else rtx::log::Launcher("combat: log " + x.second + " had no fight, dropped");
+    }
+}
+
+void finish(std::uint32_t pid, Client& c, const char* why, Closed& closed) {
+    const std::string id = c.rec.LogId();
+    c.rec.Close(why);
+    const std::filesystem::path p = flush(pid, c);
+    if (!p.empty()) closed.push_back({ p, id });
+    rtx::reader::CombatForget(pid);
+}
+
+long long g_reads = 0, g_fails = 0;          // under g_mu; the headless report prints them
+
+// One loop iteration: every 100 ms; `full` passes (every other one) walk the scene, the others read
+// the local player alone. `force` records without the setting (the headless switch).
+void step(const std::vector<std::uint32_t>& pids, const std::map<std::uint32_t, std::pair<std::string, std::string>>& info, bool full, bool force) {
+    const long long now = (long long)GetTickCount64();
+    Closed closed;
+    {
+        std::lock_guard<std::mutex> lk(g_mu);
+        const bool on = force || (enabled(now) && g_active.load());
+        for (auto it = g_clients.begin(); it != g_clients.end();) {
+            const bool gone = std::find(pids.begin(), pids.end(), it->first) == pids.end();
+            if (gone || !on) { finish(it->first, it->second, gone ? "logout" : "stop", closed); it = g_clients.erase(it); }
+            else ++it;
+        }
+        if (on && !pids.empty() && (g_cfgOk || build_config())) {
+            if (!g_recovered) { g_recovered = true; fights::Recover(); fights::Retention(); }
+            for (std::uint32_t pid : pids) {
+                Client& c = g_clients[pid];
+                if (!c.configured) {
+                    auto in = info.find(pid);
+                    c.character = in != info.end() ? in->second.first : std::string();
+                    c.version = in != info.end() ? in->second.second : std::string();
+                    Config cfg = g_cfg; cfg.character = c.character; cfg.client = c.version;
+                    c.rec.Configure(cfg);
+                    std::vector<int> vp, vc; WantedVars(cfg, vp, vc);
+                    rtx::reader::CombatWatch(pid, vp, vc);
+                    c.configured = true;
+                }
+                if (full) {
+                    rtx::reader::CombatSample s;
+                    rtx::reader::CombatRead(pid, (c.passes % 2) == 0, s);
+                    g_reads += s.reads; g_fails += s.fails;
+                    Tick t; t.ok = s.ok; t.wallMs = s.wallMs ? s.wallMs : wall_ms(); t.clock = s.clock; t.localUid = s.localUid;
+                    t.actors = std::move(s.actors); t.varps = std::move(s.varps); t.varcs = std::move(s.varcs);
+                    if (s.ok && c.passes % 5 == 0) t.haveTrackers = rtx::reader::CombatTrackers(pid, t.trackers);
+                    c.rec.Feed(t);
+                    ++c.passes;
+                    if (c.rec.NeedsRotation(t.wallMs)) c.rec.Close("rotation");
+                } else {
+                    std::uint32_t clk = 0; int anim = -1, tgt = -1;
+                    if (rtx::reader::CombatReadLocal(pid, clk, anim, tgt)) c.rec.FeedLocal(clk, anim, tgt, wall_ms());
+                }
+                const std::filesystem::path p = flush(pid, c);
+                if (!p.empty()) closed.push_back({ p, c.rec.LogId() });
+            }
+        }
+    }
+    compact_closed(closed);
+}
+
+std::string state_json() {
+    std::lock_guard<std::mutex> lk(g_mu);
+    std::string o = std::string("{\"enabled\":") + (fights::RecordEnabled() ? "true" : "false") + ",\"active\":" + (g_active.load() ? "true" : "false") + ",\"clients\":[";
+    bool first = true;
+    for (const auto& kv : g_clients) {
+        const Client& c = kv.second;
+        o += first ? "" : ","; first = false;
+        o += "{\"pid\":" + std::to_string(kv.first) + ",\"character\":\"" + json_escape(c.character) + "\",\"logId\":\"" + json_escape(c.rec.LogId()) +
+             "\",\"open\":" + (c.rec.LogOpen() ? "true" : "false") + ",\"inFight\":" + (c.rec.InFight() ? "true" : "false") +
+             ",\"fights\":" + std::to_string(c.rec.FightCount()) + ",\"events\":" + std::to_string(c.rec.LogEvents()) + ",\"startedAt\":" + std::to_string(c.rec.StartedAt()) + "}";
+    }
+    return o + "]}";
+}
+
+std::string current_json(std::uint32_t pid, std::uint64_t since) {
+    std::lock_guard<std::mutex> lk(g_mu);
+    auto it = g_clients.find(pid);
+    if (it == g_clients.end()) return "{\"logId\":\"\",\"open\":false,\"inFight\":false,\"seq\":0,\"header\":null,\"actors\":[],\"fights\":[],\"events\":[]}";
+    return it->second.rec.CurrentJson(since);
+}
+}  // namespace combatrec
+
+// Settings and controls of the recorder, and the logs on disk, for the pages.
+JSValueRef CombatRecordEnabled(JSContextRef ctx, JSObjectRef, JSObjectRef, size_t argc, const JSValueRef argv[], JSValueRef*) {
+    if (argc >= 1) { const bool on = JSValueToBoolean(ctx, argv[0]); combatrec::set_enabled(on); rtx::log::Launcher(std::string("combat: recording ") + (on ? "enabled" : "disabled")); }
+    return JSValueMakeBoolean(ctx, fights::RecordEnabled());
+}
+JSValueRef CombatUploadAuto(JSContextRef ctx, JSObjectRef, JSObjectRef, size_t argc, const JSValueRef argv[], JSValueRef*) {
+    if (argc >= 1) fights::SetUploadAuto(JSValueToBoolean(ctx, argv[0]));
+    return JSValueMakeBoolean(ctx, fights::UploadAuto());
+}
+JSValueRef CombatKeepNames(JSContextRef ctx, JSObjectRef, JSObjectRef, size_t argc, const JSValueRef argv[], JSValueRef*) {
+    if (argc >= 1) fights::SetKeepNames(JSValueToBoolean(ctx, argv[0]));
+    return JSValueMakeBoolean(ctx, fights::KeepNames());
+}
+// combatRecordActive([bool]): the session's start/stop; off closes the open logs at the next pass.
+JSValueRef CombatRecordActive(JSContextRef ctx, JSObjectRef, JSObjectRef, size_t argc, const JSValueRef argv[], JSValueRef*) {
+    if (argc >= 1) combatrec::g_active.store(JSValueToBoolean(ctx, argv[0]));
+    return JSValueMakeBoolean(ctx, combatrec::g_active.load());
+}
+JSValueRef CombatRecordState(JSContextRef ctx, JSObjectRef, JSObjectRef, size_t, const JSValueRef[], JSValueRef*) {
+    return utf8_to_js(ctx, combatrec::state_json());
+}
+JSValueRef FightsList(JSContextRef ctx, JSObjectRef, JSObjectRef, size_t, const JSValueRef[], JSValueRef*) {
+    return utf8_to_js(ctx, fights::ListJson());
+}
+JSValueRef FightLoad(JSContextRef ctx, JSObjectRef, JSObjectRef, size_t argc, const JSValueRef argv[], JSValueRef*) {
+    const std::string json = argc >= 1 ? fights::LoadJson(js_to_utf8(ctx, argv[0])) : std::string();
+    return utf8_to_js(ctx, json.empty() ? std::string("null") : json);
+}
+JSValueRef FightsCurrent(JSContextRef ctx, JSObjectRef, JSObjectRef, size_t argc, const JSValueRef argv[], JSValueRef*) {
+    const auto pid = argc >= 1 ? (std::uint32_t)JSValueToNumber(ctx, argv[0], nullptr) : 0u;
+    double since = argc >= 2 ? JSValueToNumber(ctx, argv[1], nullptr) : 0.0;
+    if (!(since >= 0)) since = 0;
+    return utf8_to_js(ctx, combatrec::current_json(pid, (std::uint64_t)since));
+}
+JSValueRef FightDelete(JSContextRef ctx, JSObjectRef, JSObjectRef, size_t argc, const JSValueRef argv[], JSValueRef*) {
+    const bool ok = argc >= 1 && fights::Delete(js_to_utf8(ctx, argv[0]));
+    return utf8_to_js(ctx, std::string("{\"ok\":") + (ok ? "true" : "false") + "}");
+}
+// fightExport(id[, pick]): a copy of the .json.gz, through a Save As dialog when pick, else to the export folder.
+JSValueRef FightExport(JSContextRef ctx, JSObjectRef, JSObjectRef, size_t argc, const JSValueRef argv[], JSValueRef*) {
+    const bool pick = argc >= 2 && JSValueToBoolean(ctx, argv[1]);
+    const std::string path = argc >= 1 ? fights::Export(js_to_utf8(ctx, argv[0]), pick, g_launcherHwnd) : std::string();
+    return utf8_to_js(ctx, std::string("{\"ok\":") + (path.empty() ? "false" : "true") + ",\"path\":\"" + json_escape(path) + "\"}");
+}
+JSValueRef FightOpenFolder(JSContextRef ctx, JSObjectRef, JSObjectRef, size_t, const JSValueRef[], JSValueRef*) {
+    fights::OpenFolder();
+    return JSValueMakeBoolean(ctx, true);
+}
+// Uploads come with the website part; the contract answers "unavailable" until then.
+JSValueRef FightUpload(JSContextRef ctx, JSObjectRef, JSObjectRef, size_t, const JSValueRef[], JSValueRef*) {
+    return utf8_to_js(ctx, "{\"ok\":false,\"state\":\"unavailable\",\"error\":\"uploads are not available yet\"}");
+}
+JSValueRef FightUploadStatus(JSContextRef ctx, JSObjectRef, JSObjectRef, size_t, const JSValueRef[], JSValueRef*) {
+    return utf8_to_js(ctx, "{\"state\":\"unavailable\"}");
+}
+
 // Feeds the combat log: every logged-in client's actor rings, five times a second. The client
 // list refreshes every two seconds; the ring poll itself is a few hundred small reads.
+// The same thread drives the combat recorder: a scene pass with the ring poll every 200 ms and the
+// local player's sub-pass in between (nothing when the setting is off).
 void combat_log_loop() {
-    std::vector<std::uint32_t> pids; long long listed = 0;
+    std::vector<std::uint32_t> pids; long long listed = 0; int tick = 0;
+    std::map<std::uint32_t, std::pair<std::string, std::string>> info;   // pid -> display name, client version
     for (;;) {
         long long now = (long long)GetTickCount64();
         if (now - listed >= 2000) {
             listed = now; pids.clear();
-            for (const auto& s : rtx::reader::SampleAll()) if (s.status == 30) pids.push_back(s.pid);
+            for (const auto& s : rtx::reader::SampleAll()) if (s.status == 30) { pids.push_back(s.pid); info[s.pid] = { s.display_name, s.client_version }; }
         }
-        for (auto pid : pids) rtx::reader::CombatLogPoll(pid);
-        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        const bool full = (tick & 1) == 0;
+        if (full) for (auto pid : pids) rtx::reader::CombatLogPoll(pid);
+        combatrec::step(pids, info, full, false);
+        ++tick;
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
 }
 
@@ -3381,6 +3620,51 @@ long long ItemGePrice(int item_id) {
     };
     const long long high = field("\"high\":"), low = field("\"low\":");
     return high > 0 ? high : low > 0 ? low : 0;
+}
+
+// --combat-record: the recorder against one client for a while, read only, into `outdir`; the report
+// is what the switch writes to combat-record.txt.
+std::string CombatRecordRun(std::uint32_t pid, int seconds, const std::wstring& outdir) {
+    fights::SetRoot(outdir);
+    combatrec::g_recovered = true;              // never touch the user's own folder from here
+    std::string report;
+    std::vector<std::uint32_t> pids;
+    std::map<std::uint32_t, std::pair<std::string, std::string>> info;
+    const long long t0 = (long long)GetTickCount64();
+    long long listed = 0; int tick = 0; int passes = 0; bool seen = false;
+    while ((long long)GetTickCount64() - t0 < (long long)seconds * 1000) {
+        const long long now = (long long)GetTickCount64();
+        if (now - listed >= 2000) {
+            listed = now; pids.clear();
+            for (const auto& s : rtx::reader::SampleAll()) if (s.pid == pid && s.status == 30) { pids.push_back(s.pid); info[s.pid] = { s.display_name, s.client_version }; seen = true; }
+        }
+        combatrec::step(pids, info, (tick & 1) == 0, true);
+        if ((tick & 1) == 0 && !pids.empty()) ++passes;
+        ++tick;
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+    combatrec::Closed closed;
+    std::string state;
+    {
+        std::lock_guard<std::mutex> lk(combatrec::g_mu);
+        for (auto& kv : combatrec::g_clients) { state += "state " + kv.second.rec.DiagJson() + "\n"; combatrec::finish(kv.first, kv.second, "stop", closed); }
+        combatrec::g_clients.clear();
+    }
+    combatrec::compact_closed(closed);
+    {
+        std::lock_guard<std::mutex> lk(combatrec::g_mu);
+        report += "pid " + std::to_string(pid) + (seen ? "" : " was not in the game world") + "\n";
+        report += "passes " + std::to_string(passes) + " over " + std::to_string(seconds) + " s, reads " + std::to_string(combatrec::g_reads) + " fails " + std::to_string(combatrec::g_fails) + "\n";
+        report += state;
+        for (const auto& r : combatrec::g_saved) {
+            report += "log " + r.id + " " + r.character + " file " + r.file + " events " + std::to_string(r.events) + " bytes " + std::to_string(r.bytes) + "\n";
+            for (const auto& f : r.fights)
+                report += "  fight " + std::to_string(f.n) + " " + f.kind + (f.boss.empty() ? "" : " " + f.boss) + " " + std::to_string(f.summary.durMs / 1000) + " s dealt " +
+                          std::to_string(f.summary.dealt) + " taken " + std::to_string(f.summary.taken) + " hits " + std::to_string(f.summary.hits) + " kills " + std::to_string(f.kills) + "\n";
+        }
+        if (combatrec::g_saved.empty()) report += "no fight recorded\n";
+    }
+    return report;
 }
 
 namespace {
@@ -6281,6 +6565,19 @@ void AttachBridge(ultralight::View* view) {
     install_fn(ctx, ns, "social",            SocialFn);
     install_fn(ctx, ns, "walkGrid",          WalkGridFn);
     install_fn(ctx, ns, "combatLog",         CombatLogFn);
+    install_fn(ctx, ns, "combatRecordEnabled", CombatRecordEnabled);
+    install_fn(ctx, ns, "combatUploadAuto",  CombatUploadAuto);
+    install_fn(ctx, ns, "combatKeepNames",   CombatKeepNames);
+    install_fn(ctx, ns, "combatRecordActive", CombatRecordActive);
+    install_fn(ctx, ns, "combatRecordState", CombatRecordState);
+    install_fn(ctx, ns, "fightsList",        FightsList);
+    install_fn(ctx, ns, "fightLoad",         FightLoad);
+    install_fn(ctx, ns, "fightsCurrent",     FightsCurrent);
+    install_fn(ctx, ns, "fightDelete",       FightDelete);
+    install_fn(ctx, ns, "fightExport",       FightExport);
+    install_fn(ctx, ns, "fightOpenFolder",   FightOpenFolder);
+    install_fn(ctx, ns, "fightUpload",       FightUpload);
+    install_fn(ctx, ns, "fightUploadStatus", FightUploadStatus);
     install_fn(ctx, ns, "vosCached", VosCached);
     install_fn(ctx, ns, "pricesCached", PricesCached);
     install_fn(ctx, ns, "pricesMapping", PricesMapping);

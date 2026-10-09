@@ -90,12 +90,14 @@ inline constexpr std::uint64_t kTurnLen     = 0x1EC;  // sec -> f32 turn length
 inline constexpr std::uint64_t kTurnDone    = 0x1F0;  // sec -> i32; turning while f32 len > i32 done
 inline constexpr std::uint64_t kNodeYaw     = 0xE0;   // entity -> drawn quaternion f32 x, y, z, w (y +0xE4, w +0xEC)
 // Overhead object (950-1, live-verified 2026-09-12 on a combat dummy, the local player and the
-// Woodcutters' Grove tree helpers): sec+0xF08 -> {i32 active hitsplats @0, i32 capacity 6 @4,
-// hitsplat ring @+0x20 (6 x 0x18: i32 hitmark, i32 value, i32 start cycle, i32 -1, i32 -1, i32 duration
-// 60 cycles), head-bar slots @+0x28 .. +0x30}. The bar slots are a vector of 0x1b0 elements, four of
-// them on the actors sampled; only element 0 is ever populated (cycle stamp @+0x78, fill 0..255
-// @+0x7C, both matching the live node the drawing code walks). The rest hold uninitialised bytes,
-// so the count must come from the vector bounds and never from reading slots until one looks blank.
+// Woodcutters' Grove tree helpers; ring and bars re-verified 2026-10-09 in a fight): sec+0xF08 ->
+// {i32 active hitsplats @0 (lazy), i32 capacity 6 @4, hitsplat ring @+0x20 (6 x 0x18: i32 hitmark,
+// i32 value, i32 EXPIRY cycle on CLIENTCLOCK (creation = expiry - duration), i32 secondary hitmark
+// (-1), i32 secondary value (-1), i32 duration 60 cycles), head-bar slots @+0x28 .. +0x30}. The bar
+// slots are a vector of 0x1b0 elements, four of them on the actors sampled (cycle stamp @+0x78, fill
+// 0..255 @+0x7C): NPCs populate element 0 (health); the local player populates element 0 (adrenaline)
+// and element 1 (health). The rest hold uninitialised bytes, so the count must come from the vector
+// bounds and never from reading slots until one looks blank.
 inline constexpr std::uint64_t kOverhead     = 0xF08;   // sec -> overhead object
 inline constexpr std::uint64_t kOvSplatCount = 0x00;
 inline constexpr std::uint64_t kOvRing       = 0x20;

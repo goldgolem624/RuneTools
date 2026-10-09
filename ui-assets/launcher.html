@@ -2528,6 +2528,17 @@
           <span class="vol-n" id="music-vol-n">35%</span>
         </div>
       </div>
+      <div class="set-row" id="combat-record-row">
+        <div class="set-text">
+          <b>Record combat</b>
+          <span>Fight logs kept on this PC, under RuneToolsX\combat. Off by default.</span>
+        </div>
+        <label class="acct-cap" title="Nothing leaves this PC. Logs open in the Fight Logs panel.">
+          <input type="checkbox" id="combat-record">
+          <span class="box"></span>
+          <span class="lbl" id="combat-record-lbl">Off</span>
+        </label>
+      </div>
       <div class="set-row set-row-col" id="link-row">
         <div class="set-text">
           <b>RuneTools account</b>
@@ -3018,6 +3029,21 @@
     try { box.checked = !!(await bridge().accountCapture(on)); } catch (e) { return; }
     invalidateRenderCache();
     refresh();
+  }
+  // Combat recorder opt-in (C++ keeps the flag). The row hides on a launcher without the recorder.
+  async function initCombatRecord() {
+    const box = $('combat-record');
+    if (!box) return;
+    const b = bridge();
+    if (!b || !b.combatRecordEnabled) { const r = $('combat-record-row'); if (r) r.style.display = 'none'; return; }
+    const lbl = $('combat-record-lbl');
+    const show = (on) => { box.checked = !!on; if (lbl) lbl.textContent = on ? 'On' : 'Off'; };
+    try { show(await b.combatRecordEnabled()); } catch (e) { return; }
+    box.addEventListener('change', async () => {
+      let v = box.checked;
+      try { v = !!(await b.combatRecordEnabled(box.checked)); } catch (e) {}
+      show(v);
+    });
   }
   async function initAccountCapture() {
     const box = $('acct-capture');
@@ -8210,6 +8236,7 @@
     // Display only - C++ reads the saved choice itself, so capture is already correct on the
     // first scan whether or not this has resolved yet.
     initAccountCapture();
+    initCombatRecord();
     initTitlebar();
     gpRefresh();
     gfxRefresh();
