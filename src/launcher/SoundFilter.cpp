@@ -86,7 +86,7 @@ std::string StatusJson(std::uint32_t pid) {
         const std::uint32_t abs = seq - valid + i;          // oldest-first
         const auto& e = sh->recent[abs % rtx::sound::kMaxRecent];
         if (i) out += ',';
-        // Origin from the return address (950-1: the instruction after each `call FUN_1403E8C50`):
+        // Origin from the return address (950-1: the instruction after each call of the play routine exe+0x3E8C50):
         // 0x949CC/0x94AEE/0x9515E script ops, 0xF0718 server sound (0x2C), 0xF0B71 server world-tile
         // sound (0x5F), 0x115478/0x115750 zone sounds (0xA4 and the zone-update sub-packets),
         // 0x3E70F0 actor animation slots, 0x3E89EB engine. Unknown call sites are reported by RVA.

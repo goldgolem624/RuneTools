@@ -570,9 +570,12 @@ void CheckCacheFormat(rtx::health::Run& run) {
                    .kind = mx < 0 ? "precondition" : "unrecorded";
                 continue;
             }
-            const int ok = mx > cap ? kFail : (mx * 10 >= cap * 9 ? kWarn : kPass);
+            // an id class fills over years and the cache format rows catch a wider id: a pass with a note
+            // from 90 % of the cap, a warn from 99 %, a fail past it
+            const int ok = mx > cap ? kFail : (mx * 100 >= cap * 99 ? kWarn : kPass);
+            const bool nearCap = ok == kPass && mx * 10 >= cap * 9;
             run.Add(G, cid, "Id ceiling: " + l.key, ok,
-                    std::string(ok == kPass ? "" : "NEW: ") + l.key + " ids at " + std::to_string(mx) + " of " + std::to_string(cap) + (ok == kPass ? "" : ok == kWarn ? " (within 10 %): the next id class is near" : " (past it): ids the code cannot hold"),
+                    std::string(ok == kPass ? "" : "NEW: ") + l.key + " ids at " + std::to_string(mx) + " of " + std::to_string(cap) + (ok == kPass ? (nearCap ? " (within 10 %; a warn from 99 %)" : "") : ok == kWarn ? " (within 1 %): the next id class is near" : " (past it): ids the code cannot hold"),
                     l.features, "<= " + std::to_string(cap), std::to_string(mx));
         }
     }

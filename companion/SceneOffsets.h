@@ -24,8 +24,9 @@ inline constexpr std::uint64_t kEntryArr   = 0x58;     // list -> worlds vector 
 inline constexpr std::uint64_t kEntryWv    = 0x8;      // handle -> game world object (the worldView)
 inline constexpr std::uint64_t kPlayerData = 0x19FA8;  // root -> account: local player index +0x48, local player handle +0x50/+0x58, name +0x68
 inline constexpr std::uint64_t kLocalUid   = 0x48;     // account -> local player index
-// World grid: [wv+0x140C0] owns it (the worldView itself on the static map, bounds 0,0..98,198). Rows are indexed
-// by mapsquare x - min x, cells (0x18 each) by y - min y, region pointer at cell+8.
+// World grid: [wv+0x140C0] owns it (the worldView itself on the static map; the bounds are a box inside 0,0..98,198:
+// the whole world, or the part loaded since a relog, e.g. 26,37..72,142). Rows are indexed by mapsquare x - min x,
+// cells (0x18 each) by y - min y, region pointer at cell+8.
 inline constexpr std::uint64_t kWvGrid     = 0x140C0;  // worldView -> grid owner
 inline constexpr std::uint64_t kGridMin    = 0x14034;  // grid -> i32 min x, min y, max x, max y (mapsquares)
 inline constexpr std::uint64_t kGridRows   = 0x14080;  // grid -> row array (0x18 per row, cell array begin at +0)

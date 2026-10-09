@@ -232,8 +232,12 @@ std::uint32_t RootGlobal(const Pe& pe) {
     return 0;
 }
 
-// A fourth clock read: mov rax,[clock] ; add rax,20000 (a connection's ping deadline, 20 s ahead).
-constexpr int kClockReadD[] = { 0x48, 0x8B, 0x05, -1, -1, -1, -1, 0x48, 0x05, 0x20, 0x4E, 0x00, 0x00 };
+// A fourth clock read: mov rax,[clock] then add rax,20000 (a connection's ping deadline, 20 s
+// ahead), at two sites: the pair sits together in one routine (exe+0xE9CD1 on 950-1) and an epilogue
+// reload splits it in the connection constructor (exe+0xE9AFB), so the add is the anchor and the
+// nearest mov rax,[rip+disp] before it is the read.
+constexpr int kClockAdd[] = { 0x48, 0x05, 0x20, 0x4E, 0x00, 0x00 };
+constexpr std::uint32_t kClockAddBack = 24;   // bytes before the add the mov is looked for in
 
 // Where the engine clock sits after the root global, from the routines that read it; 0 when none
 // is found or two disagree (`why` says which).
@@ -254,7 +258,21 @@ std::uint32_t EngineClock(const Pe& pe, std::string& why) {
         return true;
     };
     for (const auto& r : rtx::sig::kClockReads) if (!take(r.pat, r.len)) return 0;
-    if (!take(kClockReadD, sizeof(kClockReadD) / sizeof(int))) return 0;
+    for (std::uint32_t at : ScanCode(pe, kClockAdd, sizeof(kClockAdd) / sizeof(int), 8)) {
+        if (at < kClockAddBack) continue;
+        const std::uint8_t* p = At(pe, at - kClockAddBack, kClockAddBack);
+        if (!p) continue;
+        for (int i = (int)kClockAddBack - 7; i >= 0; --i) {
+            if (p[i] != 0x48 || p[i + 1] != 0x8B || p[i + 2] != 0x05) continue;
+            std::int32_t rel; std::memcpy(&rel, p + i + 3, 4);
+            const std::int64_t d = (std::int64_t)(at - kClockAddBack) + i + 7 + rel - g;
+            if (d > 0 && d < rtx::sig::kClockMax) {
+                if (off && off != (std::uint32_t)d) { why = "the clock reads name two places"; return 0; }
+                off = (std::uint32_t)d;
+            }
+            break;
+        }
+    }
     if (!off) why = "no clock read of a known shape";
     return off;
 }

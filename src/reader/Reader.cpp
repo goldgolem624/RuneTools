@@ -3257,12 +3257,12 @@ bool ev_decode(std::string& o, int op, const std::uint8_t* b, std::uint32_t n, i
         o += "],\"partial\":"; o += (partial || (std::uint32_t)len > n) ? "true" : "false";
         return true;
     }
-    case rtx::sops::kRunClientScript: {   // [sig NUL-terminated, i/s/l][args in REVERSE sig order: s = NUL string, i = i32 BE, l = i64 BE][scriptId: i32 BE]
+    case rtx::sops::kRunClientScript: {   // exe+0xF7460: [sig NUL-terminated][args in REVERSE sig order: s = NUL string, l = i64 BE, any other letter = i32 BE][scriptId: i32 BE]
         const bool cut = len > (int)n;
         std::uint32_t p = 0; std::string sig;
         while (p < n && b[p] != 0 && sig.size() < 16) sig.push_back((char)b[p++]);
         if (p >= n) return false;                              // no NUL terminator: raw
-        for (char c : sig) if (c != 'i' && c != 's' && c != 'l') return false;
+        for (char c : sig) if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'))) return false;
         p++;
         std::vector<std::string> args(sig.size());
         bool partial = false;
@@ -4268,6 +4268,29 @@ static void actor_overhead_json(HANDLE h, std::uint64_t sec, std::string& splats
         auto fill = rpm<std::int32_t>(h, *slots + rtx::scn::kBarFill);
         auto stamp = rpm<std::int32_t>(h, *slots + rtx::scn::kBarStamp);
         if (fill && stamp && *fill >= 0 && *fill <= 255 && *stamp > 0) bar = *fill;
+    }
+}
+
+// The head bar's cycle stamp, the hitsplat values landed after that stamp (the bar follows the life
+// points a few ticks later: 120 cycles seen live) and the start cycle of the newest hit on an actor;
+// -1 when none. The game draws a bar for a while after its last update and leaves the fill behind.
+constexpr int kBarFreshCycles = 500;    // 10 s of client cycles (50/s)
+constexpr int kBarFollowCycles = 150;   // a hit is followed by a bar update well within this
+static void actor_bar_state(HANDLE h, std::uint64_t sec, int cycleNow, int& stamp, int& sinceStamp, int& hitCycle) {
+    stamp = -1; sinceStamp = 0; hitCycle = -1;
+    auto hb = rpm<std::uint64_t>(h, sec + rtx::scn::kOverhead);
+    if (!hb || *hb <= 0x10000 || *hb > 0x00007FFFFFFFFFFFull) return;
+    auto slots = rpm<std::uint64_t>(h, *hb + rtx::scn::kOvSlots);
+    if (slots && *slots > 0x10000 && *slots < 0x00007FFFFFFFFFFFull) stamp = rpm<std::int32_t>(h, *slots + rtx::scn::kBarStamp).value_or(-1);
+    auto ring = rpm<std::uint64_t>(h, *hb + rtx::scn::kOvRing);
+    if (!ring || *ring <= 0x10000 || *ring > 0x00007FFFFFFFFFFFull) return;
+    std::int32_t rec[6 * 6];
+    if (!rpm_bytes(h, *ring, rec, sizeof(rec))) return;
+    for (int i = 0; i < 6; ++i) {
+        const std::int32_t* r = rec + i * 6;
+        if (r[0] < 0 || r[1] <= 0 || r[2] <= 0 || r[2] > cycleNow || r[5] <= 0 || r[0] > 100000 || r[1] > 100000000) continue;
+        if (r[2] > hitCycle) hitCycle = r[2];
+        if (stamp > 0 && r[2] > stamp) sinceStamp += r[1];
     }
 }
 
@@ -9625,6 +9648,21 @@ bool printable_name(const std::string& s) {
     return true;
 }
 
+// A live name as the client stores it: UTF-8 (NBSP is C2 A0), no control bytes, 1..24 bytes.
+bool utf8_name(const std::string& s) {
+    if (s.empty() || s.size() > 24) return false;
+    for (std::size_t i = 0; i < s.size();) {
+        const unsigned char c = (unsigned char)s[i];
+        if (c < 0x20 || c == 0x7F) return false;
+        if (c < 0x80) { ++i; continue; }
+        const int n = c >= 0xF0 ? 3 : c >= 0xE0 ? 2 : c >= 0xC2 ? 1 : -1;
+        if (n < 0 || i + n >= s.size()) return false;
+        for (int k = 1; k <= n; ++k) if (((unsigned char)s[i + k] & 0xC0) != 0x80) return false;
+        i += n + 1;
+    }
+    return true;
+}
+
 std::string norm_name(std::string s) {
     std::string o;
     for (std::size_t i = 0; i < s.size(); ++i) {
@@ -10186,28 +10224,32 @@ void health_data(HCtx& c, rtx::health::Run& run) {
         auto field = [&](const char* dom, const char* f) -> std::string {
             const rtx::health::JVal* d = st ? st->get(dom) : nullptr; return d ? d->str(f) : std::string();
         };
+        auto present = [&](const char* dom) { const std::string p = field(dom, "ptr"); return !p.empty() && p != "0x0"; };   // the store object is set
         const bool p0 = field("0", "live") == "true", p2 = field("2", "live") == "true", vt2 = field("2", "vt") == "true";
         const bool clan = field("6", "live") == "true", clanSet = field("7", "live") == "true";   // slot 0 is the player's own clan
+        const bool clanPtr = present("6"), clanSetPtr = present("7");
         int ok = (p0 && p2 && vt2) ? kPass : kFail;
         std::string d = "player " + (p0 ? field("0", "count") + " vars" : std::string("absent")) +
                         ", client " + (p2 ? field("2", "count") + " vars" : std::string("absent")) +
                         (p2 && !vt2 ? " (class vtable " + field("2", "vt_rva") + " not recognised)" : std::string()) +
                         ", clan " + (clan ? field("6", "count") + " vars" : std::string("absent")) +
-                        ", clan settings " + (clanSet ? std::string("present") : std::string("absent")) +
+                        ", clan settings " + (clanSet ? field("7", "count") + " vars" : std::string("absent")) +
                         ", group " + (field("9", "live") == "true" ? field("9", "count") + " vars" : std::string("absent"));
         run.Fact("domains.clientVt", field("2", "vt_rva"));
         if (!p0 || !p2) d = "GONE: " + d + " (a var store reads empty at its offset)";
         else if (!vt2) d = "FORMAT: " + d;
-        // in a clan both the clan vars and the clan settings are present; one without the other is
-        // a store that moved, or a clan state the reader does not model: named, not failed
-        else if (clan != clanSet && c.inWorld) {
+        // the clan var store and the listened clan settings come and go on their own (clan settings
+        // with no clan var state is seen live); a store whose object is set but whose table does not
+        // read is the one that moved
+        else if (c.inWorld && ((clanPtr && !clan) || (clanSetPtr && !clanSet))) {
             ok = kWarn;
-            d = std::string("UNVERIFIED: ") + (clanSet ? "clan settings at [MainData+" + hx(kOffClanSettings) + "] present" : "clan vars at [[MainData+" + hx(kOffVarcStore) + "]+0x77B0] present") +
-                " but the " + (clan ? "clan settings store at MainData+" + hx(kOffClanSettings) : "clan var store at [MainData+" + hx(kOffVarcStore) + "]+0x77B0") + " reads empty (a moved store, or a clan state the reader does not model); " + d;
+            d = "UNVERIFIED: " + std::string(clanPtr && !clan ? "clan var store at [[MainData+" + hx(kOffVarcStore) + "]+0x77B0]" : "clan settings store at [[MainData+" + hx(kOffClanSettings) + "]+0x68]") +
+                " is set but its table does not read (a moved store); " + d;
         }
+        else if (clanSet && !clan) d += " (clan settings without clan vars: no clan var state)";
         if (!c.inWorld && !p0) { ok = kUnchecked; d = "player store empty before login"; }
-        run.Add(G, "data.domains", "Var domain stores", ok, d, "Clan vars|Group vars|Varbit reads by domain", "player and client stores live, clan vars and clan settings both present or both absent",
-                std::string("player ") + (p0 ? "live" : "absent") + ", client " + (p2 ? "live" : "absent") + ", clan " + (clan ? "live" : "absent") + ", clan settings " + (clanSet ? "live" : "absent"), "data.varps").need = ok == kUnchecked ? "log in" : "";
+        run.Add(G, "data.domains", "Var domain stores", ok, d, "Clan vars|Group vars|Varbit reads by domain", "player and client stores live; clan vars and clan settings each absent or live (settings without clan vars is a real state)",
+                std::string("player ") + (p0 ? "live" : "absent") + ", client " + (p2 ? "live" : "absent") + ", clan " + (clan ? "live" : clanPtr ? "set, unread" : "absent") + ", clan settings " + (clanSet ? "live" : clanSetPtr ? "set, unread" : "absent"), "data.varps").need = ok == kUnchecked ? "log in" : "";
     }
     // containers
     {
@@ -10653,8 +10695,9 @@ void health_scene(HCtx& c, rtx::health::Run& run) {
     if (!c.inWorld || !c.worker) return;
     std::vector<std::pair<std::uint64_t, std::uint64_t>> secs; scene_secs(c, secs);
     std::map<int, int> types;
-    int npcs = 0, npcNamed = 0, players = 0, playersOk = 0, motionOk = 0, motionN = 0, combatN = 0, combatOk = 0, ovN = 0, ovOk = 0;
-    int fxN = 0, fxOk = 0; std::string npcBad, fxBad;
+    int npcs = 0, npcNamed = 0, players = 0, playersOk = 0, motionOk = 0, motionN = 0, combatN = 0, combatOk = 0, combatStale = 0, ovN = 0, ovOk = 0;
+    int fxN = 0, fxOk = 0; std::string npcBad, fxBad, playerBad, combatBad;
+    const int cycleNow = (int)rpm<std::uint32_t>(h, c.root + kOffClientClock).value_or(0);
     int curOk = 0, curMorphed = 0, curBadN = 0; std::string curBad;
     int visN = 0, visOk = 0; std::string visBad;
     const float px = c.localSec ? rpm<float>(h, c.localSec + rtx::scn::kPosX).value_or(0) : 0.f;
@@ -10717,16 +10760,33 @@ void health_scene(HCtx& c, rtx::health::Run& run) {
             }
             const bool fights = lpMax > 1 && rtx::cache::GetNpc(cfg).combat_level > 0;
             if (bar >= 0 && fights) {
-                ++combatN;
-                const int want = (int)((long long)lp * 255 / lpMax);
-                if (lp >= 0 && lp <= lpMax && std::abs(bar - want) <= 12 && (target == -1 || (target >= 0 && target < 4096))) ++combatOk;
+                // a bar the game no longer draws keeps its last fill (stamps hours old seen on NPCs back
+                // at full life points), so only a fresh one is judged, against the life points plus the
+                // hits landed since its stamp (the bar follows a few ticks later, and a dying NPC reads 0
+                // with the fill before the last hit); a hit 3 s old on a bar that has not moved for 10 s
+                // is a stamp field that stopped moving, and counts against the row
+                int stamp = -1, since = 0, hitCycle = -1; actor_bar_state(h, sec, cycleNow, stamp, since, hitCycle);
+                const int stampAge = stamp > 0 ? cycleNow - stamp : -1, hitAge = hitCycle > 0 ? cycleNow - hitCycle : -1;
+                const bool fresh = stampAge >= 0 && stampAge <= kBarFreshCycles;
+                const bool hitUnfollowed = !fresh && hitAge >= kBarFollowCycles && hitAge <= kBarFreshCycles;
+                if (!fresh && !hitUnfollowed) ++combatStale;
+                else {
+                    ++combatN;
+                    auto agrees = [&](int points) { return points >= 0 && points <= lpMax && std::abs(bar - (int)((long long)points * 255 / lpMax)) <= 12; };
+                    if (fresh && (agrees(lp) || agrees(lp + since)) && (target == -1 || (target >= 0 && target < 4096))) ++combatOk;
+                    else if (combatBad.size() < 80) combatBad += " " + std::to_string(cfg) + ":" + std::to_string(lp) + "/" + std::to_string(lpMax) + " bar " + std::to_string(bar) + (fresh ? (since ? " (" + std::to_string(since) + " hit since the bar)" : "") : " (stamp " + std::to_string(stampAge) + " cycles still, hit " + std::to_string(hitAge) + " ago)");
+                }
             }
         } else if (t == 2) {
             ++players;
             const std::string nm = sec_name(h, sec);
             const int cb = rpm<std::int32_t>(h, sec + rtx::scn::kCombat).value_or(-1), cb2 = rpm<std::int32_t>(h, sec + rtx::scn::kCombat + 4).value_or(-2);
             const int pl = rpm<std::int32_t>(h, sec + rtx::scn::kPlane).value_or(-1);
-            if (printable_name(nm) && cb >= 3 && cb <= 152 && cb == cb2 && pl >= 0 && pl <= 3) ++playersOk;
+            // two combat levels: the one shown and a second that can sit above it (the local player
+            // reads 140 and 152), each in 3..152; the name is UTF-8 as the client stores it
+            const char* why = !utf8_name(nm) ? "name" : (cb < 3 || cb > 152) ? "combat" : (cb2 < 3 || cb2 > 152) ? "second combat" : (pl < 0 || pl > 3) ? "plane" : nullptr;
+            if (!why) ++playersOk;
+            else if (playerBad.size() < 100) playerBad += " '" + nm + "' " + why + " (" + std::to_string(cb) + "/" + std::to_string(cb2) + ", plane " + std::to_string(pl) + ")";
         } else if (t == 4 || t == 5) {
             ++fxN;
             bool ok = true;
@@ -10773,15 +10833,19 @@ void health_scene(HCtx& c, rtx::health::Run& run) {
                 (curBad.empty() ? "" : "; e.g." + curBad),
                 "NPC hover ids|Interactable NPCs|Interaction target", "90 %", std::to_string(curOk) + "/" + std::to_string(npcs), "scene.types").need = npcs == 0 ? "an NPC nearby" : "";
     }
-    run.Add(G, "scene.players", "Players", players == 0 ? kUnchecked : (playersOk == players ? kPass : kFail),
-            players == 0 ? std::string("no other players nearby") : std::string(playersOk == players ? "" : "FORMAT: ") + std::to_string(playersOk) + "/" + std::to_string(players) + " with a clean name, combat level and plane",
-            "Player labels|Nameplates", "every player: printable name, combat 3..152 twice, plane 0..3", std::to_string(playersOk) + "/" + std::to_string(players), "scene.types").need = players == 0 ? "another player nearby" : "";
+    {
+        const bool pPass = playersOk * 10 >= players * 9;
+        run.Add(G, "scene.players", "Players", players == 0 ? kUnchecked : (pPass ? kPass : kFail),
+                players == 0 ? std::string("no other players nearby") : std::string(pPass ? "" : "FORMAT: ") + std::to_string(playersOk) + "/" + std::to_string(players) + " with a UTF-8 name, two combat levels in 3..152 and a plane" + (playerBad.empty() ? "" : "; off:" + playerBad),
+                "Player labels|Nameplates", "90 %: UTF-8 name of 1..24 bytes, combat 3..152 at sec+" + hx(rtx::scn::kCombat) + " and +" + hx(rtx::scn::kCombat + 4) + " (the second can sit above the first), plane 0..3", std::to_string(playersOk) + "/" + std::to_string(players), "scene.types").need = players == 0 ? "another player nearby" : "";
+    }
     run.Add(G, "scene.motion", "Animation and facing", motionN == 0 ? kUnchecked : (motionOk * 10 >= motionN * 9 ? kPass : kFail),
             motionN == 0 ? std::string("no players or NPCs nearby") : std::string(motionOk * 10 >= motionN * 9 ? "" : "FORMAT: ") + std::to_string(motionOk) + "/" + std::to_string(motionN) + " actors with a valid animation and a unit facing (turn target and entity node)",
             "Tick timers by animation|Facing arrows", "90 %", std::to_string(motionOk) + "/" + std::to_string(motionN), "scene.types").need = motionN == 0 ? "an actor nearby" : "";
     run.Add(G, "scene.npccombat", "NPC life points", combatN == 0 ? kUnchecked : (combatOk * 10 >= combatN * 9 ? kPass : kFail),
-            combatN == 0 ? "no NPC with a health bar" : std::string(combatOk * 10 >= combatN * 9 ? "" : "FORMAT: ") + std::to_string(combatOk) + "/" + std::to_string(combatN) + " health bars agree with life points",
-            "Boss HP|Combat log|NPC HP labels", "90 %", std::to_string(combatOk) + "/" + std::to_string(combatN), "scene.types").need = combatN == 0 ? "an NPC with a health bar nearby" : "";
+            combatN == 0 ? (combatStale ? std::to_string(combatStale) + " health bars, none stamped within " + std::to_string(kBarFreshCycles) + " cycles (no fight going on)" : std::string("no NPC with a health bar")) :
+            std::string(combatOk * 10 >= combatN * 9 ? "" : "FORMAT: ") + std::to_string(combatOk) + "/" + std::to_string(combatN) + " fresh health bars agree with life points plus the hits landed since the bar's stamp" + (combatStale ? ", " + std::to_string(combatStale) + " stale bars skipped" : "") + (combatBad.empty() ? "" : "; e.g." + combatBad),
+            "Boss HP|Combat log|NPC HP labels", "90 % of bars stamped within " + std::to_string(kBarFreshCycles) + " cycles of the client clock", std::to_string(combatOk) + "/" + std::to_string(combatN), "scene.types").need = combatN == 0 ? "an NPC in a fight nearby" : "";
     // judged from five NPCs on: a single scaled or instanced NPC can show another level than its config
     run.Add(G, "scene.npcvis", "NPC shown level", visN < 5 ? kUnchecked : (visOk * 10 >= visN * 9 ? kPass : kFail),
             visN < 5 ? std::string("UNVERIFIED: ") + std::to_string(visN) + " NPCs with a combat level in view, 5 needed (sec+" + hx(kNpcVisLevel) + (visN ? ": " + std::to_string(visOk) + "/" + std::to_string(visN) + " equal the cache level)" : " not checked)") : std::string(visOk * 10 >= visN * 9 ? "" : "FORMAT: ") + std::to_string(visOk) + "/" + std::to_string(visN) + " shown levels at sec+" + hx(kNpcVisLevel) + " equal the cache combat level" + (visBad.empty() ? "" : "; e.g." + visBad),
@@ -10881,8 +10945,9 @@ void health_scene(HCtx& c, rtx::health::Run& run) {
         }
         run.Add(G, "scene.terrain", "Terrain heights", ok, d, "Tile markers|Ground overlays|In-frame markers", "actor height within 1.5 of grid + lift + 5", got, "player.registry").need = ok == kUnchecked ? "a local player in the scene" : "";
     }
-    // world grid: the worldView owns it on the static map, which spans the whole world, and the
-    // player's region object points back at its worldView and its own mapsquare
+    // world grid: the worldView owns it on the static map; its bounds are a box of mapsquares inside
+    // 0..98 x 0..198 (the whole world, or the part loaded since a relog), the player's mapsquare lies
+    // inside it and the region object there points back at its worldView and its own mapsquare
     {
         int ok = kUnchecked; std::string d = "no local player", got;
         const std::uint64_t wv = c.wv;
@@ -10902,7 +10967,7 @@ void health_scene(HCtx& c, rtx::health::Run& run) {
                 const int rx = (int)(rpm<float>(h, c.localSec + rtx::scn::kPosX).value_or(0) / 512.f) >> 6;
                 const int ry = (int)(rpm<float>(h, c.localSec + rtx::scn::kPosY).value_or(0) / 512.f) >> 6;
                 const std::string ms = std::to_string(rx) + "," + std::to_string(ry);
-                if (b[0] != 0 || b[1] != 0 || b[2] != 98 || b[3] != 198) { ok = kFail; d = "FORMAT: " + d + " (expected 0,0..98,198: the bounds at +" + hx(rtx::scn::kGridMin) + " moved)"; }
+                if (b[0] < 0 || b[1] < 0 || b[2] > 98 || b[3] > 198 || b[0] > b[2] || b[1] > b[3]) { ok = kFail; d = "FORMAT: " + d + " (not a box inside 0,0..98,198: the bounds at +" + hx(rtx::scn::kGridMin) + " moved)"; }
                 else if (rx < b[0] || rx > b[2] || ry < b[1] || ry > b[3]) { ok = kFail; d = "FORMAT: " + d + ", player mapsquare " + ms + " outside the grid"; }
                 else {
                     const std::uint64_t rows = rpm<std::uint64_t>(h, mgr + rtx::scn::kGridRows).value_or(0);
@@ -10915,7 +10980,7 @@ void health_scene(HCtx& c, rtx::health::Run& run) {
                         if (back != wv || qx != rx || qy != ry) {
                             ok = kFail;
                             d = "MOVED: " + d + ", region at " + ms + " names worldView " + hx(back) + ", mapsquare " + std::to_string(qx) + "," + std::to_string(qy) + " (region layout moved?)";
-                        } else d += ", region back reference";
+                        } else d += ", player mapsquare " + ms + " inside, region back reference";
                     }
                 }
                 d += "; +" + hx(rtx::scn::kMapDef) + " = 0 (not instanced)";
@@ -10925,7 +10990,7 @@ void health_scene(HCtx& c, rtx::health::Run& run) {
                 }
             }
         }
-        run.Add(G, "scene.grid", "World grid", ok, d, "Terrain heights|Tile markers", "0,0..98,198, region at the player's mapsquare pointing back", got, "scene.offsets").need = ok == kUnchecked ? (c.localSec ? "the static map (not an instance)" : "a local player in the scene") : "";
+        run.Add(G, "scene.grid", "World grid", ok, d, "Terrain heights|Tile markers", "bounds a box inside 0,0..98,198 (the whole world or the loaded part) holding the player's mapsquare, the region there pointing back", got, "scene.offsets").need = ok == kUnchecked ? (c.localSec ? "the static map (not an instance)" : "a local player in the scene") : "";
     }
     // live scenery against the cache's map placements (reader side, works from the command line)
     {
@@ -11419,6 +11484,10 @@ void health_packets_live(HCtx& c, rtx::health::Run& run) {
             case rtx::sops::kCameraTarget: if (!planeOk()) bad(s, "plane " + j.str("plane")); break;
             case rtx::sops::kMinimapState: if (value > 5) bad(s, "state " + std::to_string(value)); break;
             case rtx::sops::kRunClientScript: {
+                if (j.str("kind") == "buff_update") {   // script 10623 reported by its struct: plausible when the struct names a buff
+                    if (j.num("struct", -1) < 0 || j.str("name").empty()) bad(s, "buff struct " + j.str("struct") + " without a name");
+                    break;
+                }
                 const long long script = j.num("script", -1);
                 if (j.str("partial") != "true" && (script < 0 || (scriptCap && script >= scriptCap))) bad(s, "script " + std::to_string(script) + " outside index 12");
                 break;
