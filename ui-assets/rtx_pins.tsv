@@ -1,6 +1,6 @@
 #pins	2
 #made	2026-10-09	
-#kinds	archive=2;build=2;ceiling=11;dbtable=20;disp=2;enum=70;iface=68;index=13;inv=16;item=403;live=13;loc=639;model=3;npc=827;op=35;ophist=358;param=741;rva=3;script=663;sig=27;spotanim=6;sprite=183;struct=702;varbit=1735;varc=1195;varp=371
+#kinds	archive=2;build=2;ceiling=11;dbtable=20;disp=2;enum=71;iface=68;index=13;inv=16;item=403;live=13;loc=639;model=3;npc=827;op=53;ophist=358;param=741;rva=3;script=663;sig=27;spotanim=6;sprite=183;struct=702;varbit=1735;varc=1195;varp=371
 build	6a9986f8	flavour=vulkan;version=950.1.0.0;size=0x1740000;validated=2026-10-09	
 sig	main-anchor	6a9986f8=1@0x1B090;6a998810=1@0x1B300	Everything that reads the game
 sig	tick-anchor	6a9986f8=1@0x10AEE0;6a998810=1@0x10AE40	Game tick, tick timers
@@ -37,16 +37,23 @@ rva	vartableVt	6a998810=0xB609C0;6a9986f8=0xC6D818	Var domain stores
 rva	zoneSub	6a9986f8=0xD96B30	Zone events
 op	area_sound.0x5F	6a9986f8=0x5F/len=11/h=f553cf80	Packet decoders
 op	area_sound.0xA4	6a9986f8=0xA4/len=10/h=542449c7	Packet decoders
+op	camera_target.0x35	6a9986f8=0x35/len=4/h=69e211dd	Packet decoders
+op	container_full.0x9	6a9986f8=0x9/len=-2/h=b111b85c	Packet decoders
+op	container_reset.0x14	6a9986f8=0x14/len=3/h=3a8fe8f1	Packet decoders
 op	container_update.0x32	6a9986f8=0x32/len=-2/h=bf2d95a4	Packet decoders
+op	cutscene.0xCD	6a9986f8=0xCD/len=2/h=fc4c2a38	Packet decoders
+op	friends_loaded.0x5D	6a9986f8=0x5D/len=0/h=2d873da7	Packet decoders
 op	ge_offer.0x54	6a9986f8=0x54/len=36/h=7ecdf2ce	Packet decoders
 op	hint_arrow.0x62	6a9986f8=0x62/len=14/h=669e4cfd	Packet decoders
 op	loc_add.0x4B	6a9986f8=0x4B/len=7/h=8ffda69d	Packet decoders
 op	loc_del.0x1A	6a9986f8=0x1A/len=2/h=c7d22e22	Packet decoders
 op	message_game.0x21	6a9986f8=0x21/len=-1/h=97aa1f49	Packet decoders
+op	minimap_state.0x20	6a9986f8=0x20/len=1/h=8d65db5c	Packet decoders
 op	obj_add.0x33	6a9986f8=0x33/len=6/h=7824c12d	Packet decoders
 op	obj_count.0x46	6a9986f8=0x46/len=8/h=f16f58b6	Packet decoders
 op	obj_del.0x6D	6a9986f8=0x6D/len=4/h=e1ff3207	Packet decoders
 op	ping_echo.0xBE	6a9986f8=0xBE/len=8/h=ea3d1ef5	Packet decoders
+op	private_filter.0x28	6a9986f8=0x28/len=1/h=154458bc	Packet decoders
 op	projectile.0x72	6a9986f8=0x72/len=20/h=ee998293	Packet decoders
 op	projectile.0x9A	6a9986f8=0x9A/len=21/h=15a44fcf	Packet decoders
 op	projectile.0xA9	6a9986f8=0xA9/len=28/h=cbe38d6f	Packet decoders
@@ -61,14 +68,25 @@ op	spotanim.0xBC	6a9986f8=0xBC/len=14/h=9632877a	Packet decoders
 op	spotanim.0xE	6a9986f8=0xE/len=11/h=c128599b	Packet decoders
 op	spotanim_actor.0x75	6a9986f8=0x75/len=12/h=88aee957	Packet decoders
 op	spotanim_actor.0xC5	6a9986f8=0xC5/len=15/h=6318656c	Packet decoders
+op	system_update.0x1F	6a9986f8=0x1F/len=2/h=27ccffe1	Packet decoders
+op	tracker_clear.0xC1	6a9986f8=0xC1/len=3/h=05b1c44e	Packet decoders
+op	tracker_column.0x9D	6a9986f8=0x9D/len=3/h=6ba4ee01	Packet decoders
+op	tracker_group.0xB0	6a9986f8=0xB0/len=5/h=d4b4ef61	Packet decoders
+op	tracker_remove.0xC2	6a9986f8=0xC2/len=1/h=df815c49	Packet decoders
+op	tracker_values.0x82	6a9986f8=0x82/len=-2/h=752ef30f	Packet decoders
+op	varbit_byte.0x1C	6a9986f8=0x1C/len=3/h=29ad9047	Packet decoders
+op	varbit_int.0x52	6a9986f8=0x52/len=6/h=2917bdaf	Packet decoders
 op	varbit_set.0x74	6a9986f8=0x74/len=-1/h=f3bb8930	Packet decoders
 op	varc_byte.0x7E	6a9986f8=0x7E/len=3/h=d4486c63	Packet decoders
 op	varc_int.0x77	6a9986f8=0x77/len=6/h=513c4390	Packet decoders
+op	varc_long.0xC8	6a9986f8=0xC8/len=10/h=7f34154f	Packet decoders
 op	varp_byte.0x4F	6a9986f8=0x4F/len=3/h=88264ef5	Packet decoders
 op	varp_int.0x4	6a9986f8=0x4/len=6/h=57db7bbf	Packet decoders
 op	varp_long.0xA5	6a9986f8=0xA5/len=10/h=bf3340e2	Packet decoders
 op	zone_base.0x60	6a9986f8=0x60/len=3/h=69f82b83	Packet decoders
 op	zone_clear.0x2	6a9986f8=0x2/len=3/h=3404c396	Packet decoders
+op	zone_sub14.0x90	6a9986f8=0x90/len=-1/h=9f4d2d7a	Packet decoders
+op	zone_sub3.0xB5	6a9986f8=0xB5/len=5/h=8f309760	Packet decoders
 op	zone_update.0x31	6a9986f8=0x31/len=-2/h=dab63d05	Packet decoders
 ophist	achievements/1	n=4506	Achievements
 ophist	achievements/11	n=1285	Achievements
@@ -7976,6 +7994,7 @@ sprite	24204	w=80;h=80;f=1;official=AIF_ELF_CITY_CLAN_ICONS_0	D&D Tracker
 sprite	24210	w=80;h=80;f=1;official=AIF_ELF_CITY_CLAN_ICONS_6	D&D Tracker
 sprite	24207	w=80;h=80;f=1;official=AIF_ELF_CITY_CLAN_ICONS_3	D&D Tracker
 sprite	24208	w=80;h=80;f=1;official=AIF_ELF_CITY_CLAN_ICONS_4	D&D Tracker
+enum	10039	kt=0;vt=36;n=15;official=TELEMETRY_ALL_STATISTICS	XP
 varp	37	type=0;official=MUSICMULTI_1	Sounds
 varp	38	type=0;official=MUSICMULTI_2	Sounds
 varp	39	type=0;official=MUSICMULTI_3	Sounds
