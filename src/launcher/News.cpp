@@ -25,7 +25,8 @@ namespace {
 constexpr wchar_t kNewsPath[]     = L"/api/news";
 constexpr int     kRefreshMs      = 30 * 60'000;        // the feed moves a few times a day
 constexpr std::size_t kDocBytes   = 512u * 1024;        // the JSON document (URLs only)
-constexpr std::size_t kCoverBytes = 3u * 1024 * 1024;   // one cover PNG from Jagex's CDN
+constexpr std::size_t kCoverBytes = 24u * 1024 * 1024;  // one cover from Jagex's CDN: 4K PNGs run to about 9 MB, a 4K frame is 24 MB raw
+constexpr std::size_t kRawInline  = 2u * 1024 * 1024;   // a cover that cannot be resampled is inlined as-is only up to this size
 constexpr int     kCoversInlined  = 7;                  // every item the server sends (hero + two rows)
 constexpr int     kCoverThreads   = 4;                  // CDN fetches in flight at once
 constexpr UINT    kHeroWidth       = 1200;               // the source width; the hero spans the page
@@ -201,6 +202,7 @@ std::string fetch_cover_bytes(const Cover& c, std::string& note) {
     if (type != "image/png" && type != "image/jpeg" && type != "image/webp" && type != "image/gif") { note = "type " + type; return {}; }
     std::string jpg = resample_cover(r.body, c.width);
     if (jpg.empty()) note = "resample failed, raw " + type + " " + std::to_string(r.body.size()) + " bytes";
+    if (jpg.empty() && r.body.size() > kRawInline) { note += ", too large to inline"; return {}; }
     return jpg.empty() ? r.body : jpg;   // the raw image still renders; it is just larger
 }
 
