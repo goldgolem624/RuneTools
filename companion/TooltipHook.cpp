@@ -77,7 +77,7 @@ bool ObjectReads(const std::uint8_t* obj) {
     if (!InImage(desc)) bad |= 4;
     std::int32_t ref, slot; std::uint32_t comp;
     std::memcpy(&ref, obj + kRef, 4); std::memcpy(&slot, obj + kSlot, 4); std::memcpy(&comp, obj + kComp, 4);
-    if (ref < -1 || ref > 0xFFFF) bad |= 8;
+    if (ref < -1 || ref >= (1 << 22)) bad |= 8;   // the hovered id: loc ids pass 0x20000, NPC indexes and obj ids are smaller
     if (slot < -1 || slot > 100000) bad |= 16;
     if ((comp >> 16) > 4096) bad |= 32;
     g_hoverSeen.fetch_add(1, std::memory_order_relaxed);
@@ -233,7 +233,7 @@ bool TakeLog(char* out, std::size_t cap) {
     int state; char detail[300]; char got[32];
     if (!g_installed) { state = 3; std::snprintf(detail, sizeof(detail), "GONE: the hover entry op stub was not recognised; tooltip text off"); }
     else if (seen < 5) { state = 0; std::snprintf(detail, sizeof(detail), "%u hover objects seen so far", seen); }
-    else if (bad * 20 > seen) {
+    else if (seen >= 10 && bad * 2 > seen) {   // a moved layout fails nearly every object; a few odd ones are only skipped
         state = 2;
         const unsigned why = g_hoverWhy.load(std::memory_order_relaxed);
         std::snprintf(detail, sizeof(detail), "FORMAT: hover object 0x%zx: %u of %u objects failed (%s%s%s%s%s%s); tooltip text off", kObjSize, bad, seen,
@@ -242,7 +242,8 @@ bool TakeLog(char* out, std::size_t cap) {
         g_layoutOk.store(false, std::memory_order_relaxed);
     } else {
         state = 1;
-        std::snprintf(detail, sizeof(detail), "%u hover objects: three strings readable, ref, slot and interface id at +0x48..+0x50 in range%s", seen, bad ? " (a few mid-change)" : "");
+        std::snprintf(detail, sizeof(detail), "%u hover objects: target and verb strings, action descriptor, ref, slot and interface id in range%s", seen,
+                      bad ? " (a few skipped)" : "");
         g_layoutOk.store(true, std::memory_order_relaxed);
     }
     if (state == s_state) return false;
