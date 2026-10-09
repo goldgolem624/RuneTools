@@ -114,6 +114,7 @@ const char* const kBootFiles[] = {
 };
 const char* const kFiles[] = {
     // quest_guides.js (~1.3MB) is not spliced; it is loaded via bridge().uiAsset() on demand.
+    // quest_tracks.js (~420KB) is not spliced either; panel_questtrack.js loads it the same way.
     "rtx_vars.js",          // shared var-id table (VB/VP), before every panel
     "panel_stopwatch.js",
     "panel_console.js",        // Developer: the client-wide console (rtxConsole)
@@ -147,6 +148,7 @@ const char* const kFiles[] = {
     "panel_murderborder.js", // Murder on the Border quest guide
     "panel_heralds.js",    // Heralds of Crimson quest guide
     "panel_deathplateau.js", // Death Plateau quest guide
+    "panel_questtrack.js", // quest step tracking from data (quest_tracks.js) for quests without a guide panel
     "panel_interfaces.js", // Interfaces inspector
     "panel_invention.js",  // Invention components
     "panel_farming.js",    // Farming patch tracker + tool leprechaun

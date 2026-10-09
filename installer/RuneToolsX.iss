@@ -81,6 +81,7 @@ Source: "{#SrcDir}\client.html";    DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SrcDir}\core\*";         DestDir: "{app}\core"; Flags: ignoreversion
 Source: "{#SrcDir}\rtx_vars.js";    DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SrcDir}\quest_guides.js"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
+Source: "{#SrcDir}\quest_tracks.js"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 ; Split panel modules (spliced inline into client.html at load by inject_panel_scripts)
 Source: "{#SrcDir}\panel_*.js";     DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 Source: "{#SrcDir}\launcher.html";  DestDir: "{app}"; Flags: ignoreversion

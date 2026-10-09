@@ -149,7 +149,7 @@
   // The two Barbarian Grand Hunt guides run inside their own plugins now, so only quests are driven here.
   // Guide panels added after the launcher was built are read from the UI folder on the first tick, so a
   // new quest guide runs without a rebuild; a file the launcher already spliced is skipped.
-  const QG_LATE = [{ file: 'panel_deathplateau.js', fn: 'dpStep' }];
+  const QG_LATE = [{ file: 'panel_deathplateau.js', fn: 'dpStep' }, { file: 'panel_questtrack.js', fn: 'qtStepFor' }];
   let qgLateDone = false;
   async function qgLoadLate() {
     if (qgLateDone || !bridge().uiAsset) return;
@@ -163,7 +163,7 @@
     if (!bridge() || typeof PLUGIN_API === 'undefined' || activeClueId >= 0) return;
     await qgLoadLate();
     let focused = ''; try { focused = qgFocusName(); } catch (e) {}
-    const step = QG_STEP_FNS[focused];
+    const step = QG_STEP_FNS[focused] || ((typeof qtStepFor === 'function') ? qtStepFor(focused) : null);
     if (!step) { if (qgOn) { qgClearAll(); qgOn = false; } return; }
     qgOn = true;
     qgP = await scanPlayerTile();

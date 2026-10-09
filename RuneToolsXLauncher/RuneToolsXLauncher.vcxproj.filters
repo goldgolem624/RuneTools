@@ -261,5 +261,8 @@
     <None Include="..\ui-assets\quest_guides.js">
       <Filter>UI Assets</Filter>
     </None>
+    <None Include="..\ui-assets\quest_tracks.js">
+      <Filter>UI Assets</Filter>
+    </None>
   </ItemGroup>
 </Project>
