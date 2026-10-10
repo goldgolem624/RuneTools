@@ -756,7 +756,7 @@ void Recorder::openLog(long long c, long long wallMs, const std::vector<Ev>& pen
     for (const auto& e : preroll_) if (e.key) have.insert(e.key);
     for (const auto& e : pending) if (e.key) have.insert(e.key);
     std::vector<Ev> snap;
-    const long long sc = c - kPrerollCycles - 1;
+    const long long sc = std::max(0LL, c - kPrerollCycles - 1);   // a log opened within 30 s of the client starting: cycles never go below 0
     auto add = [&](int type, long long at, std::initializer_list<long long> f, int a1 = -1) {
         std::vector<Ev> one; push(one, type, at, f, a1);
         if (!have.count(one[0].key)) snap.push_back(std::move(one[0]));

@@ -137,7 +137,7 @@
     const hm = Object.create(null), dh = (log.dict && log.dict.hitmarks) || {};
     for (const k in dh) hm[k] = dh[k];
     const si = log.dict && log.dict.seqinfo;
-    const c = { n: log.events.length, self, actors, hm, abilities: (log.dict && log.dict.abilities) || {}, buffs: resolveBuffs(log),
+    const c = { n: log.events.length, self, actors, hm, abilities: (log.dict && log.dict.abilities) || {}, alias: abilityAliases(log), buffs: resolveBuffs(log),
                 seqs: (log.dict && log.dict.seqs) || {}, attr: null, mechT: {}, mechN: -1, bossN: {} };
     Object.defineProperty(c, 'mark', { value: MARK });
     c.seqinfo = isObj(si) ? si : null;
@@ -399,6 +399,19 @@
   }
 
   // Ability dictionary helpers.
+  // Two structs of one cooldown family with the same name and icon are one ability to the player (Hurricane is
+  // 14685 and 52787): every such member reads as the family's lowest such struct, so rows never split.
+  function abilityAliases(log) {
+    const ab = (log.dict && log.dict.abilities) || {}, alias = {};
+    for (const k in ab) {
+      const a = ab[k];
+      if (!isObj(a) || !Array.isArray(a.family) || a.family.length < 2) continue;
+      const same = a.family.filter(m => { const x = ab[m]; return isObj(x) && x.name === a.name && x.icon === a.icon; });
+      if (same.length > 1) alias[k] = Math.min.apply(null, same);
+    }
+    return alias;
+  }
+  function aliasOf(log, struct) { const al = ctx(log).alias; return own(al, struct) ? al[struct] : struct; }
   function ability(log, struct) {
     const a = ctx(log).abilities[struct];
     if (a) return a;
@@ -535,6 +548,7 @@
         const s = fromStamp(ev[i][1], seqId);
         if (s) { struct = s; resolved = true; }
       }
+      struct = aliasOf(log, struct);
       const tok = token(ability(log, struct).name);
       casts.push({ i, c: ev[i][1], struct, src: ev[i][4], resolved, seq, seqId, shape: shapeOf(log, struct), style: ability(log, struct).style || '',
                    cap: CAP[tok] || 0, dot: DOT[tok] || 0, used: 0 });
