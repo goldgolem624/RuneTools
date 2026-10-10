@@ -1138,7 +1138,7 @@ void Recorder::Feed(const Tick& t) {
     if (auto ju = vc.find(kVarcJustUsed); ju != vc.end() && ju->second > 0) justUsed_ = ju->second;
 
     // actors: presence, animation, target, life points, stats, bars, hits
-    std::vector<int> myHits; bool hitOnSelf = false; long long actionC = -1;
+    std::vector<int> myHits; bool hitOnSelf = false; long long actionC = -1; int famTarget = -1;
     std::vector<char> seen(actors_.size(), 0);
     std::vector<std::pair<int, bool>> hitThisPass;   // (actor index, by me)
     struct Cue { int kind, id; long long c; int actor; };
@@ -1319,6 +1319,12 @@ void Recorder::Feed(const Tick& t) {
         }
         const int idx = famUid_ >= 0 ? indexOfUid(famUid_) : -1;
         if (idx != famIdx_ && (idx < 0 || actors_[(std::size_t)idx].row.type == "npc")) { famIdx_ = idx; push(evs, kTypeFamiliar, c, { idx, idx >= 0 ? famPouch_ : 0 }); }
+        // your familiar attacking an NPC is your action: its hits are yours, so a fight opens on it and does not
+        // idle out while it fights
+        if (famIdx_ >= 0 && famIdx_ < (int)actors_.size() && actors_[(std::size_t)famIdx_].present) {
+            const int tg = actors_[(std::size_t)famIdx_].target;
+            if (tg >= 0 && tg < (int)actors_.size() && actors_[(std::size_t)tg].row.type == "npc" && actors_[(std::size_t)tg].present) { famTarget = tg; if (c > actionC) actionC = c; }
+        }
     }
 
     // encounter
@@ -1500,8 +1506,8 @@ void Recorder::Feed(const Tick& t) {
     // fight segmentation
     if (!inFight_) {
         const char* by = nullptr; long long startC = c;
-        if (!myHits.empty() || hitOnSelf || castAtTarget) {
-            by = !myHits.empty() ? "hit" : hitOnSelf ? "taken" : "cast";
+        if (!myHits.empty() || hitOnSelf || castAtTarget || famTarget >= 0) {
+            by = !myHits.empty() ? "hit" : hitOnSelf ? "taken" : castAtTarget ? "cast" : "familiar";
             startC = c;
             for (const auto& e : evs) if ((e.type == 0 && (e.a1 == selfIdx_ || std::find(myHits.begin(), myHits.end(), e.a1) != myHits.end())) || e.type == 1) startC = std::min(startC, e.c);
             if (castAtTarget) for (long long x : castCs) startC = std::min(startC, x);   // their rows come a pass later
@@ -1515,11 +1521,13 @@ void Recorder::Feed(const Tick& t) {
                 const int tgt = actors_[(std::size_t)selfIdx_].target;
                 if (tgt >= 0 && tgt < (int)actors_.size() && actors_[(std::size_t)tgt].row.type == "npc") cur_.targets.push_back(tgt);
             }
+            if (famTarget >= 0 && std::find(cur_.targets.begin(), cur_.targets.end(), famTarget) == cur_.targets.end()) cur_.targets.push_back(famTarget);
         }
     }
     if (inFight_) {
         if (actionC > lastActionC_) lastActionC_ = actionC;
         for (int i : myHits) if (std::find(cur_.targets.begin(), cur_.targets.end(), i) == cur_.targets.end()) cur_.targets.push_back(i);
+        if (famTarget >= 0 && std::find(cur_.targets.begin(), cur_.targets.end(), famTarget) == cur_.targets.end()) cur_.targets.push_back(famTarget);
         if (!kcRise.empty()) { cur_.kind = "boss"; cur_.boss = kcRise; ++cur_.kills; }
         route(evs);
         if (selfDied) endFight(c, "death");

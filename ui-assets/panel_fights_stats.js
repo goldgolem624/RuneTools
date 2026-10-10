@@ -1087,7 +1087,7 @@
     const [lo, hi] = win(log, r);
     for (let i = lo; i < hi; i++) {
       const e = ev[i];
-      if (e[0] !== 0 || !inR(e[1], r) || hitRole(log, e) !== 'dealt') continue;
+      if (e[0] !== 0 || !inR(e[1], r) || hitRole(log, e) !== 'dealt' || ctx(log).famEv.has(e)) continue;   // your familiar's hits have no style of yours
       if (at && !passDealt(r, e, at.struct[i])) continue;
       const st = hitStyle(log, e) || 'typeless', v = e[4] > 0 ? e[4] : 0;
       out[st] = (out[st] || 0) + v; total += v;
