@@ -529,7 +529,7 @@
       body.appendChild(flH('Familiar'));
       const fr = fam.rows.map(x => { const tr = el('div', 'fl-tr'); tr.appendChild(flName('n', x.name)); flCells(tr, [[String(x.hits), 'num'], [st.fmtNum(x.max), 'num opt', x.max.toLocaleString()], [st.fmtNum(x.total), 'num', x.total.toLocaleString()]]); return tr; });
       body.appendChild(flTable('', [['Familiar'], ['Hits', 1], ['Max', 1, 1], ['Total', 1]], fr));
-      body.appendChild(el('div', 'fl-note2', 'Not counted in your damage or DPS.'));
+      body.appendChild(el('div', 'fl-note2', 'Counted in your damage and DPS, as the row above.'));
     }
   }
   function flTaken(log, n, body) {

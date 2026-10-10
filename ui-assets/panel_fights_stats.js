@@ -152,6 +152,10 @@
     }
     c.sorted = sorted;
     Object.defineProperty(log, '__cs', { value: c, writable: true, configurable: true, enumerable: false });
+    // your familiar's hits count as yours (it is killing the boss with you): the set of those hit rows
+    const f = followers(log);
+    c.famEv = new Set();
+    for (const [i, a] of f.hitBy) if (f.mine.has(a)) c.famEv.add(ev[i]);
     return c;
   }
   // Drops the per-log cache (after actors, dict or events were replaced in place).
@@ -283,7 +287,7 @@
   // 'heal' = a heal on you, 'npcheal' = an NPC healing itself, 'other' = the other-players set.
   function hitRole(log, ev) {
     const c = ctx(log), h = hmInfo(log, ev[3]);
-    if (h.other) return 'other';
+    if (h.other) return c.famEv && c.famEv.has(ev) ? 'dealt' : 'other';
     const onSelf = ev[2] === c.self;
     if (HEAL_KINDS[h.kind]) return onSelf ? 'heal' : 'npcheal';
     if (ZERO_KINDS[h.kind] || h.kind === 'text' || h.kind === 'unknown' || h.kind === 'other style' || h.kind === 'classic') return onSelf ? 'blocked' : 'none';
@@ -415,6 +419,11 @@
   function ability(log, struct) {
     const a = ctx(log).abilities[struct];
     if (a) return a;
+    if (struct === -3) {   // your familiar's hits, as one row named after it
+      const f = followers(log), names = [];
+      for (const m of f.mine) { const nm = actorName(log, m); if (names.indexOf(nm) < 0) names.push(nm); }
+      return { name: (names.join(', ') || 'Familiar') + ' (familiar)', icon: 0, style: '', kind: 1 };
+    }
     // a Putrid Zombie in the log: its attacks are what poisons the target (34179 = its buff icon)
     if (struct === -2 && ctx(log).actors.some(x => x && x.type === 'npc' && x.id === 30266)) return { name: 'Poison (Putrid Zombie)', icon: 34179, style: '', kind: 1 };
     if (KIND_NAME[struct]) return { name: KIND_NAME[struct], icon: KIND_ICON[struct], style: '', kind: 1 };
@@ -572,7 +581,7 @@
     const dot = new Array(ev.length).fill(false), byT = {};
     for (let i = 0; i < ev.length; i++) {
       const e = ev[i];
-      if (e[0] === 0 && hitRole(log, e) === 'dealt' && KIND_ROW[hmInfo(log, e[3]).kind] == null) (byT[e[2]] = byT[e[2]] || []).push(i);
+      if (e[0] === 0 && hitRole(log, e) === 'dealt' && KIND_ROW[hmInfo(log, e[3]).kind] == null && !c.famEv.has(e)) (byT[e[2]] = byT[e[2]] || []).push(i);
     }
     const same = (x, y) => Math.abs(x - y) <= 3;
     for (const t in byT) {
@@ -615,6 +624,7 @@
       const e = ev[i];
       if (e[0] !== 0 || hitRole(log, e) !== 'dealt') continue;
       const S = e[1], style = hitStyle(log, e), kr = KIND_ROW[hmInfo(log, e[3]).kind];
+      if (c.famEv.has(e)) { out[i] = -3; reason[i] = 'familiar'; continue; }
       if (kr != null) { out[i] = kr; reason[i] = 'kind'; continue; }
       while (ci < casts.length && casts[ci].c <= S) ci++;
       if (dot[i]) {
@@ -1119,7 +1129,7 @@
         const role = hitRole(log, e), h = hmInfo(log, e[3]);
         row.actor = actorLabel(log, e[2]); row.kind = h.kind; row.value = e[4]; row.hitmark = e[3];
         row.ability = at.struct[i] ? ability(log, at.struct[i]).name : (role === 'dealt' ? 'Unattributed' : '');
-        row.text = role === 'dealt' ? 'you hit ' + row.actor : role === 'taken' ? 'hit on you' : role === 'blocked' ? 'blocked on you' : role === 'heal' ? 'you healed'
+        row.text = role === 'dealt' ? (at.struct[i] === -3 ? followerLabel(log, followers(log).hitBy.get(i)) + ' hit ' + row.actor : 'you hit ' + row.actor) : role === 'taken' ? 'hit on you' : role === 'blocked' ? 'blocked on you' : role === 'heal' ? 'you healed'
                  : role === 'npcheal' ? row.actor + ' healed' : role === 'other' ? row.actor + ' hit by ' + (followers(log).hitBy.has(i) ? followerLabel(log, followers(log).hitBy.get(i)) : 'others') : row.actor + ' ' + h.kind;
         if (role === 'taken' || role === 'blocked') { const s = sources(log)[i]; if (s >= 0) row.text += ' by ' + actorLabel(log, s); }
         if (e[5] >= 0) row.text += ' (+' + e[6] + ' soaked)';
