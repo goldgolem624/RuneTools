@@ -77,7 +77,8 @@ struct TableState {
     bool usable = false;         // there are names to calibrate with
     int fromCode = 0;            // names the handlers earned by their own code
     bool exportUsed = false;     // the script export is this build's and its names are in use
-    int differ = 0;              // names the export and the code give to different handlers (the export's stand)
+    int differ = 0;              // names the export and the code give to different handlers (the code's stand)
+    int differRuled = 0;         // of those, names a calibration rule reads
     std::string exportNote;      // why the export is not used, empty when it is
 };
 TableState Table();

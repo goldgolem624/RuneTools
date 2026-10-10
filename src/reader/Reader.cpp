@@ -10546,12 +10546,13 @@ void health_calibration(HCtx& c, rtx::health::Run& run) {
     const auto spots = rtx::calib::SpotChecks();
     {
         std::string d = ts.usable ? (std::to_string(ts.handlers) + " handlers, " + std::to_string(ts.names) + " named: " + std::to_string(ts.fromCode) + " by their own code" +
-                                     (ts.exportUsed ? ", the rest by the script export labelled " + ts.label + (ts.differ ? " (" + std::to_string(ts.differ) + " named differently by the two, the export's used)" : "")
+                                     (ts.exportUsed ? ", the rest by the script export labelled " + ts.label + (ts.differ ? " (" + std::to_string(ts.differ) + " named differently by the two, the code's used" +
+                                      (ts.differRuled ? ", " + std::to_string(ts.differRuled) + " of them read by an offset rule" : std::string()) + ")" : "")
                                                     : "; script export not used (" + ts.exportNote + ")"))
                                   : (why.empty() ? std::string("not run") : why);
         if (!ts.usable) d = "GONE: " + d + " (the compiled offsets stay in force)";
         int ok = ts.usable ? kPass : kFail;
-        if (ts.usable && ts.differ) { ok = kWarn; d = "NEW: " + d; }
+        if (ts.usable && ts.differRuled) { ok = kWarn; d = "NEW: " + d; }
         run.Add(G, "calib.table", "Operation names", ok, d,
                 "Calibrated offsets|Engine ops by name|Asks|In-frame panels", "names for " + ts.exeVersion, std::to_string(ts.names), "code.exe");
         run.Fact("calib.label", ts.label);
@@ -11297,6 +11298,19 @@ void health_scene(HCtx& c, rtx::health::Run& run) {
                 int vb = -1, vp = -1, def = -1; std::vector<int> vars;
                 if (rtx::cache::GetNpcMorph(cfg, vb, vp, def, vars))
                     for (int v : vars) if (v >= 0 && norm_name(rtx::cache::GetNpc(v).name) == live) { match = true; break; }
+            }
+            if (!match && !live.empty() && !m.name.empty()) {
+                // Some NPCs carry their internal name there, not the one shown ("combatv2_necromancy_
+                // spirit_vengeful_ghost" for the Vengeful Ghost), and this read stops at 39 characters.
+                // The config id still names it when the shown name closes the internal one, or as much
+                // of it as the read holds.
+                auto letters = [](const std::string& s) { std::string o; for (unsigned char ch : s) if (std::isalnum(ch)) o.push_back((char)std::tolower(ch)); return o; };
+                const std::string la = letters(live), ca = letters(m.name);
+                const bool capped = live.size() >= 39;
+                for (std::size_t k = ca.size(); k >= 5 && k * 2 >= ca.size() && !match; --k) {
+                    if (k < ca.size() && !capped) break;
+                    match = la.size() > k && la.compare(la.size() - k, k, ca, 0, k) == 0;
+                }
             }
             if (match || live.empty()) ++npcNamed;
             else if (npcBad.size() < 80) npcBad += " " + std::to_string(cfg) + "='" + sec_name(h, sec) + "'";
@@ -12465,6 +12479,12 @@ void health_live(HCtx& c, rtx::health::Run& run) {
         } else if (check.rfind("enumkey", 0) == 0 && x != 0) {
             const int e = std::atoi(check.c_str() + 7);
             if (rtx::cache::EnumJson(e).find("\"" + std::to_string(x) + "\":") == std::string::npos) { ok = false; why = "not a key of enum " + std::to_string(e); }
+        } else if (check.rfind("enumval", 0) == 0 && x != -1 && x != 0) {   // one of the values the game's own list holds
+            const int e = std::atoi(check.c_str() + 7);
+            const std::string j = rtx::cache::EnumJson(e), v = ":" + std::to_string(x);
+            bool in = false;
+            for (std::size_t p = j.find(v); p != std::string::npos && !in; p = j.find(v, p + 1)) in = p + v.size() < j.size() && (j[p + v.size()] == ',' || j[p + v.size()] == '}');
+            if (!in) { ok = false; why = "not a value of enum " + std::to_string(e); }
         } else if (check == "lpmax") {
             long long con = -1;
             for (const auto& s : SampleAll()) if (s.pid == c.pid && s.skills.size() > 3) con = s.skills[3].real;

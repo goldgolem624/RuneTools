@@ -451,7 +451,7 @@ live	varp:3274	field=16..22;range=1..99;gate=world;need=log in	Player State: pra
 live	varp:8040	field=16..22;range=1..99;gate=world;need=log in	Player State: summoning points
 live	varp:4818	mask=varbits;gate=world;need=log in	Player State: account type
 live	varp:1787	range=0..60;gate=world;need=log in	Familiar: spell points
-live	varp:1831	check=pouch;gate=world;need=summon a familiar	Familiar: pouch
+live	varp:1831	check=enumval1277;gate=world;need=summon a familiar	Familiar: pouch
 live	varp:12314	range=0..3;gate=world;need=log in	Leagues: active league
 live	varp:463	set=0,1;gate=world;need=log in	Player State: run toggle
 live	varp:11718	field=0..3;range=0..3;gate=world;need=log in	Overlay: entity highlight mode

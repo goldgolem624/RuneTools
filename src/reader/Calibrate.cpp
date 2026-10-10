@@ -10,6 +10,7 @@
 #include <cstring>
 #include <map>
 #include <mutex>
+#include <set>
 #include <fstream>
 #include <sstream>
 
@@ -100,6 +101,8 @@ struct Cache {
     std::wstring key; std::vector<Found> found; std::string report, why;
     TableState table; std::vector<SpotCheck> spots;
     std::map<std::string, std::uint32_t> ops;   // every name in use: by the handlers' code, and the export's where one is used
+    struct Differ { std::string name; std::uint32_t code, exported; std::string exportOnCode; };
+    std::vector<Differ> differs;                 // names the code and the export give to different handlers
 };
 std::mutex g_mu;
 Cache g_cache;
@@ -503,8 +506,10 @@ static const std::vector<Found>& RunLocked(const std::wstring& exePath, const st
         return fail;
     };
     // An export of this build's scripts, where the launcher keeps one, adds the names the code did
-    // not settle and stands where the two differ. It is not needed: without one the names are the
-    // code's alone.
+    // not settle. Where the two differ the code stands: the exporter numbers the ops it cannot name
+    // in sequence (unk11010, ...), so one op more or less renumbers every placeholder after it, and
+    // the names keyed to a placeholder move with it. It is not needed: without one the names are
+    // the code's alone.
     ops = byCode.byName;
     {
         std::map<std::string, std::uint32_t> exported;
@@ -512,14 +517,31 @@ static const std::vector<Found>& RunLocked(const std::wstring& exePath, const st
         const std::string mismatch = TableBuildMismatch(exePath, opcodesJson, buildTxt, g_cache.table);
         std::string note = !read ? std::string("none on this PC") : needLabel ? mismatch : std::string();
         if (note.empty()) {
-            int differ = 0;
+            std::set<std::string> ruled;
+            for (const Rule& r : kRules) ruled.insert(r.op);
+            int differ = 0, differRuled = 0;
+            std::map<std::uint32_t, std::string> exportedByOp;
+            for (const auto& kv : exported) exportedByOp.emplace(kv.second, kv.first);
+            std::set<std::uint32_t> codeOps;
             for (const auto& kv : byCode.byName) {
+                codeOps.insert(kv.second);
                 const auto it = exported.find(kv.first);
-                if (it == exported.end()) exported.insert(kv);
-                else if (it->second != kv.second) ++differ;
+                if (it != exported.end() && it->second != kv.second) {
+                    ++differ;
+                    if (ruled.count(kv.first)) ++differRuled;
+                    const auto on = exportedByOp.find(kv.second);
+                    g_cache.differs.push_back({ kv.first, kv.second, it->second, on == exportedByOp.end() ? std::string() : on->second });
+                }
             }
-            note = spot_fail(exported, nullptr);
-            if (note.empty()) { ops.swap(exported); g_cache.table.exportUsed = true; g_cache.table.differ = differ; }
+            // the export's names, less any on a handler the code named: one name per handler
+            std::map<std::string, std::uint32_t> merged = byCode.byName;
+            for (const auto& kv : exported)
+                if (!codeOps.count(kv.second)) merged.insert(kv);
+            note = spot_fail(merged, nullptr);
+            if (note.empty()) {
+                ops.swap(merged);
+                g_cache.table.exportUsed = true; g_cache.table.differ = differ; g_cache.table.differRuled = differRuled;
+            }
         }
         g_cache.table.exportNote = note;
     }
@@ -651,6 +673,21 @@ std::string CheckText(const std::wstring& exePath, const std::wstring& opcodesJs
         if (fd.ref) { std::snprintf(line, sizeof(line), " compiled 0x%X", fd.compiled); o << line; }
         if (fd.what) o << " (" << fd.what << ")";
         o << "\n";
+    }
+    if (!g_cache.differs.empty()) {
+        std::set<std::string> ruled;
+        for (const Rule& r : kRules) ruled.insert(r.op);
+        int usedByRule = 0;
+        for (const auto& d : g_cache.differs) if (ruled.count(d.name)) ++usedByRule;
+        o << "\nnamed differently by the code and the export: " << g_cache.differs.size() << " (" << usedByRule
+          << " read by a rule above, marked *)\n";
+        o << "  name                                      code   export  export's name for the code's number\n";
+        for (const auto& d : g_cache.differs) {
+            char line[260];
+            std::snprintf(line, sizeof(line), "%c %-42s %5u  %5u  %s\n", ruled.count(d.name) ? '*' : ' ', d.name.c_str(), d.code, d.exported,
+                          d.exportOnCode.empty() ? "(none)" : d.exportOnCode.c_str());
+            o << line;
+        }
     }
     return o.str();
 }

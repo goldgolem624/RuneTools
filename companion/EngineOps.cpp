@@ -329,7 +329,7 @@ void Resolve() {
     if (!base || !FindText(base, text)) { Check("FAIL", "gone", "handlers", "-", "GONE: no code section to read the op registrar from; every engine op off"); return; }
     if (!ResolveGuarded(text)) { Say("engine ops: registrar not recognised"); Check("FAIL", "gone", "handlers", "0", "GONE: the op registrar was not recognised in this exe; every engine op off"); return; }
     // The names come from the handlers' own code. An export of this build's scripts, where the
-    // launcher keeps one, adds the names the code did not settle and stands where the two differ.
+    // launcher keeps one, adds the names the code did not settle; where the two differ the code stands.
     // No name at all takes the named operations only: the ones recognised by their own code
     // (projection, positions, overhead heights) need the handlers and the state.
     std::map<std::string, std::uint32_t> code;
@@ -340,11 +340,16 @@ void Resolve() {
     if (running.empty()) running = RunningBuild();
     const std::size_t fromTable = g_byName.size();
     std::size_t differ = 0;
+    std::set<std::uint32_t> codeOps;
     for (const auto& kv : code) {
+        codeOps.insert(kv.second);
         const auto it = g_byName.find(kv.first);
-        if (it == g_byName.end()) g_byName.insert(kv);
-        else if (it->second != kv.second) ++differ;
+        if (it != g_byName.end() && it->second != kv.second) ++differ;
     }
+    // where the two differ the code stands, and an export name on a handler the code named goes
+    for (auto it = g_byName.begin(); it != g_byName.end(); )
+        it = codeOps.count(it->second) ? g_byName.erase(it) : std::next(it);
+    for (const auto& kv : code) g_byName[kv.first] = kv.second;
     // with no export to stand on, the handlers that name themselves have to sit under these names
     int checked = 0;
     const int bad = match ? 0 : SpotDisagreements(checked);
@@ -359,7 +364,7 @@ void Resolve() {
         else std::snprintf(d, sizeof(d), "GONE: no handler recognised by its code in this build%s; named ops off", scanned ? "" : " (the scan faulted)");
         Check("FAIL", "gone", exp.c_str(), "0", d, kNamedFeatures);
     } else {
-        if (match) std::snprintf(d, sizeof(d), "%zu handlers from the registrar, %zu named by their own code, %zu by this build's export (%zu differ)", g_byNumber.size(), code.size(), fromTable, differ);
+        if (match) std::snprintf(d, sizeof(d), "%zu handlers from the registrar, %zu named by their own code, %zu by this build's export (%zu differ, the code's used)", g_byNumber.size(), code.size(), fromTable, differ);
         else std::snprintf(d, sizeof(d), "%zu handlers from the registrar, %zu named by their own code", g_byNumber.size(), code.size());
         Check("OK", "", exp.c_str(), match ? table.c_str() : exp.c_str(), d);
     }
