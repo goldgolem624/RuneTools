@@ -1081,6 +1081,28 @@
     for (const k of fightsIn(log, r)) for (const a of bossActors(log, k).actors) s.add(a);
     return Array.from(s).sort((a, b) => a - b);
   }
+  // The kill as the game times it: from the boss's spawn (its last arrival in the scene before it died) to its
+  // death (life points at 0, or its death row). Several boss actors: the first spawn to the last death. Null
+  // when the log saw neither, and the fight's own span is used instead.
+  function killWindow(log, n, actors) {
+    const f = (log.fights || [])[n];
+    if (!f || !actors || !actors.length) return null;
+    const ev = log.events, end = fightEnd(log, f), set = new Set(actors), death = new Map(), arrive = new Map();
+    for (const e of ev) {
+      if (!Array.isArray(e) || !set.has(e[2])) continue;
+      if (e[1] > end) break;
+      if (e[0] === 11 && e[3]) { if (!death.has(e[2])) arrive.set(e[2], e[1]); }
+      else if (e[1] >= f.start && !death.has(e[2]) && ((e[0] === 4 && e[3] === 0) || (e[0] === 10 && e[3] !== 2))) death.set(e[2], e[1]);
+    }
+    let from = Infinity, to = -Infinity;
+    for (const [a, d] of death) {
+      let s0 = arrive.get(a);
+      if (!isNum(s0)) { const x = actorOf(log, a); s0 = isNum(x.first) ? x.first : null; }
+      if (!isNum(s0) || s0 > d) continue;
+      from = Math.min(from, s0); to = Math.max(to, d);
+    }
+    return isFinite(from) && isFinite(to) && to > from ? { from, to } : null;
+  }
   function fightInfo(log, n) {
     const fights = log.fights || [], f = Number.isInteger(n) ? fights[n] : null;
     if (!f) return null;
@@ -1109,7 +1131,9 @@
         if (mx > 0 && isNum(e[3]) && e[3] >= 0) bossPct = Math.round(e[3] / mx * 1000) / 10;
       }
     }
+    const kw = result === 'kill' ? killWindow(log, n, ba.actors) : null;
     return { n, kind, result, boss, bossName, group, mode, pull, startMs: cycleMs(log, f.start), durMs: Math.max(1, (end - f.start) * CYCLE_MS),
+             killMs: result === 'kill' ? (kw ? (kw.to - kw.from) * CYCLE_MS : Math.max(1, (end - f.start) * CYCLE_MS)) : null, killWindow: kw,
              bossActors: ba.actors, bossBy: ba.by, bossPct, live: f.live === true };
   }
   function phases(log, n) {
@@ -1177,9 +1201,14 @@
   function metrics(log, n) {
     const fi = fightInfo(log, n);
     if (!fi) return null;
-    const f = log.fights[n], sel = { fights: [n] }, s = summary(log, sel), rot = rotation(log, sel), so = styleOf(log, sel);
-    const start = f.start, end = fightEnd(log, f), r = { start, end }, ev = log.events, kill = fi.result === 'kill';
-    const durMs = fi.durMs, killMs = kill ? durMs : null, dps = s.dealt / (killMs || durMs) * 1000;
+    // a kill is measured over its kill window (spawn to death), so damage on adds before the boss appears or
+    // after it died does not count toward the kill's DPS
+    const kill = fi.result === 'kill', kw = kill ? fi.killWindow : null;
+    const f = log.fights[n], sel = kw ? { fights: [n], from: kw.from, to: kw.to } : { fights: [n] };
+    const s = summary(log, sel), rot = rotation(log, sel), so = styleOf(log, sel);
+    const start = kw ? Math.max(f.start, kw.from) : f.start, end = kw ? Math.min(fightEnd(log, f), kw.to) : fightEnd(log, f);
+    const r = { start, end }, ev = log.events;
+    const durMs = fi.durMs, killMs = kill ? fi.killMs : null, dps = s.dealt / (kill ? Math.max(1, s.durMs) : durMs) * 1000;
     const ba = new Set(fi.bossActors);
     let bossDealt = 0, bossMaxHit = 0, otherHits = 0, gap = false, bossLp = false;
     const [lo, hi] = win(log, r);
@@ -2001,7 +2030,7 @@
     return { log, warnings };
   }
 
-  const api = { version: 3, CYCLE_MS, TICK, STYLES, EVENT_NAMES, MECH_KINDS, STYLE_LINE, MIN_FIGHT_MS, MAX_FIGHT_MS, DPS_CAP, MAX_HIT_CAP, PLAUSIBLE_RATIO, SUMMON_BUFFS,
+  const api = { version: 4, killWindow, CYCLE_MS, TICK, STYLES, EVENT_NAMES, MECH_KINDS, STYLE_LINE, MIN_FIGHT_MS, MAX_FIGHT_MS, DPS_CAP, MAX_HIT_CAP, PLAUSIBLE_RATIO, SUMMON_BUFFS,
                 PARSE_HEX, REASON_TEXT, token, ctx, reset, hmInfo, hitRole, isFoe, hitStyle, actorOf, actorLabel, cycleMs, cycleTick, range, resolve, inRange,
                 ability, shapeOf, seqIs, seqTag, seqInfoFrom, attribute, sourceOf, sources, summary, byAbility, bySource, series, uptimes, casts, trackerCheck, styleSplit,
                 describe, fightSummaries, isMech, typeName, mechInfo, mechCount, bossName, mechs, plain, shortName, fmtNum, fmtMs, fmtMsTenths,

@@ -314,7 +314,9 @@
     for (const f of fights) {
       let what = f.boss || '';
       if (!what && f.kind === 'kills') { let k = f.kills || 0; if (log) { try { k = S().summary(log, f.n).kills; } catch (e) {} } what = k + (k === 1 ? ' kill' : ' kills'); }
-      fi.push({ value: f.n, label: '#' + (f.n + 1) + ' ' + (what || f.kind || '') + ' ' + S().fmtMs((f.end - f.start) * 20) });
+      let ms = (f.end - f.start) * 20;   // a kill shows the game's kill time: boss spawn to its death
+      if (log && f.kind === 'boss') { try { const info = S().fightInfo(log, f.n); if (info && info.killMs) ms = info.killMs; } catch (e) {} }
+      fi.push({ value: f.n, label: '#' + (f.n + 1) + ' ' + (what || f.kind || '') + ' ' + S().fmtMs(ms) });
     }
     if (!fi.length) fi.push({ value: -1, label: fl.logId === 'live' ? 'Open fight' : 'Whole log' });
     fl.ddFight.setItems(fi, fl.fight);
