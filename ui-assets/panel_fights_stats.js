@@ -24,10 +24,16 @@
     // necromancy, from a training dummy log (ticks after the cast row, 3 cycles of slack)
     TOUCH_OF_DEATH: [1], SOUL_SAP: [1], BLOAT: [2], VOLLEY_OF_SOULS: [2], LIVING_DEATH: [], CONJURE: [], COMMAND: [],
     // necromancy, not seen yet: confirm on a log that has them
-    FINGER_OF_DEATH: [1], SOUL_STRIKE: [1], DEATH_SKULLS: [1, 2, 3, 4, 5, 6], SPECTRAL_SCYTHE: [1], SPECTRAL_SCYTHE_RECAST_1: [1], SPECTRAL_SCYTHE_RECAST_2: [1]
+    // Death Skulls, from the 2026-10-09 K'ril logs: the skull bounces every 2 ticks from tick 3, 7 bounces
+    DEATH_SKULLS: [3, 5, 7, 9, 11, 13, 15],
+    FINGER_OF_DEATH: [1], SOUL_STRIKE: [1], SPECTRAL_SCYTHE: [1], SPECTRAL_SCYTHE_RECAST_1: [1], SPECTRAL_SCYTHE_RECAST_2: [1]
   };
   // Hits one cast can own at its shape ticks (Volley of Souls: one per residual soul, all in one cycle).
-  const CAP = { TOUCH_OF_DEATH: 1, SOUL_SAP: 1, FINGER_OF_DEATH: 1, SOUL_STRIKE: 1, BLOAT: 1, VOLLEY_OF_SOULS: 5 };
+  // How far back a hit looks for its cast, in ticks: the longest shape any ability has (Death Skulls' last bounce
+  // lands 15 ticks after the cast), and never less than the 9 ticks the loose match needs.
+  let LOOKBACK = 9;
+  for (const k in SHAPES) for (const t of SHAPES[k]) if (t + 1 > LOOKBACK) LOOKBACK = t + 1;
+  const CAP = { TOUCH_OF_DEATH: 1, SOUL_SAP: 1, FINGER_OF_DEATH: 1, SOUL_STRIKE: 1, BLOAT: 1, VOLLEY_OF_SOULS: 5, DEATH_SKULLS: 8 };
   // Damage over time with a fixed value per application, ticking on the target every 3 ticks: the ticks after
   // the cast it can run for. A later cast of the same ability on the target replaces the value.
   const DOT = { BLOAT: 36 }, DOT_MAX = 36;
@@ -515,7 +521,7 @@
         if (owner) { out[i] = owner.struct; reason[i] = 'dot'; continue; }
       }
       let exact = null, loose = null;
-      for (let k = ci - 1; k >= 0 && S - casts[k].c <= 9 * TICK; k--) {
+      for (let k = ci - 1; k >= 0 && S - casts[k].c <= LOOKBACK * TICK; k--) {
         const K = casts[k], L = Math.floor((S - K.c + 3) / TICK);
         if (!K.shape.length || (K.cap && K.used >= K.cap)) continue;
         if (K.style && style && style !== 'typeless' && style !== 'poison' && K.style !== style && K.style !== 'typeless') continue;
@@ -1133,7 +1139,7 @@
     }
     const kw = result === 'kill' ? killWindow(log, n, ba.actors) : null;
     return { n, kind, result, boss, bossName, group, mode, pull, startMs: cycleMs(log, f.start), durMs: Math.max(1, (end - f.start) * CYCLE_MS),
-             killMs: result === 'kill' ? (kw ? (kw.to - kw.from) * CYCLE_MS : Math.max(1, (end - f.start) * CYCLE_MS)) : null, killWindow: kw,
+             killMs: result === 'kill' ? (kw ? Math.max(1, Math.round((kw.to - kw.from) / TICK)) * TICK * CYCLE_MS : Math.max(1, (end - f.start) * CYCLE_MS)) : null, killWindow: kw,   // whole ticks, as the game counts
              bossActors: ba.actors, bossBy: ba.by, bossPct, live: f.live === true };
   }
   function phases(log, n) {
@@ -2030,7 +2036,7 @@
     return { log, warnings };
   }
 
-  const api = { version: 4, killWindow, CYCLE_MS, TICK, STYLES, EVENT_NAMES, MECH_KINDS, STYLE_LINE, MIN_FIGHT_MS, MAX_FIGHT_MS, DPS_CAP, MAX_HIT_CAP, PLAUSIBLE_RATIO, SUMMON_BUFFS,
+  const api = { version: 5, killWindow, CYCLE_MS, TICK, STYLES, EVENT_NAMES, MECH_KINDS, STYLE_LINE, MIN_FIGHT_MS, MAX_FIGHT_MS, DPS_CAP, MAX_HIT_CAP, PLAUSIBLE_RATIO, SUMMON_BUFFS,
                 PARSE_HEX, REASON_TEXT, token, ctx, reset, hmInfo, hitRole, isFoe, hitStyle, actorOf, actorLabel, cycleMs, cycleTick, range, resolve, inRange,
                 ability, shapeOf, seqIs, seqTag, seqInfoFrom, attribute, sourceOf, sources, summary, byAbility, bySource, series, uptimes, casts, trackerCheck, styleSplit,
                 describe, fightSummaries, isMech, typeName, mechInfo, mechCount, bossName, mechs, plain, shortName, fmtNum, fmtMs, fmtMsTenths,

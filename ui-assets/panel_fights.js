@@ -316,7 +316,8 @@
       if (!what && f.kind === 'kills') { let k = f.kills || 0; if (log) { try { k = S().summary(log, f.n).kills; } catch (e) {} } what = k + (k === 1 ? ' kill' : ' kills'); }
       let ms = (f.end - f.start) * 20;   // a kill shows the game's kill time: boss spawn to its death
       if (log && f.kind === 'boss') { try { const info = S().fightInfo(log, f.n); if (info && info.killMs) ms = info.killMs; } catch (e) {} }
-      fi.push({ value: f.n, label: '#' + (f.n + 1) + ' ' + (what || f.kind || '') + ' ' + S().fmtMs(ms) });
+      const kt = log && f.kind === 'boss' && S().fmtMsTenths ? S().fmtMsTenths(ms) : S().fmtMs(ms);
+      fi.push({ value: f.n, label: '#' + (f.n + 1) + ' ' + (what || f.kind || '') + ' ' + kt });
     }
     if (!fi.length) fi.push({ value: -1, label: fl.logId === 'live' ? 'Open fight' : 'Whole log' });
     fl.ddFight.setItems(fi, fl.fight);
@@ -328,7 +329,11 @@
     if (!log) { strip.style.display = 'none'; return; }
     strip.style.display = '';
     const st = S(), sm = st.summary(log, n);
-    const cells = [['Duration', st.fmtMs(sm.durMs), ''], ['DPS', Math.round(sm.dps).toLocaleString(), sm.dpm.toFixed(0) + ' per minute'], ['Dealt', st.fmtNum(sm.dealt), sm.dealt.toLocaleString() + ' in ' + sm.hits + ' hits, ' + sm.crits + ' crits'],
+    // a kill: the game's own kill time (boss spawn to its death) and the DPS over that window
+    let kill = null;
+    try { const fi = n >= 0 && st.fightInfo ? st.fightInfo(log, n) : null; if (fi && fi.result === 'kill' && fi.killMs) kill = { ms: fi.killMs, dps: st.metrics(log, n).dps, fight: fi.durMs }; } catch (e) {}
+    const cells = [kill ? ['Kill time', st.fmtMsTenths ? st.fmtMsTenths(kill.ms) : st.fmtMs(kill.ms), 'Boss spawn to its death; the fight ran ' + st.fmtMs(kill.fight)] : ['Duration', st.fmtMs(sm.durMs), ''],
+                   kill ? ['DPS', Math.round(kill.dps).toLocaleString(), 'Over the kill time'] : ['DPS', Math.round(sm.dps).toLocaleString(), sm.dpm.toFixed(0) + ' per minute'], ['Dealt', st.fmtNum(sm.dealt), sm.dealt.toLocaleString() + ' in ' + sm.hits + ' hits, ' + sm.crits + ' crits'],
                    ['Taken', st.fmtNum(sm.taken), sm.taken.toLocaleString() + ', ' + sm.blocked + ' blocked' + (sm.healed ? ', healed ' + sm.healed.toLocaleString() : '')], ['Deaths', String(sm.deaths), ''], ['Max hit', st.fmtNum(sm.maxHit), sm.maxHit.toLocaleString()]];
     for (const [k, v, tip] of cells) {
       const d = el('div', 'fl-kv'); d.appendChild(el('div', 'k', k)); d.appendChild(el('div', 'v', v)); if (tip) d.dataset.tip = tip; strip.appendChild(d);
