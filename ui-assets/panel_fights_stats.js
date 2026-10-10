@@ -818,7 +818,7 @@
       const total = merged.reduce((t, sp) => t + sp[1] - sp[0], 0);
       const b = c.buffs[s] || {};
       if (hiddenBuff(c.buffs[s])) continue;
-      rows.push({ struct: Number(s), name: shortName(b.name || 'Buff ' + s), fullName: b.name || '', type: b.type || 0, icon: b.icon || 0, spans: merged, uptime: total / dur });
+      rows.push({ struct: Number(s), name: shortName(b.name || 'Buff ' + s), fullName: b.name || '', type: b.type || 0, icon: b.icon || 0, item: b.item || 0, spans: merged, uptime: total / dur });
     }
     rows.sort((a, b) => b.uptime - a.uptime || a.name.localeCompare(b.name));
     return { rows, range: r };

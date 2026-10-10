@@ -57,6 +57,40 @@
       document.querySelectorAll('[data-spr="' + sid + '"]').forEach(x => { x.style.backgroundImage = "url('" + url + "')"; x.classList.add('img'); });
     }).catch(() => FL_SPR_PENDING.delete(sid));
   }
+  // An item's icon on an element: buffs whose picture is the item they come from (an overload, a pair of gloves).
+  const FL_ITEM_ICON = new Map(), FL_ITEM_PENDING = new Set(), FL_BUFF_ITEM = new Map(), FL_BUFF_ITEM_PENDING = new Set();
+  function flItemIconSet(x, url) { x.style.backgroundImage = "url('" + url + "')"; x.classList.add('img'); x.classList.remove('none'); }
+  function flItemIcon(e, itemId) {
+    if (!(itemId > 0)) return;
+    e.dataset.itm = itemId;
+    const u = FL_ITEM_ICON.get(itemId);
+    if (u) { flItemIconSet(e, u); return; }
+    if (FL_ITEM_PENDING.has(itemId) || !flHas('itemIcon')) return;
+    FL_ITEM_PENDING.add(itemId);
+    Promise.resolve(bridge().itemIcon(itemId)).then(url => {
+      FL_ITEM_PENDING.delete(itemId);
+      if (!url || typeof url !== 'string') return;
+      FL_ITEM_ICON.set(itemId, url);
+      document.querySelectorAll('[data-itm="' + itemId + '"]').forEach(x => flItemIconSet(x, url));
+    }).catch(() => FL_ITEM_PENDING.delete(itemId));
+  }
+  // The item a buff comes from (struct param 4677): the log's dictionary, else the player's cache.
+  function flBuffItem(e, struct, item) {
+    if (item > 0) { flItemIcon(e, item); return; }
+    const k = FL_BUFF_ITEM.get(struct);
+    if (k !== undefined) { if (k > 0) flItemIcon(e, k); return; }
+    e.dataset.bitm = struct;
+    if (FL_BUFF_ITEM_PENDING.has(struct) || typeof rtxData !== 'object' || !flHas('structParams')) return;
+    FL_BUFF_ITEM_PENDING.add(struct);
+    rtxData.raw('cache.structParams', struct).then(t => {
+      FL_BUFF_ITEM_PENDING.delete(struct);
+      let sp = null;
+      try { sp = typeof t === 'string' ? JSON.parse(t || 'null') : t; } catch (x) { sp = null; }
+      const it = sp && sp.ints ? Number(sp.ints['4677']) || 0 : 0;
+      FL_BUFF_ITEM.set(struct, it);
+      if (it > 0) document.querySelectorAll('[data-bitm="' + struct + '"]').forEach(x => flItemIcon(x, it));
+    }).catch(() => FL_BUFF_ITEM_PENDING.delete(struct));
+  }
   function flDd(onChange) {
     const dd = el('div', 'pet-dd'), btn = el('button', 'pet-dd-btn'), pop = el('div', 'pet-dd-pop');
     btn.type = 'button'; dd.appendChild(btn); dd.appendChild(pop);
@@ -652,7 +686,7 @@
     const dur = Math.max(1, up.range.end - up.range.start), g = el('div', 'fl-gantt');
     for (const u of up.rows) {
       const row = el('div', 'fl-gr' + (u.type ? ' debuff' : ''));
-      const nm = flName('n', u.name, u.icon, true); nm.dataset.tip = (u.fullName || u.name) + '\n' + (u.type ? 'debuff' : 'buff') + ', struct ' + u.struct + ', ' + u.spans.length + ' span' + (u.spans.length === 1 ? '' : 's');
+      const nm = flName('n', u.name, u.icon, true); if (!u.icon && nm.firstChild) flBuffItem(nm.firstChild, u.struct, u.item); nm.dataset.tip = (u.fullName || u.name) + '\n' + (u.type ? 'debuff' : 'buff') + ', struct ' + u.struct + ', ' + u.spans.length + ' span' + (u.spans.length === 1 ? '' : 's');
       const bar = el('span', 'g');
       for (const sp of u.spans) { const i = el('i'); i.style.left = ((sp[0] - up.range.start) / dur * 100).toFixed(2) + '%'; i.style.width = Math.max(0.3, (sp[1] - sp[0]) / dur * 100).toFixed(2) + '%'; i.dataset.tip = st.fmtMs((sp[0] - up.range.start) * st.CYCLE_MS) + ' to ' + st.fmtMs((sp[1] - up.range.start) * st.CYCLE_MS); bar.appendChild(i); }
       row.appendChild(nm); row.appendChild(bar); row.appendChild(el('span', 'v', (u.uptime * 100).toFixed(0) + '%'));

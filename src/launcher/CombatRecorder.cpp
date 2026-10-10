@@ -643,7 +643,9 @@ void Recorder::ensureDict(const Ev& e) {
         if (cut != std::string::npos) name = name.substr(0, cut);
         const int type = cfg_.names.structInt ? cfg_.names.structInt(st, 8109, -1) : -1;
         const int icon = cfg_.names.structInt ? cfg_.names.structInt(st, 2802, 0) : 0;
-        dictLine("buffs", st, "{\"name\":" + jstr(name) + ",\"type\":" + std::to_string(type) + ",\"icon\":" + std::to_string(icon) + "}");
+        const int item = !icon && cfg_.names.structInt ? cfg_.names.structInt(st, 4677, 0) : 0;   // no sprite: the item it comes from
+        dictLine("buffs", st, "{\"name\":" + jstr(name) + ",\"type\":" + std::to_string(type) + ",\"icon\":" + std::to_string(icon) +
+                 (item > 0 ? ",\"item\":" + std::to_string(item) : std::string()) + "}");
         break;
     }
     case 9: {
