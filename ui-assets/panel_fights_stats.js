@@ -14,6 +14,10 @@
   const HEAL_KINDS = { heal: 1, 'uber heal': 1 };
   // Ticks after the cast on which an ability's hits land (observed on live traces); abilities with no
   // row get a shape from the dictionary (channel, dot) or the default {0, 1, 2}. An empty set = no damage.
+  // Hit ticks per ability struct, from the game's own tooltip scripts (tools/rtx_ability_shapes.py): channels
+  // (N hits, IV ticks apart, the first a tick after the cast), damage over time (first hit a tick after the
+  // cast, two for an area) and multi-hits (all in the cast tick). Regenerate after a game update.
+  const ABILITY_SHAPES = {"1488":{"t":[0],"k":"single","n":1,"d":[75,95]},"14663":{"t":[0,1],"k":"multi","n":2},"14666":{"t":[0],"k":"single","n":1,"d":[300,360]},"14667":{"t":[1,3,5,7,9],"k":"dot","n":5,"d":[25,31]},"14668":{"t":[0],"k":"single","n":1,"d":[75,85]},"14669":{"t":[0,1],"k":"multi","n":2},"14670":{"t":[1,2,3,4,5,6,7,8],"k":"channel","n":8,"d":[75,85]},"14673":{"t":[1,3,5,7],"k":"dot","n":4},"14674":{"t":[0,1,2,3],"k":"multi","n":4},"14677":{"t":[0],"k":"single","n":1,"d":[95,115]},"14678":{"t":[0],"k":"single","n":1,"d":[75,95]},"14679":{"t":[0,1],"k":"multi","n":2,"d":[120,140]},"14681":{"t":[0],"k":"single","n":1,"d":[115,135]},"14682":{"t":[0],"k":"single","n":1,"d":[95,105]},"14683":{"t":[1,3,5,7,9],"k":"dot","n":5,"d":[30,40]},"14684":{"t":[1,2,3,4,5,6,7,8],"k":"channel","n":8,"d":[60,70]},"14685":{"t":[0,1],"k":"multi","n":2,"d":[135,165]},"14686":{"t":[0],"k":"multi","n":1,"d":[520,570]},"14687":{"t":[1,3,5,7,9,11],"k":"dot","n":6,"d":[100,120]},"14688":{"t":[0],"k":"single","n":1,"d":[220,250]},"14700":{"t":[0],"k":"single","n":1,"d":[110,130]},"14701":{"t":[0],"k":"single","n":1,"d":[110,130]},"14702":{"t":[0,1],"k":"multi","n":2,"d":[55,65]},"14703":{"t":[0],"k":"single","n":1,"d":[110,130]},"14704":{"t":[1,3,5,7],"k":"channel","n":4,"d":[130,150]},"14705":{"t":[0],"k":"single","n":1,"d":[200,230]},"14706":{"t":[0,1,2,3,4,5,6,7],"k":"multi","n":8,"d":[60,70]},"14708":{"t":[1,2,3,4,5,6,7,8],"k":"channel","n":8,"d":[65,95]},"14709":{"t":[0],"k":"single","n":1,"d":[300,340]},"14715":{"t":[0],"k":"single","n":1,"d":[20,100]},"14727":{"t":[0],"k":"single","n":1,"d":[65,75]},"14728":{"t":[0],"k":"single","n":1,"d":[70,90]},"14729":{"t":[1,4,7,10,13,16,19,22,25,28],"k":"dot","n":10,"d":[27,33]},"14730":{"t":[0],"k":"single","n":1,"d":[110,130]},"14731":{"t":[1,3,5,7],"k":"channel","n":4,"d":[120,140]},"14732":{"t":[0],"k":"single","n":1,"d":[45,55]},"14733":{"t":[0,1],"k":"multi","n":2,"d":[125,155]},"14735":{"t":[0],"k":"single","n":1,"d":[225,275]},"14736":{"t":[0],"k":"multi","n":1,"d":[420,500]},"24188":{"t":[0],"k":"single","n":1,"d":[65,75]},"28178":{"t":[1,3,5,7,9],"k":"dot","n":5},"28180":{"t":[1,3,5,7],"k":"channel","n":4,"d":[55,65]},"28431":{"t":[0],"k":"single","n":1,"d":[120,140]},"28927":{"t":[2,4,6,8,10,12,14,16],"k":"dot","n":8,"a":1,"d":[35,45]},"31649":{"t":[0],"k":"single","n":1,"d":[75,85]},"31984":{"t":[1,3,5,7,9,11,13,15,17,19,21,23,25,27,29,31,33,35,37,39,41,43,45,47,49,51],"k":"dot","n":26,"d":[100,120]},"31985":{"t":[1,3,5,7,9],"k":"dot","n":5},"31986":{"t":[1,3,5,7,9],"k":"dot","n":5},"32342":{"t":[0],"k":"single","n":1,"d":[38,45]},"39530":{"t":[0],"k":"single","n":1,"d":[65,75]},"39531":{"t":[0],"k":"single","n":1,"d":[120,140]},"40935":{"t":[0],"k":"single","n":1,"d":[75,95]},"40941":{"t":[0],"k":"single","n":1,"d":[120,140]},"44223":{"t":[0,1],"k":"multi","n":2,"d":[50,60]},"44244":{"t":[1,3,5,7,9,11,13,15],"k":"dot","n":8,"d":[25,35]},"45046":{"t":[0],"k":"single","n":1,"d":[70,90]},"45048":{"t":[0],"k":"single","n":1,"d":[75,85]},"45800":{"t":[2,4,6,8,10,12,14,16],"k":"dot","n":8,"a":1,"d":[35,45]},"46279":{"t":[0],"k":"single","n":1,"d":[100,120]},"48296":{"t":[0],"k":"single","n":1,"d":[90,110]},"48297":{"t":[0],"k":"single","n":1,"d":[270,330]},"48298":{"t":[0],"k":"single","n":1,"d":[90,110]},"48299":{"t":[0],"k":"single","n":1,"d":[135,165]},"48301":{"t":[0],"k":"single","n":1,"d":[135,165]},"48303":{"t":[1,3],"k":"dot","n":2},"48305":{"t":[0],"k":"single","n":1,"d":[38,360]},"48308":{"t":[0],"k":"single","n":1,"d":[135,165]},"48309":{"t":[1,3,5,7,9],"k":"channel","n":5,"d":[22,28]},"52781":{"t":[0],"k":"single","n":1,"d":[135,165]},"52782":{"t":[1,2,3,4,5,6,7,8],"k":"channel","n":8,"d":[60,70]},"52787":{"t":[0,1],"k":"multi","n":2,"d":[135,165]},"52788":{"t":[1,4,7,10,13,16],"k":"dot","n":6,"d":[80,100]},"52789":{"t":[1,5,9,13,17,21,25],"k":"dot","n":7,"d":[110,130]},"52790":{"t":[1,3,5,7],"k":"channel","n":4,"d":[130,150]},"52799":{"t":[0],"k":"single","n":1,"d":[90,110]}};
   const SHAPES = {
     CONCENTRATED_BLAST: [0, 1, 2], CHAIN: [0, 1, 2, 3], DRAGON_BREATH: [1, 0], CORRUPTION_BLAST: [0, 1, 2, 3, 4, 5], CORRUPTION_SHOT: [0, 1, 2, 3, 4, 5],
     MAGMA_TEMPEST: [0, 1, 2, 3, 4, 5, 6, 7, 8], WILD_MAGIC: [0, 1], TSUNAMI: [0, 1, 2], OMNIPOWER: [3, 0, 1, 2], ASPHYXIATE: [0, 1, 2, 3],
@@ -34,6 +38,7 @@
   // lands 15 ticks after the cast), and never less than the 9 ticks the loose match needs.
   let LOOKBACK = 9;
   for (const k in SHAPES) for (const t of SHAPES[k]) if (t + 1 > LOOKBACK) LOOKBACK = t + 1;
+  if (typeof ABILITY_SHAPES === 'object') for (const k in ABILITY_SHAPES) for (const t of ABILITY_SHAPES[k].t) if (t + 1 > LOOKBACK) LOOKBACK = t + 1;
   const CAP = { TOUCH_OF_DEATH: 1, SOUL_SAP: 1, FINGER_OF_DEATH: 1, SOUL_STRIKE: 1, BLOAT: 1, VOLLEY_OF_SOULS: 5, DEATH_SKULLS: 8, OVERPOWER: 2, METEOR_STRIKE: 1 };
   // Damage over time with a fixed value per application, ticking on the target every 3 ticks: the ticks after
   // the cast it can run for. A later cast of the same ability on the target replaces the value.
@@ -432,10 +437,16 @@
     if (FALLBACK_AB[struct]) return FALLBACK_AB[struct];
     return { name: struct === 14881 || struct === 14882 ? 'Global cooldown' : 'Ability ' + struct, icon: 0, style: '' };
   }
+  // The game's own shape for a struct (ABILITY_SHAPES), or null. Shared by shapeOf and the cast's hit cap.
+  function tableShape(struct) { return typeof ABILITY_SHAPES === 'object' && own(ABILITY_SHAPES, struct) ? ABILITY_SHAPES[struct] : null; }
   function shapeOf(log, struct) {
-    const a = ability(log, struct), t = token(a.name);
+    const a = ability(log, struct), t = token(a.name), ts = tableShape(struct);
+    // the game's own shape for a channel or damage over time comes first (Magma Tempest: 8 hits every 2 ticks, which
+    // the hand table cut short); a multi-hit lands within the default window and the table only caps it; the hand
+    // table keeps what only live traces showed (Overpower's hits land 3 ticks after the cast)
+    if (/^(CONJURE|COMMAND)_/.test(t)) return [];   // a conjure's damage is the conjure's own (hitmark kind), never a cast's
+    if (ts && (ts.k === 'dot' || ts.k === 'channel')) return ts.t;
     if (SHAPES[t]) return SHAPES[t];
-    if (/^(CONJURE|COMMAND)_/.test(t)) return [];
     // a channel from the game's own params (8884 ticks between hits, 8885 hits after the first): the first hit lands
     // one tick after the cast, then one every interval; Assault [2, 3] = ticks 1, 3, 5, 7, as the tooltip's
     // "4 times over 4.2s" and the logs agree
@@ -564,8 +575,11 @@
       }
       struct = aliasOf(log, struct);
       const tok = token(ability(log, struct).name);
-      casts.push({ i, c: ev[i][1], struct, src: ev[i][4], resolved, seq, seqId, shape: shapeOf(log, struct), known: !!SHAPES[tok] || !!ability(log, struct).channel, style: ability(log, struct).style || '',
-                   cap: CAP[tok] || 0, dot: DOT[tok] || 0, used: 0 });
+      const ab0 = ability(log, struct), ts = tableShape(struct);
+      // no cap from the game's hit count: effects add hits (Chaos Roar's extra strike, a bleed's ticks); the measured
+      // caps stay. A damage-over-time ability owns an equal-valued series as far as its last tick.
+      casts.push({ i, c: ev[i][1], struct, src: ev[i][4], resolved, seq, seqId, shape: shapeOf(log, struct), known: !!SHAPES[tok] || !!ab0.channel || !!(ts && (ts.k === 'dot' || ts.k === 'channel')), style: ab0.style || '',
+                   cap: CAP[tok] || 0, dot: DOT[tok] || (ts && ts.k === 'dot' && !/^(CONJURE|COMMAND)_/.test(tok) ? ts.t[ts.t.length - 1] : 0), used: 0, dmg: ts && ts.d ? [ts.d[0] / 100, ts.d[1] / 100] : null });
     }
     // two cooldown stamps in one tick (Corruption Blast and Shot move together): keep the one the animation
     // names; a pair with no animation sample follows the choice made for the same pair elsewhere in the log
@@ -624,11 +638,55 @@
         if (hit) { dot[i] = 'tail'; T.push(i); }
       }
     }
+    // Which casts a hit can come from: those whose shape names the hit's tick and whose style fits, most recent
+    // first, before any cap. Two casts in one tick (a shared cooldown pair) are told apart by the animation.
+    const candidatesOf = (S, style, ci) => {
+      const out = [];
+      for (let k = ci - 1; k >= 0 && S - casts[k].c <= LOOKBACK * TICK; k--) {
+        const K = casts[k], L = Math.floor((S - K.c + 3) / TICK);
+        if (!K.shape.length) continue;
+        if (K.style && style && style !== 'typeless' && style !== 'poison' && K.style !== style && K.style !== 'typeless') continue;
+        if (style === 'typeless' && !(ability(log, K.struct).dot != null)) continue;
+        if (K.shape.indexOf(L) < 0) continue;
+        const prev = out.length ? out[out.length - 1] : null;
+        if (prev && prev.c === K.c) { if (!seqIs(log, prev.seqId, prev.struct) && seqIs(log, K.seqId, K.struct)) out[out.length - 1] = K; continue; }
+        out.push(K);
+      }
+      return out;
+    };
+    // The player's ability damage per style, from hits only one cast could have made: the tooltip gives each
+    // ability's damage as a share of it. Kept as (cycle, value) samples, so a damage buff (Berserk, Sunshine)
+    // shows in the samples near it and the nearest ones are used.
+    const kSamples = {};
+    const median = v => { if (!v.length) return 0; const a = v.slice().sort((x, y) => x - y); return a[a.length >> 1]; };
+    const kAt = (style, S) => {
+      const all = kSamples[style] || [];
+      const near = all.filter(x => Math.abs(x[0] - S) <= 600).map(x => x[1]);
+      if (near.length >= 3) return median(near);
+      if (all.length >= 3) return median(all.map(x => x[1]));
+      let any = []; for (const st in kSamples) any = any.concat(kSamples[st].map(x => x[1]));
+      return median(any);
+    };
+    {
+      let ci = 0;
+      for (let i = 0; i < ev.length; i++) {
+        const e = ev[i];
+        if (e[0] !== 0 || hitRole(log, e) !== 'dealt' || c.famEv.has(e) || dot[i]) continue;
+        const h = hmInfo(log, e[3]);
+        if (KIND_ROW[h.kind] != null || h.crit || !(e[4] > 0)) continue;
+        const S = e[1], style = hitStyle(log, e);
+        while (ci < casts.length && casts[ci].c <= S) ci++;
+        const cands = candidatesOf(S, style, ci);
+        if (cands.length !== 1 || !cands[0].dmg) continue;
+        const d = cands[0].dmg;
+        (kSamples[style] = kSamples[style] || []).push([S, e[4] / ((d[0] + d[1]) / 2)]);
+      }
+    }
     let ci = 0;
     for (let i = 0; i < ev.length; i++) {
       const e = ev[i];
       if (e[0] !== 0 || hitRole(log, e) !== 'dealt') continue;
-      const S = e[1], style = hitStyle(log, e), kr = KIND_ROW[hmInfo(log, e[3]).kind];
+      const S = e[1], style = hitStyle(log, e), h = hmInfo(log, e[3]), kr = KIND_ROW[h.kind];
       if (c.famEv.has(e)) { out[i] = -3; reason[i] = 'familiar'; continue; }
       if (kr != null) { out[i] = kr; reason[i] = 'kind'; continue; }
       while (ci < casts.length && casts[ci].c <= S) ci++;
@@ -637,23 +695,29 @@
         for (let k = ci - 1; k >= 0 && !owner; k--) { const K = casts[k]; if (sorted && S - K.c > DOT_MAX * TICK) break; if (K.dot && S - K.c >= 3 * TICK - 3 && S - K.c <= K.dot * TICK) owner = K; }
         if (owner) { out[i] = owner.struct; reason[i] = 'dot'; continue; }
       }
-      let exact = null, loose = null;
-      for (let k = ci - 1; k >= 0 && S - casts[k].c <= LOOKBACK * TICK; k--) {
-        const K = casts[k], L = Math.floor((S - K.c + 3) / TICK);
-        if (!K.shape.length || (K.cap && K.used >= K.cap)) continue;
-        if (K.style && style && style !== 'typeless' && style !== 'poison' && K.style !== style && K.style !== 'typeless') continue;
-        if (style === 'typeless' && !(ability(log, K.struct).dot != null)) continue;
-        if (K.shape.indexOf(L) >= 0) {
-          // most recent cast first, unless the earlier cast has a measured shape and the recent one only the default
-          // (Overpower's hits land on the tick the next basic is cast); two casts stamped in one tick (a shared
-          // cooldown pair) are told apart by the animation
-          if (!exact) exact = K;
-          else if (K.c !== exact.c) { if (K.known && !exact.known) exact = K; else break; }
-          else if (!seqIs(log, exact.seqId, exact.struct) && seqIs(log, K.seqId, K.struct)) exact = K;
-        } else if (!loose && L <= 2 && !K.cap) loose = K;
+      const cands = candidatesOf(S, style, ci).filter(K => !(K.cap && K.used >= K.cap));
+      // the order without damage: most recent first, unless an earlier cast has a measured shape and the recent one
+      // only the default (Overpower's hits land on the tick the next basic is cast)
+      const byOrder = list => { let best = null; for (const K of list) { if (!best) best = K; else if (K.known && !best.known) best = K; else break; } return best; };
+      let exact = null, how = 'cast';
+      const k = kAt(style, S);
+      if (cands.length > 1 && k > 0 && e[4] > 0) {
+        // the damage decides: the casts whose stated range (with room for a crit) holds this hit, then the usual order
+        const fits = cands.filter(K => K.dmg && e[4] >= K.dmg[0] * k * 0.8 && e[4] <= K.dmg[1] * k * (h.crit ? 1.6 : 1.2));
+        if (fits.length) { exact = byOrder(fits); how = 'damage'; }
+        else { const open = cands.filter(K => !K.dmg); exact = byOrder(open.length ? open : cands); }
+      } else exact = byOrder(cands);
+      let loose = null;
+      if (!exact) {
+        for (let q = ci - 1; q >= 0 && S - casts[q].c <= LOOKBACK * TICK; q--) {
+          const K = casts[q], L = Math.floor((S - K.c + 3) / TICK);
+          if (!K.shape.length || K.cap) continue;
+          if (K.style && style && style !== 'typeless' && style !== 'poison' && K.style !== style && K.style !== 'typeless') continue;
+          if (L <= 3) { loose = K; break; }
+        }
       }
       const pick = exact || loose;
-      if (pick) { out[i] = pick.struct; reason[i] = exact ? 'cast' : 'near'; pick.used++; }
+      if (pick) { out[i] = pick.struct; reason[i] = exact ? how : 'near'; pick.used++; }
       else reason[i] = style === 'typeless' ? 'proc' : 'none';
     }
     c.attr = { struct: out, reason, casts, castStruct };
