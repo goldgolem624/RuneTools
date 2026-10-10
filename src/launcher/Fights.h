@@ -18,6 +18,10 @@ bool UploadAuto();    void SetUploadAuto(bool on);      // combat_upload.txt "1 
 long long UploadAutoSince();                            // logs that ended from then on upload automatically
 bool UploadLive();    void SetUploadLive(bool on);      // combat_live.txt, default off
 bool KeepNames();     void SetKeepNames(bool on);       // combat_names.txt, default off
+// combat_visibility.txt: private, unlisted or public, default private. A log takes the value it had when it
+// started recording and asks the site for it on upload.
+std::string UploadVisibility(); void SetUploadVisibility(const std::string& v);
+bool ValidVisibility(const std::string& v);
 
 std::string NewLogId();                                 // 16 random bytes, base64url
 
@@ -46,6 +50,7 @@ struct IndexRow {
     long long startedAt = 0, endedAt = 0, bytes = 0, events = 0;
     std::vector<IndexFight> fights;
     UploadInfo upload; UploadState state;
+    std::string uploadAs;                               // the visibility asked for on upload; "" = the setting at upload time
     int version = 1;
 };
 std::string RowJson(const IndexRow& r);

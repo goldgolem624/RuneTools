@@ -414,6 +414,7 @@ bool row_from_json(const JV& v, IndexRow& r) {
     if (v.k != JV::Obj) return false;
     r.id = v.str("id"); r.character = v.str("character"); r.file = v.str("file");
     r.startedAt = v.i("startedAt"); r.endedAt = v.i("endedAt"); r.bytes = v.i("bytes"); r.events = v.i("events"); r.version = (int)v.i("version", 1);
+    if (const std::string ua = v.str("uploadAs"); ValidVisibility(ua)) r.uploadAs = ua;
     if (const JV* fs = v.get("fights"); fs && fs->k == JV::Arr) {
         for (const JV& f : fs->a) {
             IndexFight x; x.n = (int)f.i("n"); x.start = f.i("start"); x.end = f.i("end"); x.kind = f.str("kind"); x.boss = f.str("boss");
@@ -511,6 +512,18 @@ bool UploadLive() { return flag_read(L"combat_live.txt"); }
 void SetUploadLive(bool on) { flag_write(L"combat_live.txt", on); }
 bool KeepNames() { return flag_read(L"combat_names.txt"); }
 void SetKeepNames(bool on) { flag_write(L"combat_names.txt", on); }
+bool ValidVisibility(const std::string& v) { return v == "private" || v == "unlisted" || v == "public"; }
+std::string UploadVisibility() {
+    std::string v;
+    { std::lock_guard<std::mutex> lk(g_mu); std::ifstream f(root_locked(false) / L"combat_visibility.txt"); if (f) f >> v; }
+    return ValidVisibility(v) ? v : std::string("private");
+}
+void SetUploadVisibility(const std::string& v) {
+    if (!ValidVisibility(v)) return;
+    std::lock_guard<std::mutex> lk(g_mu);
+    std::ofstream f(root_locked() / L"combat_visibility.txt", std::ios::trunc);
+    if (f) f << v;
+}
 
 std::string NewLogId() {
     unsigned char b[16];
@@ -569,6 +582,7 @@ std::string RowJson(const IndexRow& r) {
     else o += "{\"state\":" + jstr(r.state.state) + ",\"tries\":" + std::to_string(r.state.tries) + ",\"next\":" + std::to_string(r.state.next) +
               ",\"error\":" + jstr(r.state.error) + ",\"code\":" + jstr(r.state.code) +
               ",\"mode\":" + jstr(r.state.final ? "final" : r.state.manual ? "manual" : "auto") + "}";
+    if (!r.uploadAs.empty()) o += ",\"uploadAs\":" + jstr(r.uploadAs);
     o += ",\"version\":" + std::to_string(r.version) + "}";
     return o;
 }
@@ -614,6 +628,7 @@ bool CompactText(const std::string& jsonl, const char* endBy, std::string& outJs
     const JV* log = header.get("log"); const JV* clock = header.get("clock");
     row.id = log ? log->str("id") : std::string(); row.character = log ? log->str("character") : std::string();
     row.startedAt = log ? log->i("startedAt") : 0;
+    if (const std::string ua = log ? log->str("uploadAs") : std::string(); ValidVisibility(ua)) row.uploadAs = ua;
     row.endedAt = haveEnd ? endObj.i("endedAt") : row.startedAt;
     row.events = (long long)events.size();
     const long long c0 = clock ? clock->i("c0") : 0, wall0 = clock ? clock->i("wall0") : row.startedAt;
@@ -988,10 +1003,13 @@ Outcome classify(const Answer& a, int tries, UploadInfo& info) {
     return o;
 }
 
-std::vector<http::Header> upload_headers(const std::string& auth, const std::string& logId, const char* mode) {
+// visibility: what a new row on the site starts as; "" leaves it to the account's default
+std::vector<http::Header> upload_headers(const std::string& auth, const std::string& logId, const char* mode, const std::string& visibility = std::string()) {
     const std::string ver = rtx::launcher::running_version();
-    return { { "Authorization", auth }, { "Content-Type", "application/x-rtx-combatlog+gzip" }, { "X-RTX-Log-Id", logId },
-             { "X-RTX-Version", ver }, { "User-Agent", "RuneToolsX/" + ver }, { "X-RTX-Upload", mode } };
+    std::vector<http::Header> h = { { "Authorization", auth }, { "Content-Type", "application/x-rtx-combatlog+gzip" }, { "X-RTX-Log-Id", logId },
+                                    { "X-RTX-Version", ver }, { "User-Agent", "RuneToolsX/" + ver }, { "X-RTX-Upload", mode } };
+    if (ValidVisibility(visibility)) h.push_back({ "X-RTX-Visibility", visibility });
+    return h;
 }
 
 // A stored .json.gz as the gzip upload body.
@@ -1050,6 +1068,7 @@ const char* kSchemaJson =
     "\"19\":[\"sound\",\"id\",\"area\"],\"mech\":[\"mech\",\"boss\",\"key\",\"kind\",\"id\",\"actor\"]}";
 
 struct LiveLog {
+    std::string visibility;                             // the header's uploadAs; none = the account's default
     bool haveHeader = false; JV log, clock;
     long long c0 = 0, wall0 = 0;
     std::map<int, std::string> actors;                                 // i -> object
@@ -1083,6 +1102,7 @@ struct LiveLog {
                 const JV* l = h.get("log"); const JV* c = h.get("clock");
                 if (!l || l->k != JV::Obj || !c || c->k != JV::Obj) continue;
                 log = *l; clock = *c; c0 = c->i("c0"); wall0 = c->i("wall0", log.i("startedAt"));
+                if (ValidVisibility(log.str("uploadAs"))) visibility = log.str("uploadAs");
                 haveHeader = true; headDirty = true;
                 continue;
             }
@@ -1268,7 +1288,7 @@ struct LiveLog {
             if (!haveInflight) { if (!build(keepNames, inflight)) return false; haveInflight = true; }
             c = &inflight;
         }
-        auto hdr = upload_headers(auth, log.str("id"), "auto");
+        auto hdr = upload_headers(auth, log.str("id"), "auto", visibility);
         hdr.push_back({ "X-RTX-Live-Seq", std::to_string(c->seq) });
         const Chunk sent = *c;
         const http::Response r = http::Post(ep, kLivePath, hdr, c->gz);
@@ -1440,7 +1460,7 @@ void upload_pass() {
         return;
     }
     const char* mode = row.state.final ? "final" : row.state.manual ? "manual" : "auto";
-    const http::Response r = http::Post(http::Endpoint{ kUploadHost }, kLogsPath, upload_headers(auth, row.id, mode), body);
+    const http::Response r = http::Post(http::Endpoint{ kUploadHost }, kLogsPath, upload_headers(auth, row.id, mode, row.uploadAs.empty() ? UploadVisibility() : row.uploadAs), body);
     g_lastFinalTick = tick_now();
     const Answer a = to_answer(r);
     UploadInfo info;

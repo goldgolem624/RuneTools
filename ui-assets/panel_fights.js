@@ -11,7 +11,9 @@
   const FL_STYLE_COLOR = { melee: '#e06c6c', ranged: '#67c07a', magic: '#7f9fbf', necromancy: '#c98cf0', conjure: '#9a7fd0', typeless: '#9aa0ad', poison: '#5fd07a' };
   const fl = { rows: null, rowsAt: 0, char: '', logId: '', fight: -2, tab: 'overview', log: null, loading: '', live: null, liveId: '', liveSeq: 0, liveAt: 0,
                rec: null, recAt: 0, zoom: null, hl: 0, mhl: '', evFilt: { hit: true, cast: true, buff: true, mech: true, vitals: false, anim: false, fx: false, target: true, tracker: false, other: true },
-               evSearch: '', evShow: FL_ROWS, sig: '', pickSig: '', status: '', confirmDel: 0, drag: null, hide: {} };
+               evSearch: '', evShow: FL_ROWS, sig: '', pickSig: '', status: '', confirmDel: 0, drag: null, hide: {}, vis: null };
+  const FL_VIS = [['private', 'Private'], ['unlisted', 'Unlisted'], ['public', 'Public']];
+  const flVisName = v => (FL_VIS.find(x => x[0] === v) || FL_VIS[0])[1];
   const FL_SPR = new Map(), FL_SPR_PENDING = new Set();
   const FL_TAC = new Map(), FL_TAC_PENDING = new Set(), FL_TAC_MISS = new Map();
   const S = () => window.combatStats;
@@ -26,6 +28,8 @@
     '.fl-table.inv { --fl-cols: 52px 30px minmax(0, 3fr); }\n' +
     '.fl-gear .fl-perks { grid-column: 1 / -1; margin: -2px 0 3px; padding-left: 2px; font: 500 10.5px var(--font-mono); color: var(--text-dim, #9aa3b2); white-space: normal; }\n' +
     '.fl-perkd { display: block; font: 500 10.5px var(--font-mono); color: var(--text-dim, #9aa3b2); padding-left: 2px; white-space: normal; }\n' +
+    '.fl-vis .pet-dd-btn { font: 600 10px var(--font-mono); letter-spacing: .06em; text-transform: uppercase; padding: 4px 22px 4px 9px; white-space: nowrap; }\n.fl-vis .pet-dd-pop { left: auto; right: 0; }\n' +
+    '.fl-vis .pet-dd-btn::before { content: "Upload: "; }\n.fl-narrow .fl-vis .pet-dd-btn::before { content: none; }\n.fl-vis { flex: none; width: auto; }\n.fl-vis .pet-dd-btn { width: auto; }\n.fl-narrow .fl-vis .pet-dd-btn { letter-spacing: .02em; padding-right: 18px; }\n' +
     '.fl-lgt span { cursor: pointer; user-select: none; }\n.fl-lgt span:hover { color: var(--text); }\n.fl-lgt span.off { opacity: 0.4; text-decoration: line-through; }\n' +
     '.fl-swapc { display: flex; flex-direction: column; min-width: 0; }\n.fl-swapc .fl-chg { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }\n' +
     '.fl-table.swaps { --fl-cols: 52px minmax(56px, .8fr) minmax(0, 3fr); }\n.fl-table.used { --fl-cols: minmax(0, 2fr) 54px minmax(0, 2fr); }\n' +
@@ -239,6 +243,7 @@
     if (!force && now - fl.recAt < 5000) return;
     fl.recAt = now;
     try { fl.rec = flBool(await flCall('combatRecordEnabled')); } catch (e) {}
+    if (flHas('combatUploadVisibility')) { try { const v = await flCall('combatUploadVisibility'); if (FL_VIS.some(x => x[0] === v)) fl.vis = v; } catch (e) {} }
     paneRun('fights', flPaint);
   }
   async function flRecToggle() {
@@ -292,7 +297,11 @@
       fl.ddFight = flDd(v => { fl.fight = Number(v); fl.zoom = null; fl.hl = 0; flPaint(); });
       const live = el('span', 'fl-chip', 'Live'); live.id = 'flLiveChip'; live.dataset.tip = 'The recorder has an open fight for this client. The view refreshes every second.';
       const rec = el('button', 'fl-rec'); rec.id = 'flRec'; rec.type = 'button'; rec.addEventListener('click', flRecToggle);
-      const side = el('div', 'fl-pick-r'); side.appendChild(live); side.appendChild(rec);
+      // upload visibility: a log takes the value set when it starts recording
+      fl.ddVis = flDd(async v => { try { const r = await flCall('combatUploadVisibility', v); if (FL_VIS.some(x => x[0] === r)) fl.vis = r; } catch (e) {} flPaint(); });
+      fl.ddVis.classList.add('fl-vis'); fl.ddVis.style.display = 'none';
+      fl.ddVis.dataset.tip = 'How uploads appear on runetools.io. A log keeps the setting it had when it started recording.';
+      const side = el('div', 'fl-pick-r'); side.appendChild(live); side.appendChild(fl.ddVis); side.appendChild(rec);
       pick.appendChild(fl.ddChar); pick.appendChild(fl.ddLog); pick.appendChild(fl.ddFight); pick.appendChild(side);
       w.appendChild(pick);
       const note = el('div', 'fl-note'); note.id = 'flNote'; w.appendChild(note);
@@ -322,8 +331,12 @@
     const hasGear = !!(log && log.events.some(e => e[0] === 20));
     if (log && !hasGear && fl.tab === 'gear') fl.tab = 'overview';
     const width = ($('flBody') && $('flBody').clientWidth) || 0;
-    const sig = [has, fl.logId, n, fl.tab, log ? log.events.length : -1, log ? (log.fights || []).length : -1, fl.zoom ? fl.zoom.join(',') : '', fl.hl, fl.mhl, fl.evSearch, JSON.stringify(fl.evFilt), JSON.stringify(fl.hide),
+    const sig = [has, fl.logId, n, fl.tab, log ? log.events.length : -1, log ? (log.fights || []).length : -1, fl.zoom ? fl.zoom.join(',') : '', fl.hl, fl.mhl, fl.evSearch, JSON.stringify(fl.evFilt), JSON.stringify(fl.hide), fl.vis,
                  fl.evShow, fl.rec, fl.liveId, fl.loading, fl.status, fl.confirmDel, width, flRows().length].join('|');
+    if (fl.ddVis) {
+      fl.ddVis.style.display = fl.vis ? '' : 'none';
+      if (fl.vis && fl.ddVis.getValue() !== fl.vis) fl.ddVis.setItems(FL_VIS.map(([v, l]) => ({ value: v, label: l })), fl.vis);
+    }
     if (sig === fl.sig) return;
     fl.sig = sig;
     const note = $('flNote');
@@ -422,13 +435,14 @@
     if (!log || !id || id === 'live') return;
     const mk = (label, cls, fn, tip) => { const b = el('button', 'fl-btn' + (cls ? ' ' + cls : ''), label); b.type = 'button'; if (tip) b.dataset.tip = tip; b.addEventListener('click', fn); btns.appendChild(b); return b; };
     const row = flRows().find(r => r.id === id);
+    const as = (row && row.uploadAs) || fl.vis;
     if (flHas('fightUpload') && flHas('fightUploadStatus') && !(row && row.upload)) mk('Upload', 'gold', async () => {
       fl.status = 'Uploading...'; flPaint();
       let ok = false;
       try { const r = await flCall('fightUpload', id); ok = !!(r && r.ok); } catch (e) {}
       fl.status = ok ? 'Upload queued.' : 'Upload failed.'; fl.rowsAt = 0; flPaint();
       if (ok) flUploadFollow(id);
-    });
+    }, as ? 'Uploads as ' + flVisName(as).toLowerCase() + (row && row.uploadAs ? ', set when this log started recording' : '') : '');
     if (flHas('fightExport')) mk('Export', '', async () => { try { const r = await flCall('fightExport', id, true); fl.status = r && r.ok ? 'Exported to ' + (r.path || 'the export folder') + '.' : (r && r.error ? String(r.error) : ''); } catch (e) { fl.status = 'Export failed.'; } flPaint(); }, 'Save the log as .json.gz (Save As)');
     if (flHas('fightOpenFolder')) mk('Folder', '', () => { flCall('fightOpenFolder'); }, 'Open the folder that holds the logs');
     if (flHas('fightDelete')) {

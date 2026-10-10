@@ -571,7 +571,7 @@ std::string Recorder::fightJson(const FightRow& f) const {
 std::string Recorder::headerJson() const {
     return "{\"format\":" + std::to_string(kFormat) + ",\"log\":{\"id\":" + jstr(logId_) + ",\"character\":" + jstr(cfg_.character) +
            ",\"launcher\":" + jstr(cfg_.launcher) + ",\"client\":" + jstr(cfg_.client) + ",\"startedAt\":" + std::to_string(startedAt_) +
-           ",\"companion\":false},\"clock\":{\"c0\":" + std::to_string(c0_) + ",\"wall0\":" + std::to_string(wall0_) +
+           (uploadAs_.empty() ? std::string() : ",\"uploadAs\":" + jstr(uploadAs_)) + ",\"companion\":false},\"clock\":{\"c0\":" + std::to_string(c0_) + ",\"wall0\":" + std::to_string(wall0_) +
            ",\"phase\":" + std::to_string(phase_) + ",\"tick0\":" + std::to_string(haveTickOff_ ? tickOff_ : -1) + "}}";
 }
 
@@ -709,6 +709,7 @@ void Recorder::writeEvent(const Ev& e) {
 
 void Recorder::openLog(long long c, long long wallMs, const std::vector<Ev>& pending) {
     logId_ = cfg_.newLogId ? cfg_.newLogId() : std::to_string(wallMs);
+    uploadAs_ = cfg_.uploadAs ? cfg_.uploadAs() : std::string();
     startedAt_ = wallMs; c0_ = c; wall0_ = wallMs;
     written_ = 0; logBytes_ = 0; gaps_ = 0; readFails_ = 0; reads_ = 0; seq_ = 0;
     tail_.clear(); dict_.clear(); dictJson_.clear(); mechDict_.clear(); fights_.clear();

@@ -101,6 +101,7 @@ struct Config {
     std::vector<MechBoss> mechBosses;
     Names names;
     std::function<std::string()> newLogId;
+    std::function<std::string()> uploadAs;     // the upload visibility a new log takes ("" = none)
 };
 
 struct ActorRow { int i = 0; std::string type; int uid = -1, id = -1; std::string name; long long first = 0; int lpMax = -1, vis = -1; bool written = false; };
@@ -223,7 +224,7 @@ private:
     bool inFight_ = false; FightRow cur_; long long lastActionC_ = 0;
     std::vector<FightRow> fights_;
     // log
-    bool logOpen_ = false; std::string logId_; long long startedAt_ = 0, c0_ = 0, wall0_ = 0;
+    bool logOpen_ = false; std::string logId_, uploadAs_; long long startedAt_ = 0, c0_ = 0, wall0_ = 0;
     long long written_ = 0, logBytes_ = 0, gaps_ = 0, readFails_ = 0, reads_ = 0;
     std::deque<Ev> preroll_;
     std::unordered_map<std::uint64_t, Ev> baseline_;     // the last state row per key that left the pre-roll window

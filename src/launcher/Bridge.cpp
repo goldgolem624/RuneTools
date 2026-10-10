@@ -3253,6 +3253,7 @@ bool build_config() {
     c.names.perkName = [](int id) { return rtx::cache::PerkName(id); };
     c.names.perkRanks = [](int id) { return rtx::cache::PerkRankCount(id); };
     c.newLogId = [] { return fights::NewLogId(); };
+    c.uploadAs = [] { return fights::UploadVisibility(); };
     g_cfg = std::move(c); g_cfgOk = true;
     return true;
 }
@@ -3436,6 +3437,14 @@ JSValueRef CombatLiveState(JSContextRef ctx, JSObjectRef, JSObjectRef, size_t, c
 JSValueRef CombatKeepNames(JSContextRef ctx, JSObjectRef, JSObjectRef, size_t argc, const JSValueRef argv[], JSValueRef*) {
     if (argc >= 1) fights::SetKeepNames(JSValueToBoolean(ctx, argv[0]));
     return JSValueMakeBoolean(ctx, fights::KeepNames());
+}
+// combatUploadVisibility([string]): private, unlisted or public; new logs take it when they start recording.
+JSValueRef CombatUploadVisibility(JSContextRef ctx, JSObjectRef, JSObjectRef, size_t argc, const JSValueRef argv[], JSValueRef*) {
+    if (argc >= 1 && JSValueIsString(ctx, argv[0])) {
+        const std::string v = js_to_utf8(ctx, argv[0]);
+        if (fights::ValidVisibility(v)) { fights::SetUploadVisibility(v); rtx::log::Launcher("combat: upload visibility " + v); }
+    }
+    return utf8_to_js(ctx, fights::UploadVisibility());
 }
 // combatRecordActive([bool]): the session's start/stop; off closes the open logs at the next pass.
 JSValueRef CombatRecordActive(JSContextRef ctx, JSObjectRef, JSObjectRef, size_t argc, const JSValueRef argv[], JSValueRef*) {
@@ -6677,6 +6686,7 @@ void AttachBridge(ultralight::View* view) {
     install_fn(ctx, ns, "combatUploadLive",  CombatUploadLive);
     install_fn(ctx, ns, "combatLiveState",   CombatLiveState);
     install_fn(ctx, ns, "combatKeepNames",   CombatKeepNames);
+    install_fn(ctx, ns, "combatUploadVisibility", CombatUploadVisibility);
     install_fn(ctx, ns, "combatRecordActive", CombatRecordActive);
     install_fn(ctx, ns, "combatRecordState", CombatRecordState);
     install_fn(ctx, ns, "fightsList",        FightsList);
