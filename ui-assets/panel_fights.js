@@ -323,6 +323,22 @@
     fl.ddFight.setItems(fi, fl.fight);
     $('flPick').style.display = has || fl.live ? '' : 'none';
   }
+  // After Upload: follow the launcher's state for that log until it is sent or fails, so the line under the
+  // pickers says what happened instead of staying on "queued".
+  function flUploadFollow(id, tries) {
+    tries = tries || 0;
+    if (tries > 60 || fl.logId !== id) return;
+    setTimeout(async () => {
+      if (fl.logId !== id) return;
+      let st = null;
+      try { st = await flCall('fightUploadStatus', id); } catch (e) {}
+      const state = st && st.state;
+      if (state === 'sent') { fl.status = 'Uploaded to runetools.io.'; fl.rowsAt = 0; flPaint(); return; }
+      if (state === 'failed') { fl.status = 'Upload failed' + (st.error ? ': ' + String(st.error).slice(0, 120) : '.'); fl.rowsAt = 0; flPaint(); return; }
+      if (state === 'queued' || state === 'sending' || state === 'retry') { const t = state === 'retry' ? 'Upload will retry.' : 'Uploading...'; if (fl.status !== t) { fl.status = t; flPaint(); } }
+      flUploadFollow(id, tries + 1);
+    }, 1500);
+  }
   function flPaintStrip(log, n) {
     const strip = $('flStrip'), line = $('flLine');
     strip.innerHTML = ''; line.textContent = '';
@@ -355,7 +371,13 @@
     if (!log || !id || id === 'live') return;
     const mk = (label, cls, fn, tip) => { const b = el('button', 'fl-btn' + (cls ? ' ' + cls : ''), label); b.type = 'button'; if (tip) b.dataset.tip = tip; b.addEventListener('click', fn); btns.appendChild(b); return b; };
     const row = flRows().find(r => r.id === id);
-    if (flHas('fightUpload') && flHas('fightUploadStatus') && !(row && row.upload)) mk('Upload', 'gold', async () => { fl.status = 'Uploading...'; flPaint(); try { const r = await flCall('fightUpload', id); fl.status = r && r.ok ? 'Upload queued.' : 'Upload failed.'; } catch (e) { fl.status = 'Upload failed.'; } fl.rowsAt = 0; flPaint(); });
+    if (flHas('fightUpload') && flHas('fightUploadStatus') && !(row && row.upload)) mk('Upload', 'gold', async () => {
+      fl.status = 'Uploading...'; flPaint();
+      let ok = false;
+      try { const r = await flCall('fightUpload', id); ok = !!(r && r.ok); } catch (e) {}
+      fl.status = ok ? 'Upload queued.' : 'Upload failed.'; fl.rowsAt = 0; flPaint();
+      if (ok) flUploadFollow(id);
+    });
     if (flHas('fightExport')) mk('Export', '', async () => { try { const r = await flCall('fightExport', id, true); fl.status = r && r.ok ? 'Exported to ' + (r.path || 'the export folder') + '.' : (r && r.error ? String(r.error) : ''); } catch (e) { fl.status = 'Export failed.'; } flPaint(); }, 'Save the log as .json.gz (Save As)');
     if (flHas('fightOpenFolder')) mk('Folder', '', () => { flCall('fightOpenFolder'); }, 'Open the folder that holds the logs');
     if (flHas('fightDelete')) {
