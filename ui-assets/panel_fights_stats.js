@@ -206,6 +206,7 @@
     // other-set hits by target, in order
     const others = {};
     for (let i = 0; i < ev.length; i++) { const e = ev[i]; if (e[0] === 0 && e[2] !== c.self && hitRole(log, e) === 'other') (others[e[2]] = others[e[2]] || []).push(i); }
+    if (!c.sorted) for (const t in others) others[t].sort((x, y) => ev[x][1] - ev[y][1]);   // the search below needs cycle order
     const firstAfter = (list, cyc) => { let lo = 0, hi = list.length; while (lo < hi) { const m = (lo + hi) >> 1; if (ev[list[m]][1] < cyc) lo = m + 1; else hi = m; } return lo; };
     const hitBy = new Map(), delay = {};
     for (const a in starts) {

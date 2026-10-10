@@ -232,7 +232,11 @@
     if (Array.isArray(r.actors) && r.actors.length) L.actors = r.actors;
     if (Array.isArray(r.fights)) L.fights = r.fights;
     if (Array.isArray(r.events) && r.events.length) {
-      for (const e of r.events) L.events.push(e);
+      // the feed arrives in writing order, which trails a few cycles here and there (a hit's own cycle, an animation's
+      // start cycle); the stats expect cycle order like a saved log, so the array is kept sorted
+      let last = L.events.length ? L.events[L.events.length - 1][1] : -Infinity, unsorted = false;
+      for (const e of r.events) { if (e[1] < last) unsorted = true; else last = e[1]; L.events.push(e); }
+      if (unsorted) L.events.sort((a, b) => a[1] - b[1]);
       if (L.events.length > 20000) L.events.splice(0, L.events.length - 20000);
     }
     if (typeof r.seq === 'number') fl.liveSeq = r.seq;
