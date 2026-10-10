@@ -18,7 +18,8 @@ constexpr int kUnknown = -0x7fffffff;
 constexpr int kVarpLp = 13537, kVarpLpMax = 13538, kVarpAdren = 679, kVarpPrayer = 3274, kVarpEncounter = 10946;
 constexpr int kGcdStart = 2091, kGcdEnd = 2092, kGcdStruct = 14881;   // the global cooldown's dummy struct
 constexpr int kScriptCooldown = 6570, kScriptChannel = 18766, kScriptBuffTimer = 4252;   // 4252: (struct, ticks left)   // (struct, start tick, end tick, 1, 1); (side, ticks, id, name)
-constexpr long long kCastMatch = 15;                 // a cooldown varc and script 6570 this many cycles apart are one cast
+constexpr long long kCastMatch = 15;
+constexpr long long kBuffNameWaitPasses = 600;       // about a minute of 100 ms passes                 // a cooldown varc and script 6570 this many cycles apart are one cast
 constexpr long long kRestoreSlack = 45;              // a 6570 record this much older than the tick offset is a cooldown restore
 bool isGcdStruct(int st) { return st == 14881 || st == 14882 || st == 29145; }
 constexpr int kTypeSound = 19, kTypeMech = 100;      // kTypeMech is written as ["mech", c, boss, key, kind, id, actor]
@@ -716,7 +717,12 @@ void Recorder::openLog(long long c, long long wallMs, const std::vector<Ev>& pen
     if (adren_ >= 0) add(5, sc, { adren_ });
     if (prayer_ != kUnknown) add(6, sc, { prayer_ & 0xFFFF, (prayer_ >> 16) & 0x7FFF });
     if (enc_ != kUnknown) add(12, sc, { enc_ });
-    for (const auto& b : buffs_) if (b.known && b.on) add(7, sc, { b.structId, 1, -1, b.last, -1 });
+    for (const auto& b : buffs_) {
+        if (!b.known || !b.on) continue;
+        // the buff the server named for the var; a shared var nothing named yet waits for its queued row
+        const int st = b.cur ? b.cur : b.owner ? b.owner : b.group.size() > 1 ? 0 : b.structId;
+        if (st) add(7, sc, { st, 1, -1, b.last, -1 });
+    }
     for (const auto& kv : trackers_) add(9, sc, { kv.first >> 16, (kv.first >> 8) & 0xFF, kv.first & 0xFF, kv.second });
     std::vector<Ev> base;
     for (auto& kv : baseline_) base.push_back(std::move(kv.second));
@@ -954,6 +960,13 @@ void Recorder::FeedNet(const std::vector<NetEv>& in, std::uint32_t clock, long l
 // (4252 lands in the same packet pass, drained after this one) and is written by FeedNet or the next pass.
 void Recorder::pushBuff(std::vector<Ev>& evs, BuffVar& b, const QueuedBuff& q) {
     if (b.group.size() > 1 && q.on) { buffQ_.push_back(q); return; }
+    if (!q.on) {   // a timer that ends before anything named it: its waiting row is dropped and so is the end
+        bool waiting = false;
+        for (auto it = buffQ_.begin(); it != buffQ_.end();) {
+            if (it->buff == q.buff) { waiting = true; it = buffQ_.erase(it); } else ++it;
+        }
+        if (waiting && !b.cur) return;
+    }
     const int st = q.on ? (b.owner ? b.owner : b.structId) : (b.cur ? b.cur : (b.owner ? b.owner : b.structId));
     if (q.on) b.cur = st;
     push(evs, 7, q.c, { st, q.on, q.start, q.end, q.stacks });
@@ -963,8 +976,12 @@ void Recorder::pushBuff(std::vector<Ev>& evs, BuffVar& b, const QueuedBuff& q) {
 void Recorder::flushBuffs(std::vector<Ev>& evs, bool all) {
     std::vector<QueuedBuff> keep;
     for (const auto& q : buffQ_) {
-        if (!all && q.pass >= passes_) { keep.push_back(q); continue; }
         BuffVar& b = buffs_[(std::size_t)q.buff];
+        // a shared timer already running when recording began was named before it: wait for the server to name
+        // it again (it repeats every few seconds) rather than guess, up to a minute, then the table's first
+        const bool unnamed = q.start < 0 && !b.cur && !b.owner;
+        if (unnamed && passes_ - q.pass < kBuffNameWaitPasses) { keep.push_back(q); continue; }
+        if (!all && q.pass >= passes_) { keep.push_back(q); continue; }
         const int st = b.owner ? b.owner : b.structId;
         if (b.cur && b.cur != st && q.start < 0) push(evs, 7, q.c, { b.cur, 0, -1, q.c, -1 });   // the var changed hands while on
         b.cur = st;
