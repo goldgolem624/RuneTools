@@ -137,7 +137,7 @@
     const hm = Object.create(null), dh = (log.dict && log.dict.hitmarks) || {};
     for (const k in dh) hm[k] = dh[k];
     const si = log.dict && log.dict.seqinfo;
-    const c = { n: log.events.length, self, actors, hm, abilities: (log.dict && log.dict.abilities) || {}, buffs: (log.dict && log.dict.buffs) || {},
+    const c = { n: log.events.length, self, actors, hm, abilities: (log.dict && log.dict.abilities) || {}, buffs: resolveBuffs(log),
                 seqs: (log.dict && log.dict.seqs) || {}, attr: null, mechT: {}, mechN: -1, bossN: {} };
     Object.defineProperty(c, 'mark', { value: MARK });
     c.seqinfo = isObj(si) ? si : null;
@@ -738,6 +738,23 @@
 
   // Buff and debuff spans within the fight. An on row with end e covers [c, e]; a later on row for the
   // same struct extends it; an off row closes it at its c.
+  // A buff whose only name is its effect ("Melee basic abilities generate 1.5x adrenaline") goes by the ability that
+  // draws the same icon (Meteor Strike), the effect kept as desc. Newer launchers write it that way; this covers
+  // older logs from the abilities they carry.
+  function effectText(n) { return /<br>|\.\s*$/i.test(n) || String(n).trim().split(/\s+/).length > 5; }
+  function resolveBuffs(log) {
+    const bs = (log.dict && log.dict.buffs) || {}, ab = (log.dict && log.dict.abilities) || {};
+    let byIcon = null, out = bs;
+    for (const k in bs) {
+      const b = bs[k];
+      if (!isObj(b) || typeof b.name !== 'string' || b.desc || !(b.icon > 0) || !effectText(b.name)) continue;
+      if (!byIcon) { byIcon = {}; for (const a in ab) if (isObj(ab[a]) && ab[a].icon > 0 && typeof ab[a].name === 'string' && ab[a].name && !own(byIcon, ab[a].icon)) byIcon[ab[a].icon] = ab[a].name; }
+      if (!own(byIcon, b.icon)) continue;
+      if (out === bs) out = Object.assign({}, bs);
+      out[k] = Object.assign({}, b, { name: byIcon[b.icon], desc: b.name.replace(/<br>/gi, '. ').replace(/<[^>]*>/g, '') });
+    }
+    return out;
+  }
   // A timer struct the game never draws on its buff bar: the dictionary row has neither a name nor an icon.
   function hiddenBuff(b) { return !!b && b.name === '' && !b.icon; }
   // ---- Inventory (container 93) and equipment (94): [20, c, container, slot, item, count], one row per slot change.
@@ -882,7 +899,7 @@
       const total = merged.reduce((t, sp) => t + sp[1] - sp[0], 0);
       const b = c.buffs[s] || {};
       if (hiddenBuff(c.buffs[s])) continue;
-      rows.push({ struct: Number(s), name: shortName(b.name || 'Buff ' + s), fullName: b.name || '', type: b.type || 0, icon: b.icon || 0, item: b.item || 0, spans: merged, uptime: total / dur });
+      rows.push({ struct: Number(s), name: shortName(b.name || 'Buff ' + s), fullName: b.name || '', desc: typeof b.desc === 'string' ? b.desc : '', type: b.type || 0, icon: b.icon || 0, item: b.item || 0, spans: merged, uptime: total / dur });
     }
     rows.sort((a, b) => b.uptime - a.uptime || a.name.localeCompare(b.name));
     return { rows, range: r };

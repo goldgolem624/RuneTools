@@ -643,14 +643,32 @@ void Recorder::ensureDict(const Ev& e) {
     case 7: {
         const int st = (int)e.f[0];
         if (!once(7, st)) return;
-        std::string name = cfg_.names.structStr ? cfg_.names.structStr(st, 2794) : std::string();
+        const std::string raw = cfg_.names.structStr ? cfg_.names.structStr(st, 2794) : std::string();
+        std::string name = raw;
         const std::size_t cut = name.find('<');
         if (cut != std::string::npos) name = name.substr(0, cut);
         const int type = cfg_.names.structInt ? cfg_.names.structInt(st, 8109, -1) : -1;
         const int icon = cfg_.names.structInt ? cfg_.names.structInt(st, 2802, 0) : 0;
         const int item = !icon && cfg_.names.structInt ? cfg_.names.structInt(st, 4677, 0) : 0;   // no sprite: the item it comes from
+        // a buff whose only name is its effect ("Melee basic abilities generate 1.5x adrenaline") goes by the ability
+        // that draws the same icon (Meteor Strike); the effect is kept as its description
+        std::string desc;
+        int words = 0; bool inWord = false;
+        for (char ch : name) { const bool sp = ch == ' '; if (!sp && !inWord) ++words; inWord = !sp; }
+        const bool sentence = cut != std::string::npos || (!name.empty() && name.back() == '.') || words > 5;
+        if (icon > 0 && sentence)
+            for (const auto& a : cfg_.abilities)
+                if (a.icon == icon && !a.name.empty()) {
+                    for (std::size_t i = 0; i < raw.size(); ++i) {   // the full text, a line break read as a sentence break
+                        if (raw.compare(i, 4, "<br>") == 0) { if (!desc.empty() && desc.back() != '.') desc += '.'; desc += ' '; i += 3; continue; }
+                        if (raw[i] == '<') { const std::size_t e = raw.find('>', i); if (e == std::string::npos) break; i = e; continue; }
+                        desc += raw[i];
+                    }
+                    name = a.name;
+                    break;
+                }
         dictLine("buffs", st, "{\"name\":" + jstr(name) + ",\"type\":" + std::to_string(type) + ",\"icon\":" + std::to_string(icon) +
-                 (item > 0 ? ",\"item\":" + std::to_string(item) : std::string()) + "}");
+                 (item > 0 ? ",\"item\":" + std::to_string(item) : std::string()) + (desc.empty() ? std::string() : ",\"desc\":" + jstr(desc)) + "}");
         break;
     }
     case 9: {

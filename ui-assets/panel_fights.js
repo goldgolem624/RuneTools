@@ -726,7 +726,7 @@
     const g = el('div', 'fl-gantt');
     for (const u of rows) {
       const row = el('div', 'fl-gr' + (key === 'debuff' ? ' debuff' : ''));
-      const nm = flName('n', u.name, u.icon, true); if (!u.icon && nm.firstChild) flBuffItem(nm.firstChild, u.struct, u.item); nm.dataset.tip = (u.fullName || u.name) + '\n' + (u.type ? 'debuff' : 'buff') + ', struct ' + u.struct + ', ' + u.spans.length + ' span' + (u.spans.length === 1 ? '' : 's');
+      const nm = flName('n', u.name, u.icon, true); if (!u.icon && nm.firstChild) flBuffItem(nm.firstChild, u.struct, u.item); nm.dataset.tip = (u.fullName || u.name) + (u.desc ? '\n' + u.desc : '') + '\n' + (u.type ? 'debuff' : 'buff') + ', struct ' + u.struct + ', ' + u.spans.length + ' span' + (u.spans.length === 1 ? '' : 's');
       const bar = el('span', 'g');
       for (const sp of u.spans) { const i = el('i'); i.style.left = ((sp[0] - up.range.start) / dur * 100).toFixed(2) + '%'; i.style.width = Math.max(0.3, (sp[1] - sp[0]) / dur * 100).toFixed(2) + '%'; i.dataset.tip = st.fmtMs((sp[0] - up.range.start) * st.CYCLE_MS) + ' to ' + st.fmtMs((sp[1] - up.range.start) * st.CYCLE_MS); bar.appendChild(i); }
       row.appendChild(nm); row.appendChild(bar); row.appendChild(el('span', 'v', (u.uptime * 100).toFixed(0) + '%'));

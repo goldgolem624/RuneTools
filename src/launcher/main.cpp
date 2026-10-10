@@ -682,6 +682,13 @@ int APIENTRY wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
             { std::ofstream f("item-extra.txt", std::ios::binary | std::ios::trunc); f << out; }
             return headless_exit(0);
         }
+        // --struct-dump <id> [id...]: every param of the given cache structs, one line each, to struct-dump.txt.
+        if (argv && argc >= 3 && std::wstring(argv[1]) == L"--struct-dump") {
+            std::ofstream f("struct-dump.txt", std::ios::binary | std::ios::trunc);
+            for (int k = 2; k < argc; ++k) { const int id = _wtoi(argv[k]); f << id << " " << rtx::cache::StructParamsJson(id) << "\n"; }
+            f.close();   // headless_exit ends the process without running destructors
+            return headless_exit(0);
+        }
         // --eof-dump <pid>: every Essence of Finality in the inventory and equipment as the fight recorder reads it,
         // with the weapon its stored special comes from, to eof-dump.txt.
         if (argv && argc >= 3 && std::wstring(argv[1]) == L"--eof-dump") {
@@ -701,6 +708,7 @@ int APIENTRY wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
             };
             dump("equip", s.equip, s.equipEof);
             dump("inv", s.inv, s.invEof);
+            f.close();   // headless_exit ends the process without running destructors
             return headless_exit(0);
         }
         // --enum-scan <keyA> <keyB>: every cache enum holding int values at both keys, with the item names those
