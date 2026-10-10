@@ -826,12 +826,8 @@ void Check(const std::wstring& exePath, rtx::health::Run& run) {
         {
             std::map<std::uint32_t, std::uint32_t> byRva;
             for (const auto& kv : I.handlers) byRva[kv.second] = kv.first;
-            std::map<std::string, std::uint32_t> ops;
-            const bool table = rtx::calib::Table().usable;
-            if (table) {
-                wchar_t up[MAX_PATH] = {};
-                if (GetEnvironmentVariableW(L"USERPROFILE", up, MAX_PATH)) rtx::calib::OpTable(std::wstring(up) + L"\\RuneToolsX\\cs2\\opcodes.json", ops);
-            }
+            const std::map<std::string, std::uint32_t> ops = rtx::calib::OpNames();
+            const bool table = !ops.empty();
             int good = 0; std::string bad;
             for (const auto& cc : rtx::sig::kCcOps) {
                 std::vector<std::uint32_t> found;
@@ -858,32 +854,27 @@ void Check(const std::wstring& exePath, rtx::health::Run& run) {
                 for (char& c : upper) if (c >= 'a' && c <= 'z') c = (char)(c - 'a' + 'A');
                 auto named = ops.find(upper);
                 if (found.size() != 1) { bad += std::string(bad.empty() ? "" : "; ") + cc.name + (found.empty() ? " not found" : " matches " + std::to_string(found.size()) + " ops"); continue; }
-                if (named != ops.end() && named->second != found[0]) { bad += std::string(bad.empty() ? "" : "; ") + cc.name + " is op " + std::to_string(found[0]) + ", the table says " + std::to_string(named->second); continue; }
+                if (named != ops.end() && named->second != found[0]) { bad += std::string(bad.empty() ? "" : "; ") + cc.name + " is op " + std::to_string(found[0]) + ", named op " + std::to_string(named->second); continue; }
                 run.Fact(std::string("cc.") + cc.name, std::to_string(found[0]));
                 ++good;
             }
             const int total = (int)(sizeof(rtx::sig::kCcOps) / sizeof(rtx::sig::kCcOps[0]));
             if (!bad.empty()) Word(bad.find("not found") != std::string::npos ? "GONE" : bad.find("is op") != std::string::npos ? "MOVED" : "NEW", bad);
             run.Add(G, "code.cc", "Component setters", bad.empty() ? kPass : kFail,
-                    bad.empty() ? std::to_string(good) + "/" + std::to_string(total) + " found, each unique" + (table ? " and agreeing with the op table" : "") : bad,
+                    bad.empty() ? std::to_string(good) + "/" + std::to_string(total) + " found, each unique" + (table ? " and agreeing with the op names" : "") : bad,
                     rtx::sig::kCcFeatures, std::to_string(total), std::to_string(good), "code.exe");
         }
-        // ops called by name: resolve in the table, and pop what is pushed
+        // ops called by name: each has a handler under its name, and pops what is pushed
         {
-            const bool table = rtx::calib::Table().usable;
-            std::map<std::string, std::uint32_t> ops;
-            if (table) {
-                wchar_t up[MAX_PATH] = {};
-                if (GetEnvironmentVariableW(L"USERPROFILE", up, MAX_PATH)) rtx::calib::OpTable(std::wstring(up) + L"\\RuneToolsX\\cs2\\opcodes.json", ops);
-            }
-            if (!table || ops.empty()) {
-                run.Add(G, "code.named", "Engine ops by name", kUnchecked, "UNVERIFIED: operation table not usable (see Calibration): extract the scripts for this build", "Asks|Sounds|Camera|In-frame panels", "", "", "calib.table").need = "a script export for this build";
+            const std::map<std::string, std::uint32_t> ops = rtx::calib::OpNames();
+            if (ops.empty()) {
+                run.Add(G, "code.named", "Engine ops by name", kFail, "GONE: no operation named in this exe (see Calibration)", "Asks|Sounds|Camera|In-frame panels", "", "", "calib.table");
             } else {
                 int good = 0, total = 0; std::string bad, unverified; bool gone = false, format = false;
                 for (const auto& n : kNamedOps) {
                     ++total;
                     auto it = ops.find(n.name);
-                    if (it == ops.end()) { gone = true; bad += std::string(bad.empty() ? "" : "; ") + n.name + " not in the table"; continue; }
+                    if (it == ops.end()) { gone = true; bad += std::string(bad.empty() ? "" : "; ") + n.name + " not recognised by its code"; continue; }
                     auto h = I.handlers.find(it->second);
                     if (h == I.handlers.end()) { gone = true; bad += std::string(bad.empty() ? "" : "; ") + n.name + " has no handler"; continue; }
                     if (n.ints > 0) {   // an op that pushes nothing has nothing to pop

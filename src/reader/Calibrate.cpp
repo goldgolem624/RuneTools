@@ -2,6 +2,7 @@
 #include "../../companion/MainDataOffsets.h"
 #include "../../companion/SceneOffsets.h"
 #include "../../companion/Signatures.h"
+#include "../../companion/OpPrintsTable.h"
 
 #include <windows.h>
 #include <algorithm>
@@ -98,6 +99,7 @@ const Spot kSpots[] = {
 struct Cache {
     std::wstring key; std::vector<Found> found; std::string report, why;
     TableState table; std::vector<SpotCheck> spots;
+    std::map<std::string, std::uint32_t> ops;   // every name in use: by the handlers' code, and the export's where one is used
 };
 std::mutex g_mu;
 Cache g_cache;
@@ -471,27 +473,64 @@ static const std::vector<Found>& RunLocked(const std::wstring& exePath, const st
     }
     if (!Handlers(pe, handlers)) return give_up("operation registrar not recognised");
     g_cache.table.handlers = (int)handlers.size();
-    if (!OpTable(opcodesJson, ops)) return give_up("operation table (cs2\\opcodes.json) not readable");
-    g_cache.table.names = (int)ops.size();
-    const std::string mismatch = TableBuildMismatch(exePath, opcodesJson, buildTxt, g_cache.table);
-    if (needLabel && !mismatch.empty()) return give_up(mismatch);
-    std::string spotFail;
-    for (const Spot& sp : kSpots) {
-        SpotCheck sc; sc.text = sp.text; sc.op = sp.op;
-        auto o = ops.find(sp.op);
-        const std::vector<std::uint32_t> owners = HandlersNaming(pe, handlers, sp.text);
-        for (std::size_t i = 0; i < owners.size(); ++i) sc.owners += (i ? "," : "") + std::to_string(owners[i]);
-        if (o != ops.end()) sc.number = (int)o->second;
-        if (o == ops.end() || owners.empty()) sc.ok = -1;
-        else sc.ok = std::find(owners.begin(), owners.end(), o->second) != owners.end() ? 1 : 0;
-        if (sc.ok == 0 && spotFail.empty())
-            spotFail = std::string("operation table names ") + sp.op + " " + std::to_string(sc.number) +
-                       ", the handler naming " + sp.text + " is op " + sc.owners;
-        g_cache.spots.push_back(sc);
+    // the names the handlers earn by their own code
+    rtx::opprints::Named byCode;
+    {
+        rtx::opprints::Image im;
+        if (rtx::opprints::Open(f.data(), f.size(), false, im)) {
+            rtx::opprints::Prints pr;
+            rtx::opprints::Take(im, handlers, pr);
+            rtx::opprints::Resolve(pr, rtx::opprints::kRefs, rtx::opprints::kRefCount, byCode);
+        }
     }
+    g_cache.table.fromCode = (int)byCode.byName.size();
+    // The handlers that name themselves, against a set of names: the first disagreement, or empty.
+    auto spot_fail = [&](const std::map<std::string, std::uint32_t>& names, std::vector<SpotCheck>* keep) {
+        std::string fail;
+        for (const Spot& sp : kSpots) {
+            SpotCheck sc; sc.text = sp.text; sc.op = sp.op;
+            auto o = names.find(sp.op);
+            const std::vector<std::uint32_t> owners = HandlersNaming(pe, handlers, sp.text);
+            for (std::size_t i = 0; i < owners.size(); ++i) sc.owners += (i ? "," : "") + std::to_string(owners[i]);
+            if (o != names.end()) sc.number = (int)o->second;
+            if (o == names.end() || owners.empty()) sc.ok = -1;
+            else sc.ok = std::find(owners.begin(), owners.end(), o->second) != owners.end() ? 1 : 0;
+            if (sc.ok == 0 && fail.empty())
+                fail = std::string(sp.op) + " is named operation " + std::to_string(sc.number) +
+                       ", the handler naming " + sp.text + " is op " + sc.owners;
+            if (keep) keep->push_back(sc);
+        }
+        return fail;
+    };
+    // An export of this build's scripts, where the launcher keeps one, adds the names the code did
+    // not settle and stands where the two differ. It is not needed: without one the names are the
+    // code's alone.
+    ops = byCode.byName;
+    {
+        std::map<std::string, std::uint32_t> exported;
+        const bool read = OpTable(opcodesJson, exported);
+        const std::string mismatch = TableBuildMismatch(exePath, opcodesJson, buildTxt, g_cache.table);
+        std::string note = !read ? std::string("none on this PC") : needLabel ? mismatch : std::string();
+        if (note.empty()) {
+            int differ = 0;
+            for (const auto& kv : byCode.byName) {
+                const auto it = exported.find(kv.first);
+                if (it == exported.end()) exported.insert(kv);
+                else if (it->second != kv.second) ++differ;
+            }
+            note = spot_fail(exported, nullptr);
+            if (note.empty()) { ops.swap(exported); g_cache.table.exportUsed = true; g_cache.table.differ = differ; }
+        }
+        g_cache.table.exportNote = note;
+    }
+    const std::string spotFail = spot_fail(ops, &g_cache.spots);
     if (!spotFail.empty()) return give_up(spotFail);
+    if (ops.empty()) return give_up("no operation recognised by its code in this exe");
+    g_cache.table.names = (int)ops.size();
     g_cache.table.usable = true;
-    rep << "calibrate: " << handlers.size() << " handlers, " << ops.size() << " named operations" << (mismatch.empty() ? "" : " (" + mismatch + ")") << "\n" << clockLine;
+    g_cache.ops = ops;
+    rep << "calibrate: " << handlers.size() << " handlers, " << ops.size() << " named operations (" << byCode.byName.size() << " by their own code"
+        << (g_cache.table.exportUsed ? ", the rest by the export of this build" : "; script export not used: " + g_cache.table.exportNote) << ")\n" << clockLine;
     // handler entry points in address order: a handler's scan stops where the next one begins
     std::vector<std::uint32_t> starts;
     for (const auto& kv : handlers) starts.push_back(kv.second);
@@ -500,18 +539,29 @@ static const std::vector<Found>& RunLocked(const std::wstring& exePath, const st
         Found fd{ r.name, r.compiled, 0, r.op, Outcome::NotFound };
         fd.ref = r.compiled != 0;
         fd.what = r.what;
-        auto o = ops.find(r.op);
-        if (o == ops.end()) { fd.status = Outcome::NoOp; rep << "  " << r.name << ": operation " << r.op << " not in the table\n"; g_cache.found.push_back(fd); continue; }
-        auto h = handlers.find(o->second);
-        if (h == handlers.end()) { fd.status = Outcome::NoHandler; rep << "  " << r.name << ": no handler for " << r.op << " (number " << o->second << ")\n"; g_cache.found.push_back(fd); continue; }
-        auto next = std::upper_bound(starts.begin(), starts.end(), h->second);
-        std::uint32_t at = h->second, end = next != starts.end() ? *next : pe.textRva + pe.textSize;
-        if (r.wrap) {
-            // the shape sits in the callback the wrapper hands on; a handler that is no wrapper is read as is
-            if (const std::uint32_t cb = WrapperCallback(pe, at)) { at = cb; end = cb + 0x140; }
+        // a name the code could not tell from its look-alikes stands for all of them: the rule
+        // holds when every one reads the same place
+        std::vector<std::uint32_t> cands;
+        if (auto o = ops.find(r.op); o != ops.end()) cands.push_back(o->second);
+        else if (auto sh = byCode.shared.find(r.op); sh != byCode.shared.end()) cands = sh->second;
+        if (cands.empty()) { fd.status = Outcome::NoOp; rep << "  " << r.name << ": operation " << r.op << " not recognised\n"; g_cache.found.push_back(fd); continue; }
+        bool ambiguous = false, missing = false, first = true;
+        for (const std::uint32_t op : cands) {
+            auto h = handlers.find(op);
+            if (h == handlers.end()) { missing = true; break; }
+            auto next = std::upper_bound(starts.begin(), starts.end(), h->second);
+            std::uint32_t at = h->second, end = next != starts.end() ? *next : pe.textRva + pe.textSize;
+            if (r.wrap) {
+                // the shape sits in the callback the wrapper hands on; a handler that is no wrapper is read as is
+                if (const std::uint32_t cb = WrapperCallback(pe, at)) { at = cb; end = cb + 0x140; }
+            }
+            bool amb = false;
+            const std::uint32_t v = FindDisp(pe, at, end, r, amb);
+            if (amb || (!first && v != fd.found)) { ambiguous = true; break; }
+            fd.found = v; first = false;
         }
-        bool ambiguous = false;
-        fd.found = FindDisp(pe, at, end, r, ambiguous);
+        if (missing) { fd.found = 0; fd.status = Outcome::NoHandler; rep << "  " << r.name << ": no handler for " << r.op << " (number " << cands[0] << ")\n"; g_cache.found.push_back(fd); continue; }
+        if (ambiguous) fd.found = 0;
         fd.status = ambiguous ? Outcome::Ambiguous : fd.found ? Outcome::Found : Outcome::NotFound;
         if (fd.ref && fd.status == Outcome::Found && fd.found != fd.compiled) fd.status = Outcome::Moved;
         char line[200];
@@ -587,8 +637,9 @@ std::string CheckText(const std::wstring& exePath, const std::wstring& opcodesJs
     std::ostringstream o;
     o << "exe stamp " << std::hex << g_cache.table.exeStamp << std::dec << ", version " << g_cache.table.exeVersion
       << ", table label " << (g_cache.table.label.empty() ? "(none)" : g_cache.table.label) << "\n";
-    o << "table " << (g_cache.table.usable ? "usable" : "NOT usable: " + g_cache.why) << ", " << g_cache.table.handlers
-      << " handlers, " << g_cache.table.names << " named operations\n";
+    o << "names " << (g_cache.table.usable ? "usable" : "NOT usable: " + g_cache.why) << ", " << g_cache.table.handlers
+      << " handlers, " << g_cache.table.names << " named operations, " << g_cache.table.fromCode << " by their own code, export "
+      << (g_cache.table.exportUsed ? "used (" + std::to_string(g_cache.table.differ) + " differ)" : "not used: " + g_cache.table.exportNote) << "\n";
     for (const auto& s : g_cache.spots)
         o << "spot " << s.op << " = " << s.number << ", handlers naming " << s.text << ": " << s.owners
           << (s.ok == 1 ? " (agrees)" : s.ok == 0 ? " (DISAGREES)" : " (not checkable)") << "\n";
@@ -612,6 +663,49 @@ std::string Why() {
 TableState Table() {
     std::lock_guard<std::mutex> lk(g_mu);
     return g_cache.table;
+}
+
+std::string OpPrintsTable(const std::vector<std::pair<std::wstring, std::wstring>>& builds, std::string& log) {
+    std::set<std::string> rows;
+    std::string from;
+    for (const auto& b : builds) {
+        std::vector<std::uint8_t> f; Pe pe{};
+        std::map<std::uint32_t, std::uint32_t> handlers; std::map<std::string, std::uint32_t> names;
+        rtx::opprints::Image im;
+        char line[200];
+        if (!ReadFile(b.first, f) || !ParsePe(f, pe) || !Handlers(pe, handlers) || !rtx::opprints::Open(f.data(), f.size(), false, im)) { log += "exe not readable, or no registrar in it\n"; return {}; }
+        if (!OpTable(b.second, names)) { log += "script export's operation names not readable\n"; return {}; }
+        // the export has to be this exe's: every handler that names itself sits under its number
+        int checked = 0;
+        for (const Spot& sp : kSpots) {
+            const auto o = names.find(sp.op);
+            const std::vector<std::uint32_t> owners = HandlersNaming(pe, handlers, sp.text);
+            if (o == names.end() || owners.empty()) continue;
+            ++checked;
+            if (std::find(owners.begin(), owners.end(), o->second) == owners.end()) {
+                std::snprintf(line, sizeof(line), "%08x: the export names %s %u, another handler names itself that: not this exe's export\n", pe.stamp, sp.op, o->second);
+                log += line; return {};
+            }
+        }
+        if (checked < 3) { log += "fewer than 3 self-naming handlers to hold the export against\n"; return {}; }
+        rtx::opprints::Prints pr;
+        rtx::opprints::Take(im, handlers, pr);
+        const std::size_t before = rows.size();
+        rtx::opprints::RowsOf(pr, names, rows);
+        int alone = 0;
+        for (const auto& kv : names) { const auto p = pr.of[rtx::opprints::kDeepest].find(kv.second); if (p != pr.of[rtx::opprints::kDeepest].end() && pr.at[rtx::opprints::kDeepest].at(p->second).size() == 1) ++alone; }
+        const std::string ver = ExeBuildImpl(b.first);
+        std::snprintf(line, sizeof(line), "%s %08x: %zu handlers, %zu names, %d alone in their code, %zu rows added\n", ver.c_str(), pe.stamp, handlers.size(), names.size(), alone, rows.size() - before);
+        log += line;
+        std::snprintf(line, sizeof(line), "%s%s %08x", from.empty() ? "" : ", ", ver.c_str(), pe.stamp);
+        from += line;
+    }
+    return rtx::opprints::TableText(rows, from);
+}
+
+std::map<std::string, std::uint32_t> OpNames() {
+    std::lock_guard<std::mutex> lk(g_mu);
+    return g_cache.ops;
 }
 
 std::vector<SpotCheck> SpotChecks() {

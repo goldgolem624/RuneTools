@@ -515,6 +515,18 @@ int APIENTRY wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
             { std::ofstream f("calib-check.txt", std::ios::binary | std::ios::trunc); f << out; }
             return headless_exit(0);
         }
+        // --op-prints <out.h> <exe> <opcodes.json> [<exe> <opcodes.json> ...]: the table operations are
+        // named from, made from those exes and their script exports; log to op-prints.txt.
+        if (argv && argc >= 5 && std::wstring(argv[1]) == L"--op-prints") {
+            std::vector<std::pair<std::wstring, std::wstring>> builds;
+            for (int i = 3; i + 1 < argc; i += 2) builds.emplace_back(argv[i], argv[i + 1]);
+            std::string log;
+            const std::string table = rtx::calib::OpPrintsTable(builds, log);
+            if (!table.empty()) { std::ofstream f(argv[2], std::ios::binary | std::ios::trunc); f << table; }
+            else log += "nothing written\n";
+            { std::ofstream f("op-prints.txt", std::ios::binary | std::ios::trunc); f << log; }
+            return headless_exit(table.empty() ? 1 : 0);
+        }
         if (argv && argc >= 2 && std::wstring(argv[1]) == L"--pins-check") {
             const std::string out = rtx::pins::CheckText(argc >= 3 ? std::wstring(argv[2]) : std::wstring());
             { std::ofstream f("pins-check.txt", std::ios::binary | std::ios::trunc); f << out; }

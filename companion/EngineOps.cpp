@@ -1,6 +1,7 @@
 #include "EngineOps.h"
 #include "Signatures.h"
 #include "MainDataOffsets.h"
+#include "OpPrintsTable.h"
 
 #include "MarkerShare.h"
 #include "FrameShare.h"
@@ -64,10 +65,12 @@ void Say(const char* fmt, ...) {
     ++g_logCount;
 }
 // Boot record check line (grammar in Signatures.h).
-void Check(const char* status, const char* kind, const char* exp, const char* got, const char* detail) {
+// The operations called by name, and with them the ones recognised by their own code.
+constexpr const char* kNamedFeatures = "Asks: achievements and quests|Sounds, camera zoom and FOV|In-frame panels and text";
+constexpr const char* kAllFeatures = "Asks: achievements and quests|Sounds, camera zoom and FOV|In-frame panels and text|In-frame labels|Overhead anchors";
+void Check(const char* status, const char* kind, const char* exp, const char* got, const char* detail, const char* features = kAllFeatures) {
     Say("check: engine-ops %s kind=%s exp=%s got=%s features=%s need=- ; %s", status, kind && kind[0] ? kind : "-",
-        exp && exp[0] ? exp : "-", got && got[0] ? got : "-",
-        "Asks: achievements and quests|Sounds, camera zoom and FOV|In-frame panels and text|In-frame labels|Overhead anchors", detail);
+        exp && exp[0] ? exp : "-", got && got[0] ? got : "-", features, detail);
 }
 
 struct Section { const std::uint8_t* begin; std::size_t size; };
@@ -96,6 +99,50 @@ bool Handlers(const Section& text) {
     if (g_byNumber.size() < 1500) return false;
     const std::uint32_t maxOp = g_byNumber.rbegin()->first;
     return g_byNumber.size() * 10 >= (std::size_t)maxOp * 9;
+}
+
+// The names the handlers earn by their own code (OpPrints.h). Read from the exe on disk: the code
+// in memory carries this module's own hooks, and a hooked routine no longer prints as itself. The
+// image in memory stands in only when the file cannot be read.
+void CodeNames(const std::uint8_t* base, std::map<std::string, std::uint32_t>& out) {
+    const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
+    const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS64*>(base + dos->e_lfanew);
+    std::vector<std::uint8_t> file;
+    {
+        wchar_t path[MAX_PATH] = {};
+        HANDLE h = GetModuleFileNameW(nullptr, path, MAX_PATH) ? CreateFileW(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, 0, nullptr) : INVALID_HANDLE_VALUE;
+        if (h != INVALID_HANDLE_VALUE) {
+            LARGE_INTEGER sz{};
+            if (GetFileSizeEx(h, &sz) && sz.QuadPart > 0 && sz.QuadPart < (256ll << 20)) {
+                file.resize((std::size_t)sz.QuadPart);
+                std::size_t at = 0; DWORD got = 0;
+                while (at < file.size() && ReadFile(h, file.data() + at, (DWORD)(file.size() - at), &got, nullptr) && got) at += got;
+                if (at != file.size()) file.clear();
+            }
+            CloseHandle(h);
+        }
+        // an update can replace the file under a running game: only this exe's own file counts
+        std::uint32_t lfanew = 0, stamp = 0;
+        if (file.size() > 0x40) std::memcpy(&lfanew, file.data() + 0x3C, 4);
+        if (file.size() > (std::size_t)lfanew + 12 && lfanew) std::memcpy(&stamp, file.data() + lfanew + 8, 4);
+        if (stamp != nt->FileHeader.TimeDateStamp) file.clear();
+    }
+    rtx::opprints::Image im;
+    const bool fromFile = !file.empty() && rtx::opprints::Open(file.data(), file.size(), false, im);
+    if (!fromFile) {
+        im = rtx::opprints::Image{};
+        if (!rtx::opprints::Open(base, nt->OptionalHeader.SizeOfImage, true, im)) return;
+    }
+    std::map<std::uint32_t, std::uint32_t> handlers;
+    for (const auto& kv : g_byNumber) handlers[kv.first] = (std::uint32_t)(reinterpret_cast<const std::uint8_t*>(kv.second) - base);
+    rtx::opprints::Prints pr;
+    rtx::opprints::Take(im, handlers, pr);
+    rtx::opprints::Named named;
+    rtx::opprints::Resolve(pr, rtx::opprints::kRefs, rtx::opprints::kRefCount, named);
+    out = std::move(named.byName);
+}
+bool CodeNamesGuarded(const std::uint8_t* base, std::map<std::string, std::uint32_t>* out) {
+    __try { CodeNames(base, *out); return true; } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
 }
 
 bool Names() {
@@ -281,19 +328,40 @@ void Resolve() {
     Section text;
     if (!base || !FindText(base, text)) { Check("FAIL", "gone", "handlers", "-", "GONE: no code section to read the op registrar from; every engine op off"); return; }
     if (!ResolveGuarded(text)) { Say("engine ops: registrar not recognised"); Check("FAIL", "gone", "handlers", "0", "GONE: the op registrar was not recognised in this exe; every engine op off"); return; }
-    if (!Names()) { Say("engine ops: operation table not readable"); Check("FAIL", "gone", "names", "0", "GONE: the operation table (cs2/opcodes.json) is not readable; every engine op off until the tables are extracted"); return; }
+    // The names come from the handlers' own code. An export of this build's scripts, where the
+    // launcher keeps one, adds the names the code did not settle and stands where the two differ.
+    // No name at all takes the named operations only: the ones recognised by their own code
+    // (projection, positions, overhead heights) need the handlers and the state.
+    std::map<std::string, std::uint32_t> code;
+    const bool scanned = CodeNamesGuarded(base, &code);
     std::string running, table, why;
-    const bool match = NamesMatchBuild(running, table, why);
+    const bool match = Names() && NamesMatchBuild(running, table, why);
     if (!match) g_byName.clear();
+    if (running.empty()) running = RunningBuild();
+    const std::size_t fromTable = g_byName.size();
+    std::size_t differ = 0;
+    for (const auto& kv : code) {
+        const auto it = g_byName.find(kv.first);
+        if (it == g_byName.end()) g_byName.insert(kv);
+        else if (it->second != kv.second) ++differ;
+    }
+    // with no export to stand on, the handlers that name themselves have to sit under these names
+    int checked = 0;
+    const int bad = match ? 0 : SpotDisagreements(checked);
+    if (bad > 0) g_byName.clear();
     g_state = static_cast<std::uint8_t*>(VirtualAlloc(nullptr, kStateSize, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE));
     g_ready = g_state != nullptr;
-    Say("engine ops: %zu handlers, %zu names", g_byNumber.size(), g_byName.size());
-    const std::string exp = running.empty() ? std::string("(unknown)") : running, got = table.empty() ? std::string("(unknown)") : table;
-    if (!match) Check("FAIL", "gone", exp.c_str(), got.c_str(), ("GONE: " + why).c_str());
-    else {
-        char d[160];
-        std::snprintf(d, sizeof(d), "%zu handlers from the registrar, %zu names from this build's table", g_byNumber.size(), g_byName.size());
-        Check("OK", "", exp.c_str(), got.c_str(), d);
+    Say("engine ops: %zu handlers, %zu names (%zu from their code, %zu from the export, %zu differ)", g_byNumber.size(), g_byName.size(), code.size(), fromTable, differ);
+    const std::string exp = running.empty() ? std::string("(unknown)") : running;
+    char d[240];
+    if (g_byName.empty()) {
+        if (bad > 0) std::snprintf(d, sizeof(d), "GONE: %d of %d self-naming handlers sit under another name than their code earned; named ops off", bad, checked);
+        else std::snprintf(d, sizeof(d), "GONE: no handler recognised by its code in this build%s; named ops off", scanned ? "" : " (the scan faulted)");
+        Check("FAIL", "gone", exp.c_str(), "0", d, kNamedFeatures);
+    } else {
+        if (match) std::snprintf(d, sizeof(d), "%zu handlers from the registrar, %zu named by their own code, %zu by this build's export (%zu differ)", g_byNumber.size(), code.size(), fromTable, differ);
+        else std::snprintf(d, sizeof(d), "%zu handlers from the registrar, %zu named by their own code", g_byNumber.size(), code.size());
+        Check("OK", "", exp.c_str(), match ? table.c_str() : exp.c_str(), d);
     }
 }
 

@@ -123,6 +123,8 @@
     <ClInclude Include="EngineMarkers.h" />
     <ClInclude Include="EngineComponents.h" />
     <ClInclude Include="EngineOps.h" />
+    <ClInclude Include="OpPrints.h" />
+    <ClInclude Include="OpPrintsTable.h" />
     <ClInclude Include="MenuShare.h" />
     <ClInclude Include="SoundFilter.h" />
     <ClInclude Include="SoundShare.h" />

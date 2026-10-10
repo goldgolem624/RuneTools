@@ -10406,7 +10406,9 @@ void health_build(HCtx& c, rtx::health::Run& run) {
     run.SetBuild(bc);
     run.Add(G, "build.game", "Game build", ok, d, "Everything", known ? "validated exe" : "a validated exe", st);
 
-    // CS2 export: what the generated tables and the op table were made from
+    // CS2 export: the developer's copy of the game's scripts. Nothing in the running client reads
+    // it (operations are named by their own code, the generated tables are compiled in and checked
+    // against the cache under Content), so a PC without one is complete.
     {
         wchar_t up[MAX_PATH] = {};
         GetEnvironmentVariableW(L"USERPROFILE", up, MAX_PATH);
@@ -10415,7 +10417,7 @@ void health_build(HCtx& c, rtx::health::Run& run) {
         const std::string label = read_small(dir + L"client_version.txt");
         rtx::health::JVal mv;
         std::string det; int k = kPass;
-        if (meta.empty() || !rtx::health::ParseJson(meta, mv)) { k = kWarn; det = "no export (cs2\\meta.json missing)"; }
+        if (meta.empty() || !rtx::health::ParseJson(meta, mv)) det = "no script export on this PC, none needed";
         else {
             std::string failed;
             if (const rtx::health::JVal* f = mv.get("failed")) for (const auto& x : f->a) failed += (failed.empty() ? "" : ",") + x.s;
@@ -10506,7 +10508,7 @@ void health_build(HCtx& c, rtx::health::Run& run) {
             }
         }
         if (k != kPass) det = "NEW: " + det;   // newer content or another build than the export: its tables lag
-        run.Add(G, "build.cs2", "Script export", k, det, "Game text|Buff timers|Engine ops by name|Generated tables", "", "", "build.game").kind = k == kPass ? std::string() : "stale";
+        run.Add(G, "build.cs2", "Script export", k, det, "CS2 Scripts panel", "", "", "build.game").kind = k == kPass ? std::string() : "stale";
     }
 }
 
@@ -10541,12 +10543,17 @@ void health_calibration(HCtx& c, rtx::health::Run& run) {
     const rtx::calib::TableState ts = rtx::calib::Table();
     const auto spots = rtx::calib::SpotChecks();
     {
-        std::string d = ts.usable ? (std::to_string(ts.handlers) + " handlers, " + std::to_string(ts.names) + " named, label " + ts.label)
+        std::string d = ts.usable ? (std::to_string(ts.handlers) + " handlers, " + std::to_string(ts.names) + " named: " + std::to_string(ts.fromCode) + " by their own code" +
+                                     (ts.exportUsed ? ", the rest by the script export labelled " + ts.label + (ts.differ ? " (" + std::to_string(ts.differ) + " named differently by the two, the export's used)" : "")
+                                                    : "; script export not used (" + ts.exportNote + ")"))
                                   : (why.empty() ? std::string("not run") : why);
         if (!ts.usable) d = "GONE: " + d + " (the compiled offsets stay in force)";
-        run.Add(G, "calib.table", "Operation table", ts.usable ? kPass : kFail, d,
-                "Calibrated offsets|Engine ops by name|Asks|In-frame panels", "table for " + ts.exeVersion, ts.label, "code.exe");
+        int ok = ts.usable ? kPass : kFail;
+        if (ts.usable && ts.differ) { ok = kWarn; d = "NEW: " + d; }
+        run.Add(G, "calib.table", "Operation names", ok, d,
+                "Calibrated offsets|Engine ops by name|Asks|In-frame panels", "names for " + ts.exeVersion, std::to_string(ts.names), "code.exe");
         run.Fact("calib.label", ts.label);
+        run.Fact("calib.fromCode", std::to_string(ts.fromCode));
     }
     if (!spots.empty()) {
         int good = 0, checkable = 0; std::string bad;
@@ -10558,8 +10565,8 @@ void health_calibration(HCtx& c, rtx::health::Run& run) {
             run.Fact("calib.spot." + s.op, std::to_string(s.number) + " in [" + s.owners + "]");
         }
         run.Add(G, "calib.spots", "Self-naming handlers", bad.empty() ? (checkable ? kPass : kUnchecked) : kFail,
-                bad.empty() ? (checkable ? std::to_string(good) + "/" + std::to_string(checkable) + " carry the table's numbers" : std::string("UNVERIFIED: no self-naming handler could be matched with the table")) : "MOVED: " + bad,
-                "Operation table", std::to_string(checkable), std::to_string(good), "calib.table").need = checkable ? "" : "a script export for this build";
+                bad.empty() ? (checkable ? std::to_string(good) + "/" + std::to_string(checkable) + " sit under their names" : std::string("UNVERIFIED: no self-naming handler could be matched with a name")) : "MOVED: " + bad,
+                "Operation names", std::to_string(checkable), std::to_string(good), "calib.table");
     }
     for (const auto& f : rtx::calib::Results()) {
         const std::string id = std::string("calib.") + f.name;
@@ -10572,7 +10579,7 @@ void health_calibration(HCtx& c, rtx::health::Run& run) {
             case O::Moved:   ok = kWarn; d = "MOVED: compiled " + hx(f.compiled) + ", client " + hx(f.found) + " (from " + f.op + "), the client's in use" + what; break;
             case O::NotFound: ok = kFail; kind = "fallback"; d = "GONE: no read of the expected shape in " + std::string(f.op) + "; compiled " + hx(f.compiled) + " in use" + what; break;
             case O::Ambiguous: ok = kFail; kind = "fallback"; d = "NEW: " + std::string(f.op) + " reads more than one candidate; compiled " + hx(f.compiled) + " in use" + what; break;
-            case O::NoOp:    ok = kFail; kind = "fallback"; d = "GONE: " + std::string(f.op) + " is not in the operation table; compiled " + hx(f.compiled) + " in use"; break;
+            case O::NoOp:    ok = kFail; kind = "fallback"; d = "GONE: " + std::string(f.op) + " is not recognised in this exe; compiled " + hx(f.compiled) + " in use"; break;
             case O::NoHandler: ok = kFail; kind = "fallback"; d = "GONE: " + std::string(f.op) + " has no handler in this exe; compiled " + hx(f.compiled) + " in use"; break;
         }
         run.Fact(std::string("calib.") + f.name, hx(f.found ? f.found : f.compiled));
@@ -10866,7 +10873,8 @@ void health_data(HCtx& c, rtx::health::Run& run) {
                     if (status < 0 || status > 7 || item <= 0 || rtx::cache::ItemName(item).empty() || price <= 0 || qty < filled || filled < 0) ++bad;
                 }
                 d = std::to_string(active) + " active offers" + (bad ? ", " + std::to_string(bad) + " implausible" : "");
-                if (bad) { ok = kFail; d = "FORMAT: " + d + " (status, item, price or quantity fields do not read as an offer)"; }
+                if (bad && !c.inWorld) { ok = kUnchecked; d = "the slots are filled at login (" + d + " before it)"; need = "log in"; }   // the lobby leaves them unset
+                else if (bad) { ok = kFail; d = "FORMAT: " + d + " (status, item, price or quantity fields do not read as an offer)"; }
                 else if (!active) { ok = kUnchecked; d = "no active offer to judge the slot layout (empty slots read as empty)"; need = "open a Grand Exchange offer"; }
             }
         }
@@ -11104,7 +11112,8 @@ void health_data(HCtx& c, rtx::health::Run& run) {
             if (seq < 0) bad += " var change counter unreadable";
             d = "system update " + std::to_string(reboot) + " ticks, members world " + std::to_string(members) + ", login reply " + std::to_string(loginReply) + ", lobby reply " + std::to_string(lobbyReply) +
                 ", logout reason " + std::to_string(logout) + ", fov " + std::to_string((int)(fov * 180.f / 3.14159265f)) + " deg, var changes " + std::to_string(seq);
-            if (!bad.empty()) { ok = kFail; d = "FORMAT: " + d + " (out of range:" + bad + ")"; }
+            if (!bad.empty() && !c.inWorld) { ok = kUnchecked; d = "the fields are set at login (" + d + " before it)"; }   // the lobby holds a login reply of -2
+            else if (!bad.empty()) { ok = kFail; d = "FORMAT: " + d + " (out of range:" + bad + ")"; }
         }
         run.Add(G, "data.state", "Client state fields", ok, d, "System update alert|Members world|Login replies|FOV|Var change signal",
                 "update 0..1e8 ticks, members 0/1, replies 0..255, fov 6..170 deg, a change counter", d, "data.root").need = ok == kUnchecked ? "log in" : "";
@@ -11635,8 +11644,9 @@ void health_interfaces(HCtx& c, rtx::health::Run& run) {
         if (statics == 0 || known * 10 < statics * 9) { ok = kFail; d = "MOVED: " + d + "; comp ids do not match the definitions (node id field moved?)"; }
         else if (parentN && parentOk * 10 < parentN * 9) { ok = kFail; d = "MOVED: " + d + "; parent field disagrees"; }
         else if (mixed) { ok = kFail; d = "FORMAT: " + d + "; " + std::to_string(mixed) + " component classes map to several types"; }
+        else if (!c.inWorld && sizeN && sizeOk == 0 && !(spriteN && spriteOk * 2 < spriteN)) { ok = kUnchecked; d += "; the frame is laid out at login"; }   // nothing is sized in the lobby
         else if ((spriteN && spriteOk * 2 < spriteN) || (sizeN && sizeOk * 10 < sizeN * 8)) { ok = kWarn; d = "FORMAT: " + d + "; sprite or size fields disagree with the definitions"; }
-        run.Add(G, "iface.frame", "Game frame layout", ok, d, "Panel positions|Gameview rect|Overlays|Hover", "90 % of static comps in the cache with their parent, one type per class, sprites and sizes as defined", got, "iface.groups");
+        run.Add(G, "iface.frame", "Game frame layout", ok, d, "Panel positions|Gameview rect|Overlays|Hover", "90 % of static comps in the cache with their parent, one type per class, sprites and sizes as defined", got, "iface.groups").need = ok == kUnchecked ? "log in" : "";
     }
     // component slots: the walkers read every component field at block + 0x20, which holds only
     // while the block's object pointer (+0x18) says so; the open-group vector is indexed by id
@@ -11805,7 +11815,7 @@ void health_interfaces(HCtx& c, rtx::health::Run& run) {
         run.Add(G, "iface.chatstore", "Chat records (store)", store > 0 ? kPass : (c.inWorld ? kWarn : kUnchecked),
                 std::string(store > 0 || !c.inWorld ? "" : "GONE: ") + std::to_string(store) + " recent records", "Chat log|Chat alerts", "> 0 records", std::to_string(store), "data.chat").need = store > 0 || c.inWorld ? "" : "log in";
         if (c.cli) run.Add(G, "iface.chatpackets", "Chat lines (packets)", kUnchecked, "launcher only", "Chat log (packet lines)", "hook feeding, packets seen", "not read from the command line", "comp.boot").need = "a launcher run";
-        else run.Add(G, "iface.chatpackets", "Chat lines (packets)", ph && ph->s == "true" ? (cj.num("pseen") > 0 ? kPass : kWarn) : kFail,
+        else run.Add(G, "iface.chatpackets", "Chat lines (packets)", ph && ph->s == "true" ? (cj.num("pseen") > 0 ? kPass : c.inWorld ? kWarn : kUnchecked) : kFail,
                      ph && ph->s == "true" ? std::string(cj.num("pseen") > 0 ? "" : "UNVERIFIED: ") + std::to_string(cj.num("pseen")) + " message_game packets seen" : "GONE: framer not feeding chat (hook or opcode moved)",
                      "Chat log (packet lines)", "hook feeding, packets seen", ph ? ph->s + ", " + std::to_string(cj.num("pseen")) : std::string("no hook state"), "comp.boot").need = ph && ph->s == "true" && cj.num("pseen") == 0 ? "a chat message" : "";
     }

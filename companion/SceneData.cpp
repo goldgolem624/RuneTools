@@ -134,6 +134,7 @@ rtx::codefind::Image     g_im;      bool g_imOk = false;
 rtx::codefind::ProtTable g_prot;    bool g_protOk = false;
 rtx::codefind::Family    g_family;  bool g_familyOk = false;
 bool GuardedProt() { __try { return rtx::codefind::FindProtTable(g_im, g_prot); } __except (EXCEPTION_EXECUTE_HANDLER) { return false; } }
+bool GuardedProtInto(rtx::codefind::ProtTable& t) { __try { return rtx::codefind::FindProtTable(g_im, t); } __except (EXCEPTION_EXECUTE_HANDLER) { return false; } }
 bool GuardedFamily() { __try { return rtx::codefind::EntityFamily(g_im, g_family); } __except (EXCEPTION_EXECUTE_HANDLER) { return false; } }
 bool GuardedStringUser(const char* text, std::uint64_t& out, int& fns) { __try { out = rtx::codefind::StringUser(g_im, text, &fns); return true; } __except (EXCEPTION_EXECUTE_HANDLER) { return false; } }
 std::uint64_t GuardedProtHandler(int op) { __try { return rtx::codefind::ProtHandler(g_im, g_prot, op); } __except (EXCEPTION_EXECUTE_HANDLER) { return 0; } }
@@ -145,6 +146,25 @@ void ResolveAnchors() {
     RingLog("anchors: descriptor vector %s (%d descriptors, capacity %d, framer 0x%llx), entity family %s (%zu classes)",
             g_protOk ? "found" : "NOT FOUND", g_prot.count, g_prot.capacity, (unsigned long long)(g_prot.framer ? g_prot.framer - g_base : 0),
             g_familyOk ? "found" : "NOT FOUND", g_family.members.size());
+}
+// The descriptors are there to compare against: the vector was found and the game has filled it.
+bool ProtReady() { return g_protOk && g_prot.count > 0; }
+void PacketsCheck();
+// A companion that boots before the game registers its packets finds the vector empty. Looked up
+// again from the check loop until it holds descriptors; the framer reads the count, so it goes last.
+void RefreshProt() {
+    static int s_tries = 0;
+    if (!g_imOk || ProtReady() || s_tries >= 30) return;
+    ++s_tries;
+    rtx::codefind::ProtTable t;
+    if (!GuardedProtInto(t) || t.count <= 0) return;
+    g_prot.vec = t.vec; g_prot.begin = t.begin; g_prot.capacity = t.capacity; g_prot.framer = t.framer;
+    g_protOk = true;
+    MemoryBarrier();
+    g_prot.count = t.count;
+    RingLog("anchors: descriptor vector filled after boot (%d descriptors, capacity %d, framer 0x%llx)",
+            t.count, t.capacity, (unsigned long long)(t.framer ? t.framer - g_base : 0));
+    PacketsCheck();
 }
 // What the anchor behind `name` offers: one function (at), several candidates (n > 1), or nothing.
 struct AnchorHit { std::uint64_t at = 0; std::uint64_t cands[24] = {}; int n = 0; };
@@ -1651,9 +1671,9 @@ static void NetProbeRecord(std::uint64_t conn, std::uint64_t* out) {
         const int bound = g_protOk && g_prot.count > 0 ? g_prot.count - 1 : rtx::sops::kOpMax;
         if (op < 0 || op > bound) { g_connBadOp.fetch_add(1, std::memory_order_relaxed); if (armed) sh->diag[2]++; return; }
         const std::int32_t  len = *(const std::int32_t*)(conn + rtx::sops::kConnLen);
-        if (g_protOk) {
+        if (ProtReady()) {
             const int dl = rtx::codefind::ProtLength(g_im, g_prot, op);
-            if (dl >= 0 && dl != len) {
+            if (dl >= 0 && dl != 0x7FFF && dl != len) {       // 0x7FFF: no descriptor for this opcode, nothing to compare
                 g_connBadLen.fetch_add(1, std::memory_order_relaxed);
                 std::uint64_t none = 0;
                 g_connFirstBad.compare_exchange_strong(none, ((std::uint64_t)(std::uint32_t)op << 32) | ((std::uint64_t)((std::uint32_t)len & 0xFFFF) << 16) | ((std::uint32_t)dl & 0xFFFF));
@@ -2043,6 +2063,7 @@ void GroundCheck() {
 void ConnCheck() {
     static CheckState s;
     const char* F = "Chat capture|Events channel|Zone events|Var updates|GE offers|Packet feed";
+    RefreshProt();
     const std::uint32_t seen = g_connSeen.load(std::memory_order_relaxed);
     if (seen < 50) {
         if (Transition(s, 0)) CheckLine("framer-conn", "SKIP", "", "-", "-", F, "in the world with packets flowing", "fewer than 50 packets framed so far");
@@ -2069,10 +2090,10 @@ void ConnCheck() {
         }
         return;
     }
-    if (Transition(s, 1)) {
+    if (Transition(s, ProtReady() ? 1 : 4)) {
         std::snprintf(detail, sizeof(detail), "%u packets, opcodes within 0..0x%x, fixed lengths agree with the descriptors%s", seen, bound,
-                      g_protOk ? "" : " (lengths not compared: no descriptor vector)");
-        CheckLine("framer-conn", "OK", g_protOk ? "" : "unverified", exp, got, F, "", detail);
+                      ProtReady() ? "" : " (lengths not compared: no descriptor vector)");
+        CheckLine("framer-conn", "OK", ProtReady() ? "" : "unverified", exp, got, F, "", detail);
     }
 }
 

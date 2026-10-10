@@ -2,8 +2,9 @@
 // Any scripting-engine operation of the client, called by name from the game thread.
 //
 // The client registers every operation in one routine with the same two instructions each, so
-// all handlers are found from the image. Their numbers change per build; the cache export the
-// launcher keeps (cs2\opcodes.json) names them. A handler takes the client's root and a script
+// all handlers are found from the image. Their numbers change per build; each handler is named by
+// its own code (OpPrints.h), so no script export is needed. One the launcher keeps for this build
+// (cs2\opcodes.json) adds the names the code did not settle. A handler takes the client's root and a script
 // state and reads its arguments from the state's stacks, so a call is: push the arguments, call,
 // pop the results. Only the game thread may call, and only while the client is in a frame.
 #include <cstddef>

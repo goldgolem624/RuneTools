@@ -3,10 +3,11 @@
 //
 // The client registers every scripting-engine operation in one routine, each with the same two
 // instructions: the operation's number and the address of its handler. That gives every handler.
-// The numbers are scrambled per build, but the cache names them: the export the launcher already
-// keeps (cs2\opcodes.json) maps each name to this build's number, and is only used when the build
-// the launcher labelled it with (cs2\client_version.txt) is the exe's own and five handlers that
-// name themselves in their error text carry the numbers the table gives them. A handler reads the
+// The numbers are scrambled per build, so each handler is named by its own code (OpPrints.h in the
+// companion folder): no export of the game's scripts is needed. Where the launcher keeps one
+// (cs2\opcodes.json) it adds the names the code did not settle, and is only used when the build
+// the launcher labelled it with (cs2\client_version.txt) is the exe's own. Either way five handlers
+// that name themselves in their error text have to sit under their names. A handler reads the
 // client's state through fixed displacements from the root, and those displacements are the
 // offsets the reader needs. Each rule below names an operation and the instruction shape to look
 // for in its handler; the displacement in that instruction is the offset. A rule whose shape is
@@ -59,6 +60,11 @@ std::vector<Found> References();
 // build label is not required (the self-naming handlers still have to agree); nothing is applied.
 std::string CheckText(const std::wstring& exePath, const std::wstring& opcodesJson);
 
+// --op-prints: the table operations are named from (companion/OpPrintsTable.h), as a header,
+// made from exes whose script export is at hand: {exe, its opcodes.json} each. Empty when a file
+// cannot be read or an export is not its exe's; `log` says what each build gave.
+std::string OpPrintsTable(const std::vector<std::pair<std::wstring, std::wstring>>& builds, std::string& log);
+
 // Why nothing was calibrated, empty when the rules ran. Kept with the last Run.
 std::string Why();
 
@@ -68,9 +74,16 @@ struct TableState {
     std::string label;           // client_version.txt as written
     std::string exeVersion;      // the exe's version resource
     std::uint32_t exeStamp = 0;  // the exe's PE time stamp
-    bool usable = false;
+    bool usable = false;         // there are names to calibrate with
+    int fromCode = 0;            // names the handlers earned by their own code
+    bool exportUsed = false;     // the script export is this build's and its names are in use
+    int differ = 0;              // names the export and the code give to different handlers (the export's stand)
+    std::string exportNote;      // why the export is not used, empty when it is
 };
 TableState Table();
+// Every operation name in use, with this exe's number: the handlers' own code, plus the export's
+// names where an export of this build is kept.
+std::map<std::string, std::uint32_t> OpNames();
 
 // The handlers that name themselves in their error text, checked against the table's numbers.
 struct SpotCheck { std::string text, op; int number = -1; std::string owners; int ok = -1; };   // ok: 1 agrees, 0 disagrees, -1 not checkable
