@@ -1308,6 +1308,9 @@ void Recorder::Feed(const Tick& t) {
             if (castAtTarget) for (long long x : castCs) startC = std::min(startC, x);   // their rows come a pass later
         } else if (enc_ != kUnknown && enc_ != -1 && (encBegan || !logOpen_)) by = "encounter";
         if (by) {
+            // a cast or hit stamped before the last fight ended (the kill registers a few seconds after the boss
+            // dies) belongs to that fight's tail: the new fight starts where it ended
+            if (!fights_.empty() && startC < fights_.back().end) startC = fights_.back().end;
             openFight(startC, by, t.wallMs, evs);
             if (selfIdx_ >= 0) {
                 const int tgt = actors_[(std::size_t)selfIdx_].target;
