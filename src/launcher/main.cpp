@@ -682,6 +682,27 @@ int APIENTRY wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
             { std::ofstream f("item-extra.txt", std::ios::binary | std::ios::trunc); f << out; }
             return headless_exit(0);
         }
+        // --eof-dump <pid>: every Essence of Finality in the inventory and equipment as the fight recorder reads it,
+        // with the weapon its stored special comes from, to eof-dump.txt.
+        if (argv && argc >= 3 && std::wstring(argv[1]) == L"--eof-dump") {
+            std::uint32_t pid = (std::uint32_t)_wtoi(argv[2]);
+            rtx::reader::SampleAll();
+            rtx::reader::CombatSample s;
+            const bool ok = rtx::reader::CombatRead(pid, false, s);
+            std::ofstream f("eof-dump.txt", std::ios::binary | std::ios::trunc);
+            f << "read " << (ok ? "ok" : "failed") << " items " << (s.haveItems ? "yes" : "no") << " inv " << s.inv.size() << " equip " << s.equip.size() << "\n";
+            auto dump = [&](const char* what, const std::vector<std::pair<int, int>>& slots, const std::vector<int>& eof) {
+                for (std::size_t k = 0; k < eof.size() && k < slots.size(); ++k) {
+                    if (eof[k] == -2) continue;
+                    const int w = eof[k] > 0 ? rtx::cache::EnumIntValue(15970, eof[k], -1) : -1;
+                    f << what << " slot " << k << " item " << slots[k].first << " " << rtx::cache::ItemName(slots[k].first) << " index " << eof[k]
+                      << " weapon " << w << " " << (w >= 0 ? rtx::cache::ItemName(w) : std::string("none")) << "\n";
+                }
+            };
+            dump("equip", s.equip, s.equipEof);
+            dump("inv", s.inv, s.invEof);
+            return headless_exit(0);
+        }
         // --enum-scan <keyA> <keyB>: every cache enum holding int values at both keys, with the item names those
         // values would be, to enum-scan.txt. Finds the table behind a per-item index (e.g. a stored special attack).
         if (argv && argc >= 4 && std::wstring(argv[1]) == L"--enum-scan") {

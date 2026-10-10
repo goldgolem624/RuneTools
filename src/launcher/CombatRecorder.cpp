@@ -9,6 +9,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <initializer_list>
+#include <set>
 #include <unordered_set>
 
 namespace rtx::launcher::combat {
@@ -22,7 +23,8 @@ constexpr long long kCastMatch = 15;
 constexpr long long kBuffNameWaitPasses = 600;       // about a minute of 100 ms passes                 // a cooldown varc and script 6570 this many cycles apart are one cast
 constexpr long long kRestoreSlack = 45;              // a 6570 record this much older than the tick offset is a cooldown restore
 bool isGcdStruct(int st) { return st == 14881 || st == 14882 || st == 29145; }
-constexpr int kTypeSound = 19, kTypeItem = 20, kTypePerks = 21, kTypeMech = 100;   // kTypeItem: [20, c, container, slot, item, count]
+constexpr int kTypeSound = 19, kTypeItem = 20, kTypePerks = 21, kTypeEof = 22, kTypeMech = 100;   // kTypeItem: [20, c, container, slot, item, count]
+                                                    // kTypeEof: [22, c, container, slot, weapon] the special attack an Essence of Finality stores (-1 none)
                                                     // kTypePerks: [21, c, slot, perk, rank x 4] for a worn item      // kTypeMech is written as ["mech", c, boss, key, kind, id, actor]
 constexpr long long kResendMs = 1200;                // tile items this soon after their zone was cleared are the zone sent again
 
@@ -411,6 +413,7 @@ void Recorder::push(std::vector<Ev>& evs, int type, long long c, std::initialize
     case 18: e.key = stateKey(18, a1, e.f[1]); break;
     case kTypeItem: e.key = stateKey(kTypeItem, e.f[0], e.f[1]); break;
     case kTypePerks: e.key = stateKey(kTypePerks, e.f[0]); break;
+    case kTypeEof: e.key = stateKey(kTypeEof, e.f[0], e.f[1]); break;
     default: e.key = 0; break;
     }
     evs.push_back(std::move(e));
@@ -663,7 +666,7 @@ void Recorder::ensureDict(const Ev& e) {
         dictLine("encounters", st, jstr(cfg_.names.structStr ? cfg_.names.structStr(st, 8849) : std::string()));
         break;
     }
-    case kTypeItem: {
+    case kTypeItem: case kTypeEof: {
         const int item = (int)e.f[2];
         if (item < 0 || !once(kTypeItem, item)) return;
         dictLine("items", item, "{\"name\":" + jstr(plainText(cfg_.names.itemName ? cfg_.names.itemName(item) : std::string())) + "}");
@@ -751,6 +754,7 @@ void Recorder::openLog(long long c, long long wallMs, const std::vector<Ev>& pen
         if (std::any_of(pk.begin(), pk.end(), [](int v) { return v != 0; }))
             add(kTypePerks, sc, { kv.first, pk[0], pk[1], pk[2], pk[3], pk[4], pk[5], pk[6], pk[7] });
     }
+    for (const auto& kv : eof_) if (kv.second >= -1) add(kTypeEof, sc, { kv.first >> 8, kv.first & 0xFF, kv.second });
     std::vector<Ev> base;
     for (auto& kv : baseline_) base.push_back(std::move(kv.second));
     baseline_.clear();
@@ -797,7 +801,7 @@ void Recorder::endFight(long long c, const char* by) {
 void Recorder::resetScene() {
     actors_.clear(); byUid_.clear(); baseline_.clear(); preroll_.clear(); dict_.clear(); mechDict_.clear();
     selfIdx_ = -1;
-    sceneFresh_ = true; active_.clear(); tileSeen_.clear(); mechLast_.clear(); varLast_.clear(); items_.clear(); perks_.clear();
+    sceneFresh_ = true; active_.clear(); tileSeen_.clear(); mechLast_.clear(); varLast_.clear(); items_.clear(); perks_.clear(); eof_.clear(); eofInit_ = false;
     haveMap_ = false; selfX_ = selfY_ = -1;
 }
 
@@ -1268,6 +1272,7 @@ void Recorder::Feed(const Tick& t) {
     // inventory (93) and equipment (94): one row per slot that changed; the first read only sets the state
     if (t.haveItems) {
         const bool first = items_.empty();
+        std::set<int> itemMoved;                       // (container << 8) | slot whose item changed this pass
         auto scan = [&](int cont, const std::vector<std::pair<int, int>>& slots) {
             for (std::size_t s = 0; s < slots.size() && s < 64; ++s) {
                 const int key = (cont << 8) | (int)s;
@@ -1276,6 +1281,7 @@ void Recorder::Feed(const Tick& t) {
                 if (it != items_.end() && it->second == now) continue;
                 const bool had = it != items_.end();
                 items_[key] = now;
+                itemMoved.insert(key);
                 if (first || (!had && now.first < 0)) continue;
                 push(evs, kTypeItem, c, { cont, (long long)s, now.first, now.second });
             }
@@ -1294,6 +1300,24 @@ void Recorder::Feed(const Tick& t) {
             if (firstPerks || (!had && none)) continue;
             push(evs, kTypePerks, c, { (long long)s, pk[0], pk[1], pk[2], pk[3], pk[4], pk[5], pk[6], pk[7] });
         }
+        // the special each Essence of Finality stores, worn or carried; written after the slot's item row, and only
+        // while an amulet is there (an item row for the slot ends what the slot stored)
+        const bool firstEof = !eofInit_;
+        auto scanEof = [&](int cont, const std::vector<int>& idx) {
+            for (std::size_t s = 0; s < idx.size() && s < 64; ++s) {
+                if (idx[s] == -3) continue;
+                const int w = idx[s] == -2 ? -2 : idx[s] > 0 && cfg_.names.eofWeapon ? std::max(-1, cfg_.names.eofWeapon(idx[s])) : -1;
+                const int key = (cont << 8) | (int)s;
+                auto it = eof_.find(key);
+                if ((it != eof_.end() ? it->second : -2) == w && !itemMoved.count(key)) continue;
+                eof_[key] = w;
+                if (firstEof || w == -2) continue;
+                push(evs, kTypeEof, c, { cont, (long long)s, w });
+            }
+        };
+        if (!t.equipEof.empty()) scanEof(94, t.equipEof);
+        if (!t.invEof.empty()) scanEof(93, t.invEof);
+        if (!t.equipEof.empty() || !t.invEof.empty()) eofInit_ = true;
     }
 
     // trackers

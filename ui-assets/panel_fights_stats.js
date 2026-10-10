@@ -744,6 +744,8 @@
   const EQUIP_SLOTS = { 0: 'Head', 1: 'Back', 2: 'Neck', 3: 'Main hand', 4: 'Body', 5: 'Off-hand', 7: 'Legs', 9: 'Hands',
                         10: 'Feet', 12: 'Ring', 13: 'Ammo', 14: 'Aura', 17: 'Pocket' };
   function slotName(slot) { return EQUIP_SLOTS[slot] || 'Slot ' + slot; }
+  // The weapon whose special an Essence of Finality stores, or null.
+  function specOfLog(log, id) { return id >= 0 ? { item: id, name: itemName(log, id) } : null; }
   function itemName(log, id) {
     const d = (log.dict && log.dict.items) || {}, x = own(d, id) ? d[id] : null;
     return x && typeof x.name === 'string' && x.name ? x.name : 'Item ' + id;
@@ -767,18 +769,20 @@
   // change (swaps: another item, or the same item with other perks), the inventory at the start and every change
   // to it, and what left the inventory (eaten, drunk, dropped or equipped). An item that leaves the inventory in the
   // tick it is equipped is part of the swap, not used up. Rows at the very start of the selection are its starting
-  // state (the log's opening snapshot sits there), not changes.
+  // state (the log's opening snapshot sits there), not changes. An Essence of Finality carries the weapon whose
+  // special it stores ([22] rows; an item row for the slot clears it), so two amulets with other specials differ.
   function gear(log, n) {
     const r = range(log, n), ev = log.events, inv = {}, eq = {}, spans = {}, swaps = [], moves = [], invChanges = [];
     let startInv = null;
+    const specOf = id => specOfLog(log, id);
     const snapInv = () => {
       const out = [];
-      for (let s = 0; s < 28; s++) { const o = inv[s]; out.push(o && o.item >= 0 ? { slot: s, item: o.item, count: o.count, name: itemName(log, o.item) } : { slot: s, item: -1, count: 0, name: '' }); }
+      for (let s = 0; s < 28; s++) { const o = inv[s]; out.push(o && o.item >= 0 ? { slot: s, item: o.item, count: o.count, name: itemName(log, o.item), spec: specOf(o.spec) } : { slot: s, item: -1, count: 0, name: '', spec: null }); }
       return out;
     };
     const noPerks = [0, 0, 0, 0, 0, 0, 0, 0];
-    const sig = o => o.item + ':' + o.perks.join(',');
-    const view = o => ({ item: o.item, name: o.item >= 0 ? itemName(log, o.item) : '', perks: o.item >= 0 ? perkList(log, o.perks) : [] });
+    const sig = o => o.item + ':' + o.perks.join(',') + ':' + (o.spec >= 0 ? o.spec : -1);
+    const view = o => ({ item: o.item, name: o.item >= 0 ? itemName(log, o.item) : '', perks: o.item >= 0 ? perkList(log, o.perks) : [], spec: o.item >= 0 ? specOf(o.spec) : null });
     const close = (slot, at) => {
       const o = eq[slot];
       if (!o || o.item < 0) return;
@@ -789,24 +793,30 @@
     let pend = {}, pendC = null;
     const flush = () => {
       for (const k in pend) {
-        const slot = Number(k), was = eq[slot] || { item: -1, perks: noPerks, since: r.start }, now = pend[k];
-        const next = { item: now.item != null ? now.item : was.item, perks: now.perks || (now.item != null && now.item !== was.item ? noPerks : was.perks), since: pendC };
+        const slot = Number(k), was = eq[slot] || { item: -1, perks: noPerks, spec: -1, since: r.start }, now = pend[k];
+        const next = { item: now.item != null ? now.item : was.item, perks: now.perks || (now.item != null && now.item !== was.item ? noPerks : was.perks),
+                       spec: now.spec != null ? now.spec : now.item != null ? -1 : was.spec, since: pendC };
         if (pendC > r.start && sig(was) !== sig(next)) {
           close(slot, pendC);
           const f = view(was), t = view(next);
           swaps.push({ c: pendC, slot, slotName: slotName(slot), from: was.item, fromName: f.name, fromPerks: f.perks, to: next.item, toName: t.name, toPerks: t.perks,
-                       perksOnly: was.item === next.item });
+                       fromSpec: f.spec, toSpec: t.spec, perksOnly: was.item === next.item });
         } else if (pendC <= r.start) next.since = was.item === next.item && eq[slot] ? eq[slot].since : pendC;
         eq[slot] = next;
       }
       pend = {}; pendC = null;
     };
     for (const e of ev) {
-      if (!Array.isArray(e) || (e[0] !== 20 && e[0] !== 21)) continue;
+      if (!Array.isArray(e) || (e[0] !== 20 && e[0] !== 21 && e[0] !== 22)) continue;
       if (e[1] > r.end) break;
       if (pendC !== null && e[1] !== pendC) flush();
       if (e[1] > r.start && !startInv) startInv = snapInv();
       if (e[0] === 21) { pendC = e[1]; (pend[e[2]] = pend[e[2]] || {}).perks = e.slice(3, 11); continue; }
+      if (e[0] === 22) {
+        if (e[2] === 94) { pendC = e[1]; (pend[e[3]] = pend[e[3]] || {}).spec = e[4]; }
+        else if (e[2] === 93 && inv[e[3]]) inv[e[3]].spec = e[4];
+        continue;
+      }
       const cont = e[2], slot = e[3];
       if (cont === 94) { pendC = e[1]; (pend[slot] = pend[slot] || {}).item = e[4]; continue; }
       if (cont !== 93) continue;

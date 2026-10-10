@@ -154,6 +154,9 @@ struct CombatSample {
     bool haveItems = false;        // inventory (container 93) and equipment (94) were read this pass
     std::vector<std::pair<int, int>> inv, equip;   // per slot (item id, count); item -1 = empty
     std::vector<std::array<int, 8>> equipPerks;      // per equipment slot: perk id, rank x 4 (gizmo 1, gizmo 2); zeros = none
+    // per inventory / equipment slot: -2 no Essence of Finality there, -3 its vars could not be read, else the
+    // special attack it stores (item var 3, an index into enum 15970; 0 = none)
+    std::vector<int> invEof, equipEof;
     std::vector<CombatActorSample> actors;
     std::vector<std::pair<int, int>> varps, varcs;   // watched vars whose node exists: (id, value)
     int reads = 0, fails = 0;

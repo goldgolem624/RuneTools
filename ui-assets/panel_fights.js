@@ -30,6 +30,7 @@
     '.fl-perkd { display: block; font: 500 10.5px var(--font-mono); color: var(--text-dim, #9aa3b2); padding-left: 2px; white-space: normal; }\n' +
     '.fl-vis .pet-dd-btn { font: 600 10px var(--font-mono); letter-spacing: .06em; text-transform: uppercase; padding: 4px 22px 4px 9px; white-space: nowrap; }\n.fl-vis .pet-dd-pop { left: auto; right: 0; }\n' +
     '.fl-vis .pet-dd-btn::before { content: "Upload: "; }\n.fl-narrow .fl-vis .pet-dd-btn::before { content: none; }\n.fl-vis { flex: none; width: auto; }\n.fl-vis .pet-dd-btn { width: auto; }\n.fl-narrow .fl-vis .pet-dd-btn { letter-spacing: .02em; padding-right: 18px; }\n' +
+    '.fl-inv > span i.fl-spec { position: absolute; right: 0; bottom: 0; width: 20px; height: 18px; border-radius: 3px; background-color: rgba(0,0,0,.6); background-repeat: no-repeat; background-position: center; background-size: 20px 18px; }\n' +
     '.fl-lgt span { cursor: pointer; user-select: none; }\n.fl-lgt span:hover { color: var(--text); }\n.fl-lgt span.off { opacity: 0.4; text-decoration: line-through; }\n' +
     '.fl-swapc { display: flex; flex-direction: column; min-width: 0; }\n.fl-swapc .fl-chg { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }\n' +
     '.fl-table.swaps { --fl-cols: 52px minmax(56px, .8fr) minmax(0, 3fr); }\n.fl-table.used { --fl-cols: minmax(0, 2fr) 54px minmax(0, 2fr); }\n' +
@@ -758,16 +759,16 @@
       const gg = el('div', 'fl-gantt fl-gear');
       for (const s of g.slots) {
         const row = el('div', 'fl-gr'), nm = el('span', 'n', s.name), bar = el('span', 'g');
-        nm.dataset.tip = s.name + '\n' + s.spans.map(x => x.name + (x.perks && x.perks.length ? ' (' + x.perks.join(', ') + ')' : '')).join(', then ');
-        const tone = {};   // one colour per item in this slot, kept wherever it comes back
+        nm.dataset.tip = s.name + '\n' + s.spans.map(x => x.name + (x.spec ? ' storing ' + x.spec.name : '') + (x.perks && x.perks.length ? ' (' + x.perks.join(', ') + ')' : '')).join(', then ');
+        const tone = {};   // one colour per item in this slot (an amulet per stored special), kept wherever it comes back
         s.spans.forEach((sp, k) => {
-          const key = String(sp.item);
+          const key = sp.item + ':' + (sp.spec ? sp.spec.item : '');
           if (tone[key] == null) tone[key] = Object.keys(tone).length % 6;
           const i = el('i'); i.className = 'k' + tone[key];
           i.style.left = ((sp.from - g.range.start) / dur * 100).toFixed(2) + '%';
           i.style.width = Math.max(0.3, (sp.to - sp.from) / dur * 100).toFixed(2) + '%';
-          i.dataset.tip = sp.name + (sp.perks && sp.perks.length ? '\n' + sp.perks.join(', ') : '') + '\n' + at(sp.from) + ' to ' + at(sp.to);
-          const ic = el('span', 'fl-ico none'); flItemIcon(ic, sp.item); i.appendChild(ic); i.appendChild(document.createTextNode(sp.name));
+          i.dataset.tip = sp.name + (sp.spec ? '\nStores ' + sp.spec.name : '') + (sp.perks && sp.perks.length ? '\n' + sp.perks.join(', ') : '') + '\n' + at(sp.from) + ' to ' + at(sp.to);
+          const ic = el('span', 'fl-ico none'); flItemIcon(ic, sp.item); i.appendChild(ic); i.appendChild(document.createTextNode(sp.spec ? sp.spec.name : sp.name));
           bar.appendChild(i);
         });
         row.appendChild(nm); row.appendChild(bar); row.appendChild(el('span', 'v', String(s.spans.length)));
@@ -776,6 +777,9 @@
         // the perks of what this slot held, in order (a perk swap shows as two lists)
         const pl = []; for (const sp of s.spans) if (sp.perks && sp.perks.length) { const t = sp.perks.join(', '); if (pl[pl.length - 1] !== t) pl.push(t); }
         if (pl.length) { const pr = el('div', 'fl-perks', pl.join('  then  ')); pr.dataset.tip = pl.join('\nthen\n'); gg.appendChild(pr); }
+        // an Essence of Finality: the special each amulet in this slot stored, in order
+        const sl = []; for (const sp of s.spans) if (sp.spec && sl[sl.length - 1] !== sp.spec.name) sl.push(sp.spec.name);
+        if (sl.length) { const pr = el('div', 'fl-perks', 'Stores ' + sl.join('  then  ')); pr.dataset.tip = 'Special attack stored in the amulet\n' + sl.join('\nthen\n'); gg.appendChild(pr); }
       }
       body.appendChild(gg);
     }
@@ -794,10 +798,13 @@
           ch.appendChild(ic); ch.appendChild(document.createTextNode(w.toName)); cell.appendChild(ch);
           const was = w.fromPerks || [], now = w.toPerks || [];
           const out = was.filter(x => now.indexOf(x) < 0), inn = now.filter(x => was.indexOf(x) < 0);
-          cell.appendChild(el('span', 'fl-perkd', 'Perks: ' + (out.join(', ') || 'none') + '  to  ' + (inn.join(', ') || 'none')));
+          if (out.length || inn.length) cell.appendChild(el('span', 'fl-perkd', 'Perks: ' + (out.join(', ') || 'none') + '  to  ' + (inn.join(', ') || 'none')));
+          const fs = w.fromSpec ? w.fromSpec.name : 'nothing', ts = w.toSpec ? w.toSpec.name : 'nothing';
+          if (fs !== ts) cell.appendChild(el('span', 'fl-perkd', 'Stores: ' + fs + '  to  ' + ts));
         } else {
           cell.appendChild(flChange(w.from, w.fromName, 0, w.to, w.toName, 0));
           if (tp) cell.appendChild(el('span', 'fl-perkd', 'Perks: ' + tp));
+          if (w.toSpec) cell.appendChild(el('span', 'fl-perkd', 'Stores: ' + w.toSpec.name));
         }
         r.appendChild(cell);
         return r;
@@ -809,8 +816,9 @@
     for (const x of g.startInv) {
       const cell = el('span');
       if (x.item >= 0) {
-        flItemIcon(cell, x.item); cell.dataset.tip = x.name + (x.count > 1 ? ' x' + x.count.toLocaleString() : '') + '\nslot ' + (x.slot + 1);
+        flItemIcon(cell, x.item); cell.dataset.tip = x.name + (x.count > 1 ? ' x' + x.count.toLocaleString() : '') + (x.spec ? '\nStores ' + x.spec.name : '') + '\nslot ' + (x.slot + 1);
         if (x.count > 1) cell.appendChild(el('b', '', x.count >= 100000 ? Math.floor(x.count / 1000) + 'K' : String(x.count)));
+        if (x.spec) { const w = el('i', 'fl-spec'); flItemIcon(w, x.spec.item); cell.appendChild(w); }   // the weapon whose special the amulet stores
       } else cell.dataset.tip = 'Empty, slot ' + (x.slot + 1);
       inv.appendChild(cell);
     }

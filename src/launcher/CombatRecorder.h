@@ -75,6 +75,7 @@ struct Tick {
     bool haveMapBase = false; int mapBaseX = 0, mapBaseY = 0;   // the loaded map's base tile: a new one is a new scene
     bool haveItems = false; std::vector<std::pair<int, int>> inv, equip;   // per slot (item, count), item -1 empty
     std::vector<std::array<int, 8>> equipPerks;                                // per equipment slot: perk id, rank x 4
+    std::vector<int> invEof, equipEof;         // per slot: -2 no Essence of Finality, -3 unread, else its stored special index (0 none)
     std::vector<rtx::reader::CombatActorSample> actors;
     std::vector<std::pair<int, int>> varps, varcs;
     bool haveTrackers = false;
@@ -91,6 +92,7 @@ struct Names {                                 // every lookup optional (the tes
     std::function<std::string(int itemId)> itemName;                  // inventory and equipment rows
     std::function<std::string(int perkId)> perkName;                  // worn items' perks
     std::function<int(int perkId)> perkRanks;                         // 1: a single-rank perk, printed without a rank
+    std::function<int(int index)> eofWeapon;                          // an Essence of Finality's stored special -> its weapon item (-1 none)
 };
 struct Config {
     std::string character, launcher, client;
@@ -205,6 +207,8 @@ private:
     std::vector<QueuedCast> castQ_;
     std::vector<QueuedBuff> buffQ_;
     std::map<int, std::pair<int, int>> items_;           // container << 8 | slot -> (item, count) as last written
+    std::map<int, int> eof_;                             // (container << 8) | slot -> stored special weapon: -2 no amulet there, -1 nothing stored
+    bool eofInit_ = false;
     std::map<int, std::array<int, 8>> perks_;            // equipment slot -> its item's perks as last written                      // shared-var buff rows waiting for the struct the server names
     std::unordered_map<int, int> buffOfStruct_;          // buff struct -> index in buffs_
     std::deque<NetCast> netCasts_;

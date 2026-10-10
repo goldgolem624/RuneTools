@@ -731,7 +731,8 @@ bool CompactText(const std::string& jsonl, const char* endBy, std::string& outJs
          "\"12\":[\"encounter\",\"struct\"],\"13\":[\"gfx\",\"actor\",\"gfx\"],\"14\":[\"proj\",\"from\",\"to\",\"gfx\"],\"15\":[\"xp\",\"skill\",\"xp\"],"
          "\"16\":[\"mark\",\"kind\",\"text\"],\"17\":[\"bar\",\"actor\",\"slot\",\"fill\"],\"18\":[\"stat\",\"actor\",\"idx\",\"cur\",\"base\"],"
          "\"19\":[\"sound\",\"id\",\"area\"],\"20\":[\"item\",\"container\",\"slot\",\"item\",\"count\"],"
-         "\"21\":[\"perks\",\"slot\",\"p1\",\"r1\",\"p2\",\"r2\",\"p3\",\"r3\",\"p4\",\"r4\"],\"mech\":[\"mech\",\"boss\",\"key\",\"kind\",\"id\",\"actor\"]},\"events\":[";
+         "\"21\":[\"perks\",\"slot\",\"p1\",\"r1\",\"p2\",\"r2\",\"p3\",\"r3\",\"p4\",\"r4\"],\"22\":[\"special\",\"container\",\"slot\",\"item\"],"
+         "\"mech\":[\"mech\",\"boss\",\"key\",\"kind\",\"id\",\"actor\"]},\"events\":[";
     for (std::size_t i = 0; i < order.size(); ++i) { if (i) o += ",\n"; o += events[order[i].at]; }
     o += "]}\n";
     outJson = std::move(o);
@@ -1065,7 +1066,9 @@ const char* kSchemaJson =
     "\"9\":[\"tracker\",\"group\",\"row\",\"col\",\"value\"],\"10\":[\"death\",\"actor\",\"how\"],\"11\":[\"actor\",\"actor\",\"present\"],"
     "\"12\":[\"encounter\",\"struct\"],\"13\":[\"gfx\",\"actor\",\"gfx\"],\"14\":[\"proj\",\"from\",\"to\",\"gfx\"],\"15\":[\"xp\",\"skill\",\"xp\"],"
     "\"16\":[\"mark\",\"kind\",\"text\"],\"17\":[\"bar\",\"actor\",\"slot\",\"fill\"],\"18\":[\"stat\",\"actor\",\"idx\",\"cur\",\"base\"],"
-    "\"19\":[\"sound\",\"id\",\"area\"],\"mech\":[\"mech\",\"boss\",\"key\",\"kind\",\"id\",\"actor\"]}";
+    "\"19\":[\"sound\",\"id\",\"area\"],\"20\":[\"item\",\"container\",\"slot\",\"item\",\"count\"],"
+    "\"21\":[\"perks\",\"slot\",\"p1\",\"r1\",\"p2\",\"r2\",\"p3\",\"r3\",\"p4\",\"r4\"],\"22\":[\"special\",\"container\",\"slot\",\"item\"],"
+    "\"mech\":[\"mech\",\"boss\",\"key\",\"kind\",\"id\",\"actor\"]}";
 
 struct LiveLog {
     std::string visibility;                             // the header's uploadAs; none = the account's default

@@ -26,6 +26,7 @@
 #include "Cs2Fresh.h"
 
 #include <Windows.h>
+#include <cctype>
 #include <TlHelp32.h>
 #include <Psapi.h>
 #include <winternl.h>
@@ -1898,6 +1899,48 @@ std::string PofJson(std::uint32_t pid) {
     }
     out += "]}";
     return out;
+}
+
+// An Essence of Finality amulet (plain or augmented, any variant): it stores one weapon's special attack.
+static bool item_is_eof(int item) {
+    if (item < 0) return false;
+    static std::mutex mu;
+    static std::unordered_map<int, bool> memo;
+    {
+        std::lock_guard<std::mutex> lk(mu);
+        auto it = memo.find(item);
+        if (it != memo.end()) return it->second;
+    }
+    std::string n = rtx::cache::ItemName(item);
+    for (char& ch : n) ch = (char)std::tolower((unsigned char)ch);
+    const bool yes = n.rfind("essence of finality amulet", 0) == 0 || n.rfind("augmented essence of finality amulet", 0) == 0;
+    std::lock_guard<std::mutex> lk(mu);
+    memo[item] = yes;
+    return yes;
+}
+
+// One container slot's item vars (keys 0..7) from its extras record (0x38 bytes: pointer array +0x10, count +0x18;
+// each pointer -> key +0, value +8). A slot without vars reads as all zero. False when a read failed.
+static bool slot_item_vars(HANDLE h, std::uint64_t xs, int s, int val[8], int& reads, int& fails) {
+    for (int k = 0; k < 8; ++k) val[k] = 0;
+    std::uint8_t xb[0x38];
+    ++reads;
+    if (!rpm_bytes(h, xs + (std::uint64_t)s * 0x38, xb, sizeof(xb))) { ++fails; return false; }
+    const int cnt = *reinterpret_cast<const std::int32_t*>(xb + 0x18);
+    const std::uint64_t arr = *reinterpret_cast<const std::uint64_t*>(xb + 0x10);
+    if (cnt <= 0) return true;
+    if (cnt > 16 || arr <= 0x10000) return false;
+    std::uint64_t ptrs[16] = {};
+    ++reads;
+    if (!rpm_bytes(h, arr, ptrs, (std::size_t)cnt * 8)) { ++fails; return false; }
+    for (int j = 0; j < cnt; ++j) {
+        if (ptrs[j] <= 0x10000) continue;
+        std::int32_t node[4] = {};
+        ++reads;
+        if (!rpm_bytes(h, ptrs[j], node, sizeof(node))) { ++fails; return false; }
+        if (node[0] >= 0 && node[0] < 8) val[node[0]] = node[2];
+    }
+    return true;
 }
 
 // Per-slot Extra_ints: entry+0x30 -> slot*0x38 -> {ptrArr@+0x10, count@+0x18}; ptr = key@+0, value@+8.
@@ -4788,6 +4831,16 @@ bool CombatRead(std::uint32_t pid, bool bars, CombatSample& out) {
                                 int pk[8] = {};
                                 perks_of(val, pk);
                                 for (int k = 0; k < 8; ++k) out.equipPerks[(std::size_t)s][(std::size_t)k] = pk[k];
+                            }
+                        }
+                        {   // the special attack each Essence of Finality here stores
+                            auto& eof = id == 93 ? out.invEof : out.equipEof;
+                            eof.assign((std::size_t)cap, -2);
+                            const std::uint64_t xs = *reinterpret_cast<const std::uint64_t*>(e + 0x30);
+                            for (int s = 0; s < cap; ++s) {
+                                if (!item_is_eof(dst[(std::size_t)s].first)) continue;
+                                int val[8];
+                                eof[(std::size_t)s] = xs > 0x10000 && slot_item_vars(h, xs, s, val, out.reads, out.fails) ? std::max(0, val[3]) : -3;
                             }
                         }
                         (id == 93 ? got93 : got94) = true;

@@ -3252,6 +3252,7 @@ bool build_config() {
     c.names.itemName = [](int id) { return rtx::cache::ItemName(id); };
     c.names.perkName = [](int id) { return rtx::cache::PerkName(id); };
     c.names.perkRanks = [](int id) { return rtx::cache::PerkRankCount(id); };
+    c.names.eofWeapon = [](int index) { return rtx::cache::EnumIntValue(15970, index, -1); };
     c.newLogId = [] { return fights::NewLogId(); };
     c.uploadAs = [] { return fights::UploadVisibility(); };
     g_cfg = std::move(c); g_cfgOk = true;
@@ -3373,6 +3374,7 @@ void step(const std::vector<std::uint32_t>& pids, const std::map<std::uint32_t, 
                     Tick t; t.ok = s.ok; t.wallMs = s.wallMs ? s.wallMs : wall_ms(); t.clock = s.clock; t.localUid = s.localUid;
                     t.haveMapBase = s.haveMapBase; t.mapBaseX = s.mapBaseX; t.mapBaseY = s.mapBaseY;
                     t.haveItems = s.haveItems; t.inv = std::move(s.inv); t.equip = std::move(s.equip); t.equipPerks = std::move(s.equipPerks);
+                    t.invEof = std::move(s.invEof); t.equipEof = std::move(s.equipEof);
                     t.actors = std::move(s.actors); t.varps = std::move(s.varps); t.varcs = std::move(s.varcs);
                     if (s.ok && c.passes % 5 == 0) t.haveTrackers = rtx::reader::CombatTrackers(pid, t.trackers);
                     c.rec.Feed(t);
