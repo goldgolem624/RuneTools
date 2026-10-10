@@ -20,6 +20,7 @@ constexpr int kUnknown = -0x7fffffff;
 constexpr int kVarpLp = 13537, kVarpLpMax = 13538, kVarpAdren = 679, kVarpPrayer = 3274, kVarpEncounter = 10946;
 constexpr int kVarpFamiliarPouch = 1831;   // the pouch or contract of the summoned familiar, 0 none
 constexpr int kGcdStart = 2091, kGcdEnd = 2092, kGcdStruct = 14881;   // the global cooldown's dummy struct
+constexpr int kVarcJustUsed = 4098;                                   // the struct of the ability used last (COMBATV2_JUST_USED_ABILITY)
 constexpr int kScriptCooldown = 6570, kScriptChannel = 18766, kScriptBuffTimer = 4252;   // 4252: (struct, ticks left)   // (struct, start tick, end tick, 1, 1); (side, ticks, id, name)
 constexpr long long kCastMatch = 15;
 constexpr long long kBuffNameWaitPasses = 600;       // about a minute of 100 ms passes                 // a cooldown varc and script 6570 this many cycles apart are one cast
@@ -299,7 +300,7 @@ void NetDecoder::Decode(int op, const std::uint8_t* b, std::uint32_t n, long lon
 
 void WantedVars(const Config& cfg, std::vector<int>& varps, std::vector<int>& varcs) {
     varps = { kVarpLp, kVarpLpMax, kVarpAdren, kVarpPrayer, kVarpEncounter, kVarpFamiliarPouch };
-    varcs = { kGcdStart, kGcdEnd };
+    varcs = { kGcdStart, kGcdEnd, kVarcJustUsed };
     for (const auto& a : cfg.abilities) { if (a.startVarc > 0) varcs.push_back(a.startVarc); if (a.endVarc > 0) varcs.push_back(a.endVarc); }
     for (const auto& b : cfg.bosses) { if (b.kc[0] > 0) varps.push_back(b.kc[0]); if (b.pr[0] > 0) varps.push_back(b.pr[0]); }
     auto want = [&](const rtx::buffvars::Entry& e) {
@@ -930,6 +931,7 @@ void Recorder::netCast(std::vector<Ev>& evs, const NetEv& n, long long c, std::v
     rows.push_back({ start, end, evs.size(), st, at, plainText(d.name), lastStyle_ });
     push(evs, 1, at, { st, ready, 0 });
     netCasts_.push_back({ at, st, d.startVarc, start, end });
+    recentCasts_.push_back({ d.startVarc, at });
     while (!netCasts_.empty() && netCasts_.front().c < at - 3000) netCasts_.pop_front();
     if (d.style) lastStyle_ = d.style;
     phase_ = (int)(((at % 30) + 30) % 30);
@@ -1036,7 +1038,7 @@ void Recorder::FeedNet(const std::vector<NetEv>& in, std::uint32_t clock, long l
 // A buff row. A var one struct owns is written now; a shared var's on row waits for the struct the server names
 // (4252 lands in the same packet pass, drained after this one) and is written by FeedNet or the next pass.
 void Recorder::pushBuff(std::vector<Ev>& evs, BuffVar& b, const QueuedBuff& q) {
-    if (b.group.size() > 1 && q.on) { buffQ_.push_back(q); return; }
+    if (b.group.size() > 1 && q.on) { QueuedBuff w = q; w.used = justUsed_; buffQ_.push_back(w); return; }
     if (!q.on) {   // a timer that ends before anything named it: its waiting row is dropped and so is the end
         bool waiting = false;
         for (auto it = buffQ_.begin(); it != buffQ_.end();) {
@@ -1050,7 +1052,27 @@ void Recorder::pushBuff(std::vector<Ev>& evs, BuffVar& b, const QueuedBuff& q) {
     push(evs, 7, q.c, { st, q.on, q.start, q.end, q.stacks });
 }
 
-// Queued shared-var rows: every one when `all`, else the ones from an earlier pass, under the named struct or the default.
+// The struct of a shared timer from the cast that started it: the ability used last (varc 4098) when it is a
+// member of the group, else the member whose own cooldown start varc was stamped within a tick and a half of
+// the timer turning on (varc 3746 is the channel end of Snipe, Assault and more; Assault's cooldown pair moves
+// in the same tick). 0 when none or more than one member fits.
+int Recorder::castNamed(const BuffVar& b, const QueuedBuff& q) const {
+    const long long c = q.c;
+    if (q.used > 0 && std::find(b.group.begin(), b.group.end(), q.used) != b.group.end()) return q.used;
+    int found = 0;
+    for (int s : b.group) {
+        auto it = abilityAt_.find(s);
+        if (it == abilityAt_.end()) continue;
+        const int sv = cfg_.abilities[(std::size_t)it->second].startVarc;
+        if (sv <= 0 || sv == kGcdStart) continue;
+        for (const auto& rc : recentCasts_)
+            if (rc.first == sv && std::llabs(rc.second - c) <= 45) { if (found && found != s) return 0; found = s; break; }
+    }
+    return found;
+}
+
+// Queued shared-var rows: every one when `all`, else the ones from an earlier pass, under the struct the cast at
+// that tick names, else the one the server named; never a guess.
 void Recorder::flushBuffs(std::vector<Ev>& evs, bool all) {
     std::vector<QueuedBuff> keep;
     for (const auto& q : buffQ_) {
@@ -1059,11 +1081,12 @@ void Recorder::flushBuffs(std::vector<Ev>& evs, bool all) {
         // styles (varc 3746 is Snipe's, Assault's and more), so the table's first struct would be wrong as often
         // as right. One already running when recording began gets up to a minute for the server to name it again
         // (it repeats every few seconds); a fresh one is named in its own packet pass or not at all.
-        const bool unnamed = !b.cur && !b.owner;
+        const int by = castNamed(b, q);
+        const bool unnamed = !by && !b.cur && !b.owner;
         if (unnamed && q.start < 0 && passes_ - q.pass < kBuffNameWaitPasses) { keep.push_back(q); continue; }
         if (!all && q.pass >= passes_) { keep.push_back(q); continue; }
         if (unnamed) continue;
-        const int st = b.owner ? b.owner : b.structId;
+        const int st = by ? by : b.owner ? b.owner : b.cur;
         if (b.cur && b.cur != st && q.start < 0) push(evs, 7, q.c, { b.cur, 0, -1, q.c, -1 });   // the var changed hands while on
         b.cur = st;
         push(evs, 7, q.c, { st, 1, q.start, q.end, q.stacks });
@@ -1098,11 +1121,13 @@ void Recorder::Feed(const Tick& t) {
     if (lastWallMs_ && t.wallMs - lastWallMs_ > 1000) { ++gaps_; push(evs, 16, c, { 2 }, -1, -1, "gap " + std::to_string(t.wallMs - lastWallMs_) + " ms"); }
     lastWallMs_ = t.wallMs; lastC_ = c;
     ++passes_;
+    while (!recentCasts_.empty() && recentCasts_.front().second < c - 600) recentCasts_.pop_front();
     flushCasts(evs);
     flushBuffs(evs, false);
     std::unordered_map<int, int> vp, vc;
     for (const auto& kv : t.varps) vp[kv.first] = kv.second;
     for (const auto& kv : t.varcs) vc[kv.first] = kv.second;
+    if (auto ju = vc.find(kVarcJustUsed); ju != vc.end() && ju->second > 0) justUsed_ = ju->second;
 
     // actors: presence, animation, target, life points, stats, bars, hits
     std::vector<int> myHits; bool hitOnSelf = false; long long actionC = -1;
@@ -1311,7 +1336,10 @@ void Recorder::Feed(const Tick& t) {
         for (const auto& nc : netCasts_) if (nc.startVarc == kv.first && std::llabs(nc.c - kv.second) <= kCastMatch) { named = true; break; }
         if (named) continue;
         auto en = vc.find(cs.endVarc);
-        castQ_.push_back({ cs.structId, kv.second, en != vc.end() ? en->second : -1, kv.first, 1, passes_ });
+        int st = cs.structId;   // the family head; the ability used last names the member when it shares this varc
+        if (justUsed_ > 0 && justUsed_ != st) { auto ja = abilityAt_.find(justUsed_); if (ja != abilityAt_.end() && cfg_.abilities[(std::size_t)ja->second].startVarc == kv.first) st = justUsed_; }
+        castQ_.push_back({ st, kv.second, en != vc.end() ? en->second : -1, kv.first, 1, passes_ });
+        recentCasts_.push_back({ kv.first, (long long)kv.second });
     }
     if (gcdC >= 0) {
         bool paired = false;

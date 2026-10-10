@@ -159,7 +159,7 @@ private:
     // struct of a row is the one the server named for the var last (script 4252), else the table's first.
     struct BuffVar { int structId = 0, kind = 0, var = 0, countKind = 0, countVar = 0; bool known = false, on = false; int last = 0;
                      std::vector<int> group; int owner = 0, cur = 0; };
-    struct QueuedBuff { int buff = 0; long long c = 0; int on = 0; long long start = -1; int end = 0, stacks = -1; long long pass = 0; };
+    struct QueuedBuff { int buff = 0; long long c = 0; int on = 0; long long start = -1; int end = 0, stacks = -1; long long pass = 0; int used = 0; };
 
     static std::uint64_t ringKey(int slot, const rtx::reader::CombatHitRec& r);
     int actorIndex(const rtx::reader::CombatActorSample& a, long long c);
@@ -217,6 +217,9 @@ private:
     std::map<int, std::array<int, 8>> perks_;            // equipment slot -> its item's perks as last written                      // shared-var buff rows waiting for the struct the server names
     std::unordered_map<int, int> buffOfStruct_;          // buff struct -> index in buffs_
     std::deque<NetCast> netCasts_;
+    std::deque<std::pair<int, long long>> recentCasts_;   // (cooldown start varc, cycle) of casts stamped lately: they name shared timers
+    int justUsed_ = 0;                                    // varc 4098: the struct of the ability used last, read every pass
+    int castNamed(const BuffVar& b, const QueuedBuff& q) const;
     std::deque<std::pair<long long, long long>> tickOffs_;   // (cycle, cycle - tick * 30) of recent 6570 records
     long long tickOff_ = 0; bool haveTickOff_ = false;
     int lastStyle_ = 0;                                  // param 2806 of the last cast script 6570 named
