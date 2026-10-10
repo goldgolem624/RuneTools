@@ -281,7 +281,12 @@ std::uint64_t FindVarStore(std::uint64_t root, int* found) {
     return n == 1 ? hit : 0;
 }
 
-bool RootGlobalValid(std::uint64_t globalAddr) {
+// `anchor`: the global is the one the client's own constructor publishes to. Its root is judged by
+// structure alone (the player var store, the local-player block, the scene view chain). What the
+// scene holds says nothing about it: a place with few pieces of scenery in the list failed the count
+// below and the root was dropped and found again every few seconds. The count stays for a global
+// found by scanning, where it is what tells a root from loose data.
+bool RootGlobalValid(std::uint64_t globalAddr, bool anchor = false) {
     std::uint64_t root = R64(globalAddr);
     if (!IsHeap(root)) return false;
     // A real root is a class instance (vtable in the image) that owns the local-player block. Loose data
@@ -295,6 +300,7 @@ bool RootGlobalValid(std::uint64_t globalAddr) {
     if (idx < 0 || idx > 64 || !IsHeap(arr)) return false;
     std::uint64_t W = R64(arr + (std::uint64_t)idx * 0x10 + rtx::scn::kEntryWv);
     if (!IsHeap(W)) return false;
+    if (anchor) return VarStoreAt(root, OffVarpMgr()) != 0;
     for (std::uint32_t wo = 0x10000; wo < 0x10400; wo += 8) {
         std::uint64_t wk = W + wo;
         std::uint64_t vb = R64(wk + rtx::scn::kVecBegin), ve = R64(wk + rtx::scn::kVecEnd);
@@ -344,7 +350,7 @@ std::uint64_t ScanRootGlobal() {
     // With the anchor decoded, that global is the root; before the scene loads it is simply not valid
     // yet. Guessing another global in the meantime is how a wrong one got pinned for a whole session.
     if (g_anchorGlobal) {
-        if (RootGlobalValid(g_anchorGlobal)) { g_rootMethod = 1; return g_anchorGlobal; }
+        if (RootGlobalValid(g_anchorGlobal, true)) { g_rootMethod = 1; return g_anchorGlobal; }
         // The compiled chain failed on a root that is an object: look for the player var store at
         // another offset and, when it sits alone and the chain holds with that delta, adopt it.
         const std::uint64_t root = R64(g_anchorGlobal);
@@ -354,7 +360,7 @@ std::uint64_t ScanRootGlobal() {
             if (at && at != OffVarpMgr()) {
                 const std::int64_t was = g_mdShift;
                 g_mdShift = (std::int64_t)at - (std::int64_t)rtx::md::kVarpMgr;
-                if (RootGlobalValid(g_anchorGlobal)) {
+                if (RootGlobalValid(g_anchorGlobal, true)) {
                     RingLog("scene root: player vars at +0x%llx, compiled +0x%x: MainData shift %+lld adopted", (unsigned long long)at, rtx::md::kVarpMgr, (long long)g_mdShift);
                     g_rootMethod = 1;
                     return g_anchorGlobal;
@@ -385,7 +391,7 @@ std::uint64_t Root() {
     const ULONGLONG now = GetTickCount64();
     if (g_rootGlobal && now >= s_nextCheck) {
         s_nextCheck = now + 2000;
-        if (!RootGlobalValid(g_rootGlobal)) { g_rootGlobal = 0; g_rootMethod = 0; }
+        if (!RootGlobalValid(g_rootGlobal, g_rootMethod == 1)) { g_rootGlobal = 0; g_rootMethod = 0; }
     }
     // Not found yet: look again at most every 2 s. Without the anchor that look walks the whole image, and
     // Root() is asked several times a tick.
@@ -2424,7 +2430,8 @@ DWORD WINAPI Worker(LPVOID) {
         }
         // Logged in with a root but no local player among the worker's entities for 10 s: the worker offset
         // or the root is wrong. Start both over rather than keep reading the wrong list for the session.
-        if (g_posSource == 1 || !g_rootGlobal) noPosSinceMs = 0;
+        // only in the world: the lobby has a root and no player, and would start over every 10 s for good
+        if (g_posSource == 1 || !g_rootGlobal || R32(R64(g_rootGlobal) + OffStatus()) != 30) noPosSinceMs = 0;
         else if (!noPosSinceMs) noPosSinceMs = GetTickCount64();
         else if (GetTickCount64() - noPosSinceMs > 10000) {
             RingLog("scene: no local player for 10 s (root exe+0x%llX, worker +0x%X); resolving again",
