@@ -23,6 +23,9 @@
     '.fl-inv > span b { position: absolute; left: 2px; top: 1px; font: 600 9.5px var(--font-mono); color: #ffe066; text-shadow: 0 1px 1px #000; }\n' +
     '.fl-chg { display: inline-flex; align-items: center; gap: 4px; min-width: 0; }\n.fl-chg .fl-ico { width: 14px; height: 14px; background-color: transparent; background-size: contain; background-position: center; background-repeat: no-repeat; }\n' +
     '.fl-table.inv { --fl-cols: 52px 30px minmax(0, 3fr); }\n' +
+    '.fl-gear .fl-perks { grid-column: 1 / -1; margin: -2px 0 3px; padding-left: 2px; font: 500 10.5px var(--font-mono); color: var(--text-dim, #9aa3b2); white-space: normal; }\n' +
+    '.fl-perkd { display: block; font: 500 10.5px var(--font-mono); color: var(--text-dim, #9aa3b2); padding-left: 2px; white-space: normal; }\n' +
+    '.fl-swapc { display: flex; flex-direction: column; min-width: 0; }\n.fl-swapc .fl-chg { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }\n' +
     '.fl-table.swaps { --fl-cols: 52px minmax(56px, .8fr) minmax(0, 3fr); }\n.fl-table.used { --fl-cols: minmax(0, 2fr) 54px minmax(0, 2fr); }\n' +
     '.fl-narrow .fl-table.used { --fl-cols: minmax(0, 1fr) 54px; }\n' +
     '.fl-chart .mkg { stroke: rgba(255,159,67,0.55); stroke-width: 1; stroke-dasharray: 2 3; }\n.fl-chart .mkr { stroke: var(--border); stroke-width: 1; }\n' +
@@ -344,7 +347,8 @@
     const psig = [chars.join(','), logs.map(r => r.id + (r.upload ? '+' : '')).join(','), fl.char, fl.logId, fl.fight, fights.length, fl.liveId].join('|');
     if (psig === fl.pickSig) return;
     fl.pickSig = psig;
-    fl.ddChar.setItems(chars.map(c => ({ value: c, label: c })), fl.char);
+    // no logs yet: a placeholder like the log picker's, not an empty box
+    fl.ddChar.setItems(chars.length ? chars.map(c => ({ value: c, label: c })) : [{ value: '', label: 'No characters' }], chars.length ? fl.char : '');
     const items = [];
     if (fl.live && flLiveChar() === fl.char) items.push({ value: 'live', label: 'Live: ' + flFmtDate((fl.live.log && fl.live.log.startedAt) || Date.now()) });
     for (const r of logs) {
@@ -724,18 +728,21 @@
       const gg = el('div', 'fl-gantt fl-gear');
       for (const s of g.slots) {
         const row = el('div', 'fl-gr'), nm = el('span', 'n', s.name), bar = el('span', 'g');
-        nm.dataset.tip = s.name + '\n' + s.spans.map(x => x.name).join(', then ');
+        nm.dataset.tip = s.name + '\n' + s.spans.map(x => x.name + (x.perks && x.perks.length ? ' (' + x.perks.join(', ') + ')' : '')).join(', then ');
         s.spans.forEach((sp, k) => {
           const i = el('i'); i.className = 'k' + (k % 3);
           i.style.left = ((sp.from - g.range.start) / dur * 100).toFixed(2) + '%';
           i.style.width = Math.max(0.3, (sp.to - sp.from) / dur * 100).toFixed(2) + '%';
-          i.dataset.tip = sp.name + '\n' + at(sp.from) + ' to ' + at(sp.to);
+          i.dataset.tip = sp.name + (sp.perks && sp.perks.length ? '\n' + sp.perks.join(', ') : '') + '\n' + at(sp.from) + ' to ' + at(sp.to);
           const ic = el('span', 'fl-ico none'); flItemIcon(ic, sp.item); i.appendChild(ic); i.appendChild(document.createTextNode(sp.name));
           bar.appendChild(i);
         });
         row.appendChild(nm); row.appendChild(bar); row.appendChild(el('span', 'v', String(s.spans.length)));
         row.lastChild.dataset.tip = s.spans.length === 1 ? 'Worn the whole time' : s.spans.length + ' items over the fight';
         gg.appendChild(row);
+        // the perks of what this slot held, in order (a perk swap shows as two lists)
+        const pl = []; for (const sp of s.spans) if (sp.perks && sp.perks.length) { const t = sp.perks.join(', '); if (pl[pl.length - 1] !== t) pl.push(t); }
+        if (pl.length) { const pr = el('div', 'fl-perks', pl.join('  then  ')); pr.dataset.tip = pl.join('\nthen\n'); gg.appendChild(pr); }
       }
       body.appendChild(gg);
     }
@@ -745,8 +752,21 @@
       const rows = g.swaps.map(w => {
         const r = el('div', 'fl-tr');
         flCells(r, [[at(w.c), 'num'], [w.slotName, 'nt']]);
-        const ch = flChange(w.from, w.fromName, 0, w.to, w.toName, 0); ch.dataset.tip = (w.fromName || 'empty') + ' to ' + (w.toName || 'empty');
-        r.appendChild(ch);
+        const fp = (w.fromPerks || []).join(', '), tp = (w.toPerks || []).join(', ');
+        const cell = el('span', 'fl-swapc');
+        cell.dataset.tip = (w.fromName || 'empty') + (fp ? ' (' + fp + ')' : '') + '\nto\n' + (w.toName || 'empty') + (tp ? ' (' + tp + ')' : '');
+        if (w.perksOnly) {
+          // the same item with other perks: the item once, then only the perks that changed
+          const ch = el('span', 'fl-chg nt'), ic = el('span', 'fl-ico none'); flItemIcon(ic, w.to);
+          ch.appendChild(ic); ch.appendChild(document.createTextNode(w.toName)); cell.appendChild(ch);
+          const was = w.fromPerks || [], now = w.toPerks || [];
+          const out = was.filter(x => now.indexOf(x) < 0), inn = now.filter(x => was.indexOf(x) < 0);
+          cell.appendChild(el('span', 'fl-perkd', 'Perks: ' + (out.join(', ') || 'none') + '  to  ' + (inn.join(', ') || 'none')));
+        } else {
+          cell.appendChild(flChange(w.from, w.fromName, 0, w.to, w.toName, 0));
+          if (tp) cell.appendChild(el('span', 'fl-perkd', 'Perks: ' + tp));
+        }
+        r.appendChild(cell);
         return r;
       });
       body.appendChild(flTable('swaps', [['Time', 1], ['Slot'], ['Change']], rows));

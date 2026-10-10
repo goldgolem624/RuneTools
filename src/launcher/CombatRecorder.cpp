@@ -22,7 +22,8 @@ constexpr long long kCastMatch = 15;
 constexpr long long kBuffNameWaitPasses = 600;       // about a minute of 100 ms passes                 // a cooldown varc and script 6570 this many cycles apart are one cast
 constexpr long long kRestoreSlack = 45;              // a 6570 record this much older than the tick offset is a cooldown restore
 bool isGcdStruct(int st) { return st == 14881 || st == 14882 || st == 29145; }
-constexpr int kTypeSound = 19, kTypeItem = 20, kTypeMech = 100;   // kTypeItem: [20, c, container, slot, item, count]      // kTypeMech is written as ["mech", c, boss, key, kind, id, actor]
+constexpr int kTypeSound = 19, kTypeItem = 20, kTypePerks = 21, kTypeMech = 100;   // kTypeItem: [20, c, container, slot, item, count]
+                                                    // kTypePerks: [21, c, slot, perk, rank x 4] for a worn item      // kTypeMech is written as ["mech", c, boss, key, kind, id, actor]
 constexpr long long kResendMs = 1200;                // tile items this soon after their zone was cleared are the zone sent again
 
 std::uint16_t nu16(const std::uint8_t* b) { return (std::uint16_t)((b[0] << 8) | b[1]); }
@@ -409,6 +410,7 @@ void Recorder::push(std::vector<Ev>& evs, int type, long long c, std::initialize
     case 17: e.key = stateKey(17, a1, e.f[1]); break;
     case 18: e.key = stateKey(18, a1, e.f[1]); break;
     case kTypeItem: e.key = stateKey(kTypeItem, e.f[0], e.f[1]); break;
+    case kTypePerks: e.key = stateKey(kTypePerks, e.f[0]); break;
     default: e.key = 0; break;
     }
     evs.push_back(std::move(e));
@@ -667,15 +669,24 @@ void Recorder::ensureDict(const Ev& e) {
         dictLine("items", item, "{\"name\":" + jstr(plainText(cfg_.names.itemName ? cfg_.names.itemName(item) : std::string())) + "}");
         break;
     }
+    case kTypePerks:
+        for (int k = 1; k <= 7; k += 2) {
+            const int perk = (int)e.f[(std::size_t)k];
+            if (perk <= 0 || !once(kTypePerks, perk)) continue;
+            const int ranks = cfg_.names.perkRanks ? cfg_.names.perkRanks(perk) : 0;
+            dictLine("perks", perk, "{\"name\":" + jstr(plainText(cfg_.names.perkName ? cfg_.names.perkName(perk) : std::string())) +
+                     ",\"ranks\":" + std::to_string(ranks) + "}");
+        }
+        break;
     case kTypeMech: mechDict(e); break;
     default: break;
     }
 }
 
 std::string Recorder::dictJson() const {
-    static const char* kinds[] = { "abilities", "buffs", "hitmarks", "seqs", "encounters", "trackers", "mechs", "items" };
+    static const char* kinds[] = { "abilities", "buffs", "hitmarks", "seqs", "encounters", "trackers", "mechs", "items", "perks" };
     std::string o = "{";
-    for (int k = 0; k < 8; ++k) {
+    for (int k = 0; k < 9; ++k) {
         if (k) o += ",";
         o += "\""; o += kinds[k]; o += "\":{";
         auto it = dictJson_.find(kinds[k]);
@@ -734,6 +745,11 @@ void Recorder::openLog(long long c, long long wallMs, const std::vector<Ev>& pen
     }
     for (const auto& kv : trackers_) add(9, sc, { kv.first >> 16, (kv.first >> 8) & 0xFF, kv.first & 0xFF, kv.second });
     for (const auto& kv : items_) if (kv.second.first >= 0) add(kTypeItem, sc, { kv.first >> 8, kv.first & 0xFF, kv.second.first, kv.second.second });
+    for (const auto& kv : perks_) {
+        const auto& pk = kv.second;
+        if (std::any_of(pk.begin(), pk.end(), [](int v) { return v != 0; }))
+            add(kTypePerks, sc, { kv.first, pk[0], pk[1], pk[2], pk[3], pk[4], pk[5], pk[6], pk[7] });
+    }
     std::vector<Ev> base;
     for (auto& kv : baseline_) base.push_back(std::move(kv.second));
     baseline_.clear();
@@ -780,7 +796,7 @@ void Recorder::endFight(long long c, const char* by) {
 void Recorder::resetScene() {
     actors_.clear(); byUid_.clear(); baseline_.clear(); preroll_.clear(); dict_.clear(); mechDict_.clear();
     selfIdx_ = -1;
-    sceneFresh_ = true; active_.clear(); tileSeen_.clear(); mechLast_.clear(); varLast_.clear(); items_.clear();
+    sceneFresh_ = true; active_.clear(); tileSeen_.clear(); mechLast_.clear(); varLast_.clear(); items_.clear(); perks_.clear();
     haveMap_ = false; selfX_ = selfY_ = -1;
 }
 
@@ -1265,6 +1281,18 @@ void Recorder::Feed(const Tick& t) {
         };
         if (!t.equip.empty()) scan(94, t.equip);
         if (!t.inv.empty()) scan(93, t.inv);
+        // the perks of each worn item: a swap between two copies of one item shows only here
+        const bool firstPerks = perks_.empty();
+        for (std::size_t s = 0; s < t.equipPerks.size() && s < 64; ++s) {
+            const auto& pk = t.equipPerks[s];
+            auto it = perks_.find((int)s);
+            if (it != perks_.end() && it->second == pk) continue;
+            const bool had = it != perks_.end();
+            perks_[(int)s] = pk;
+            const bool none = std::all_of(pk.begin(), pk.end(), [](int v) { return v == 0; });
+            if (firstPerks || (!had && none)) continue;
+            push(evs, kTypePerks, c, { (long long)s, pk[0], pk[1], pk[2], pk[3], pk[4], pk[5], pk[6], pk[7] });
+        }
     }
 
     // trackers

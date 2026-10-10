@@ -68,7 +68,7 @@
   const SEQ_FALLBACK = [];
   for (const k in FALLBACK_AB) SEQ_FALLBACK.push([Number(k), FALLBACK_AB[k].name]);
   SEQ_FALLBACK.push([14881, 'Global cooldown'], [14882, 'Global cooldown']);
-  const EVENT_NAMES = ['hit', 'cast', 'anim', 'target', 'lp', 'adren', 'prayer', 'buff', 'channel', 'tracker', 'death', 'actor', 'encounter', 'gfx', 'proj', 'xp', 'mark', 'bar', 'stat', 'sound', 'item'];
+  const EVENT_NAMES = ['hit', 'cast', 'anim', 'target', 'lp', 'adren', 'prayer', 'buff', 'channel', 'tracker', 'death', 'actor', 'encounter', 'gfx', 'proj', 'xp', 'mark', 'bar', 'stat', 'sound', 'item', 'perks'];
   // Boss mechanic rows: ["mech", c, boss, key, kind, id, actor]; kind indexes this list.
   const MECH_KINDS = ['', 'animation', 'graphic', 'tile graphic', 'projectile', 'sound', 'hint arrow', 'var', 'spawn'];
 
@@ -751,31 +751,71 @@
   // Gear over a selection: what each equipment slot held and when (spans), every equipment change (swaps, with the
   // item it replaced), and what left the inventory (eaten, drunk, dropped or equipped). An item that leaves the
   // inventory in the tick it is equipped is part of the swap, not used up.
+  // The perks of a worn item from its [21] row: "Relentless 5, Crackling 4, Biting 4, Mobile" (a single-rank perk
+  // prints without a rank, as the game does). [] when the item carries none.
+  function perkList(log, p) {
+    const d = (log.dict && log.dict.perks) || {}, out = [];
+    for (let k = 0; k < 8; k += 2) {
+      const id = p[k], rank = p[k + 1];
+      if (!(id > 0)) continue;
+      const x = own(d, id) ? d[id] : null, nm = x && typeof x.name === 'string' && x.name ? x.name : 'Perk ' + id;
+      out.push(nm + (x && x.ranks > 1 && rank > 0 ? ' ' + rank : ''));
+    }
+    return out;
+  }
+  // Gear over a selection: what each equipment slot held and when (spans, with the item's perks), every equipment
+  // change (swaps: another item, or the same item with other perks), the inventory at the start and every change
+  // to it, and what left the inventory (eaten, drunk, dropped or equipped). An item that leaves the inventory in the
+  // tick it is equipped is part of the swap, not used up. Rows at the very start of the selection are its starting
+  // state (the log's opening snapshot sits there), not changes.
   function gear(log, n) {
-    const r = range(log, n), ev = log.events, cur = {}, spans = {}, swaps = [], moves = [], invChanges = [];
+    const r = range(log, n), ev = log.events, inv = {}, eq = {}, spans = {}, swaps = [], moves = [], invChanges = [];
     let startInv = null;
-    const snapInv = () => {   // the 28 inventory slots as they stand now
+    const snapInv = () => {
       const out = [];
-      for (let s = 0; s < 28; s++) { const o = cur[93 * 256 + s]; out.push(o && o.item >= 0 ? { slot: s, item: o.item, count: o.count, name: itemName(log, o.item) } : { slot: s, item: -1, count: 0, name: '' }); }
+      for (let s = 0; s < 28; s++) { const o = inv[s]; out.push(o && o.item >= 0 ? { slot: s, item: o.item, count: o.count, name: itemName(log, o.item) } : { slot: s, item: -1, count: 0, name: '' }); }
       return out;
     };
-    const close = (slot, at) => { const o = cur[94 * 256 + slot]; if (o && o.item >= 0) { const a = Math.max(o.since, r.start), b = Math.min(at, r.end); if (b > a) (spans[slot] = spans[slot] || []).push({ from: a, to: b, item: o.item, name: itemName(log, o.item) }); } };
+    const noPerks = [0, 0, 0, 0, 0, 0, 0, 0];
+    const sig = o => o.item + ':' + o.perks.join(',');
+    const view = o => ({ item: o.item, name: o.item >= 0 ? itemName(log, o.item) : '', perks: o.item >= 0 ? perkList(log, o.perks) : [] });
+    const close = (slot, at) => {
+      const o = eq[slot];
+      if (!o || o.item < 0) return;
+      const a = Math.max(o.since, r.start), b = Math.min(at, r.end);
+      if (b > a) (spans[slot] = spans[slot] || []).push(Object.assign({ from: a, to: b }, view(o)));
+    };
+    // equipment rows of one cycle (an item and its perks) are one change
+    let pend = {}, pendC = null;
+    const flush = () => {
+      for (const k in pend) {
+        const slot = Number(k), was = eq[slot] || { item: -1, perks: noPerks, since: r.start }, now = pend[k];
+        const next = { item: now.item != null ? now.item : was.item, perks: now.perks || (now.item != null && now.item !== was.item ? noPerks : was.perks), since: pendC };
+        if (pendC > r.start && sig(was) !== sig(next)) {
+          close(slot, pendC);
+          const f = view(was), t = view(next);
+          swaps.push({ c: pendC, slot, slotName: slotName(slot), from: was.item, fromName: f.name, fromPerks: f.perks, to: next.item, toName: t.name, toPerks: t.perks,
+                       perksOnly: was.item === next.item });
+        } else if (pendC <= r.start) next.since = was.item === next.item && eq[slot] ? eq[slot].since : pendC;
+        eq[slot] = next;
+      }
+      pend = {}; pendC = null;
+    };
     for (const e of ev) {
-      if (!Array.isArray(e) || e[0] !== 20) continue;
+      if (!Array.isArray(e) || (e[0] !== 20 && e[0] !== 21)) continue;
       if (e[1] > r.end) break;
-      const cont = e[2], slot = e[3], key = cont * 256 + slot, prev = cur[key];
+      if (pendC !== null && e[1] !== pendC) flush();
       if (e[1] > r.start && !startInv) startInv = snapInv();
-      if (e[1] > r.start && cont === 93) {
+      if (e[0] === 21) { pendC = e[1]; (pend[e[2]] = pend[e[2]] || {}).perks = e.slice(3, 11); continue; }
+      const cont = e[2], slot = e[3];
+      if (cont === 94) { pendC = e[1]; (pend[slot] = pend[slot] || {}).item = e[4]; continue; }
+      if (cont !== 93) continue;
+      const prev = inv[slot];
+      if (e[1] > r.start) {
         const was = prev ? prev.item : -1, wasN = prev ? prev.count : 0;
         if (was !== e[4] || wasN !== e[5]) invChanges.push({ c: e[1], slot, from: was, fromName: was >= 0 ? itemName(log, was) : '', fromCount: wasN,
                                                              to: e[4], toName: e[4] >= 0 ? itemName(log, e[4]) : '', toCount: e[5] });
-      }
-      if (e[1] > r.start) {
-        if (cont === 94) {
-          close(slot, e[1]);
-          const was = prev ? prev.item : -1;   // a slot with no row yet was empty
-          if (was !== e[4]) swaps.push({ c: e[1], slot, slotName: slotName(slot), from: was, fromName: was >= 0 ? itemName(log, was) : '', to: e[4], toName: e[4] >= 0 ? itemName(log, e[4]) : '' });
-        } else if (cont === 93 && prev && prev.item >= 0) {
+        if (prev && prev.item >= 0) {
           // a stack going down; a potion or other dosed item losing a dose (Super restore (4) -> (3)); an item leaving
           const stem = id => itemName(log, id).replace(/ \(\d\)$/, '');
           if (prev.item === e[4] && e[5] < prev.count) moves.push({ c: e[1], item: prev.item, n: prev.count - e[5] });
@@ -783,9 +823,10 @@
           else if (prev.item !== e[4]) moves.push({ c: e[1], item: prev.item, n: Math.max(1, prev.count) });
         }
       }
-      cur[key] = { item: e[4], count: e[5], since: e[1] };
+      inv[slot] = { item: e[4], count: e[5] };
     }
-    for (const k in cur) if (Math.floor(Number(k) / 256) === 94) close(Number(k) % 256, r.end);
+    if (pendC !== null) flush();
+    for (const k in eq) close(Number(k), r.end);
     // items that left the inventory: the ones equipped in the same tick are swaps
     const usedBy = {};
     for (const m of moves) {
@@ -961,6 +1002,7 @@
       case 17: row.actor = actorLabel(log, e[2]); row.value = e[4]; row.text = 'head bar ' + e[3] + ' fill ' + e[4]; break;
       case 18: row.actor = actorLabel(log, e[2]); row.value = e[4]; row.text = 'stat ' + e[3] + ' ' + e[4] + ' / ' + e[5]; break;
       case 19: row.value = e[2]; row.text = 'sound ' + e[2] + (e[3] ? ' on a tile' : ''); break;
+      case 21: { const pl = perkList(log, e.slice(3, 11)); row.kind = 'equipment'; row.text = slotName(e[2]) + ' perks: ' + (pl.length ? pl.join(', ') : 'none'); break; }
       case 20: row.value = e[4]; row.ability = e[4] >= 0 ? itemName(log, e[4]) : ''; row.kind = e[2] === 94 ? 'equipment' : 'inventory';
         row.text = (e[2] === 94 ? slotName(e[3]) + ': ' : 'inventory slot ' + (e[3] + 1) + ': ') + (e[4] >= 0 ? row.ability + (e[5] > 1 ? ' x' + e[5] : '') : 'empty'); break;
       default: row.text = JSON.stringify(e.slice(2));
@@ -2110,7 +2152,7 @@
 
   const api = { version: 6, killWindow, CYCLE_MS, TICK, STYLES, EVENT_NAMES, MECH_KINDS, STYLE_LINE, MIN_FIGHT_MS, MAX_FIGHT_MS, DPS_CAP, MAX_HIT_CAP, PLAUSIBLE_RATIO, SUMMON_BUFFS,
                 PARSE_HEX, REASON_TEXT, token, ctx, reset, hmInfo, hitRole, isFoe, hitStyle, actorOf, actorLabel, cycleMs, cycleTick, range, resolve, inRange,
-                ability, shapeOf, seqIs, seqTag, seqInfoFrom, attribute, sourceOf, sources, summary, byAbility, bySource, series, uptimes, gear, slotName, itemName, casts, trackerCheck, styleSplit,
+                ability, shapeOf, seqIs, seqTag, seqInfoFrom, attribute, sourceOf, sources, summary, byAbility, bySource, series, uptimes, gear, slotName, itemName, perkList, casts, trackerCheck, styleSplit,
                 describe, fightSummaries, isMech, typeName, mechInfo, mechCount, bossName, mechs, plain, shortName, fmtNum, fmtMs, fmtMsTenths,
                 bossGroupKey, fightInfo, bossActors, phases, styleOf, metrics, fightHits, byTarget, bossShare, takenBy, enemyCasts, targetsOf, healing, deaths,
                 deathRecap, resources, rotation, dpsSeries, buffGroup, profile, compare, query, parseFilter, logSummary, liveClose, parseColor, sanitize };

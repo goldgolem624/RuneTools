@@ -3250,6 +3250,8 @@ bool build_config() {
     c.names.structStr = [](int s, int p) { std::string v; rtx::cache::StructStrParam(s, p, v); return v; };
     c.names.structInt = [](int s, int p, int def) { int v = 0; return rtx::cache::StructIntParam(s, p, v) ? v : def; };
     c.names.itemName = [](int id) { return rtx::cache::ItemName(id); };
+    c.names.perkName = [](int id) { return rtx::cache::PerkName(id); };
+    c.names.perkRanks = [](int id) { return rtx::cache::PerkRankCount(id); };
     c.newLogId = [] { return fights::NewLogId(); };
     g_cfg = std::move(c); g_cfgOk = true;
     return true;
@@ -3369,7 +3371,7 @@ void step(const std::vector<std::uint32_t>& pids, const std::map<std::uint32_t, 
                     g_reads += s.reads; g_fails += s.fails;
                     Tick t; t.ok = s.ok; t.wallMs = s.wallMs ? s.wallMs : wall_ms(); t.clock = s.clock; t.localUid = s.localUid;
                     t.haveMapBase = s.haveMapBase; t.mapBaseX = s.mapBaseX; t.mapBaseY = s.mapBaseY;
-                    t.haveItems = s.haveItems; t.inv = std::move(s.inv); t.equip = std::move(s.equip);
+                    t.haveItems = s.haveItems; t.inv = std::move(s.inv); t.equip = std::move(s.equip); t.equipPerks = std::move(s.equipPerks);
                     t.actors = std::move(s.actors); t.varps = std::move(s.varps); t.varcs = std::move(s.varcs);
                     if (s.ok && c.passes % 5 == 0) t.haveTrackers = rtx::reader::CombatTrackers(pid, t.trackers);
                     c.rec.Feed(t);

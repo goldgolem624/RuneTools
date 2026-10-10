@@ -6,6 +6,7 @@
 // per server tick). Log layout: docs/combatlog/DESIGN.md sections 1 and 2.
 #include "../reader/Reader.h"
 
+#include <array>
 #include <cstdint>
 #include <deque>
 #include <functional>
@@ -73,6 +74,7 @@ struct Tick {
     int localUid = -1;
     bool haveMapBase = false; int mapBaseX = 0, mapBaseY = 0;   // the loaded map's base tile: a new one is a new scene
     bool haveItems = false; std::vector<std::pair<int, int>> inv, equip;   // per slot (item, count), item -1 empty
+    std::vector<std::array<int, 8>> equipPerks;                                // per equipment slot: perk id, rank x 4
     std::vector<rtx::reader::CombatActorSample> actors;
     std::vector<std::pair<int, int>> varps, varcs;
     bool haveTrackers = false;
@@ -87,6 +89,8 @@ struct Names {                                 // every lookup optional (the tes
     std::function<std::string(int structId, int param)> structStr;    // 2794 ability or buff name, 8849 encounter name
     std::function<int(int structId, int param, int def)> structInt;   // 8109 buff type
     std::function<std::string(int itemId)> itemName;                  // inventory and equipment rows
+    std::function<std::string(int perkId)> perkName;                  // worn items' perks
+    std::function<int(int perkId)> perkRanks;                         // 1: a single-rank perk, printed without a rank
 };
 struct Config {
     std::string character, launcher, client;
@@ -199,7 +203,8 @@ private:
     struct NetCast { long long c = 0; int structId = 0, startVarc = 0; int startTick = 0, endTick = 0; };
     std::vector<QueuedCast> castQ_;
     std::vector<QueuedBuff> buffQ_;
-    std::map<int, std::pair<int, int>> items_;           // container << 8 | slot -> (item, count) as last written                      // shared-var buff rows waiting for the struct the server names
+    std::map<int, std::pair<int, int>> items_;           // container << 8 | slot -> (item, count) as last written
+    std::map<int, std::array<int, 8>> perks_;            // equipment slot -> its item's perks as last written                      // shared-var buff rows waiting for the struct the server names
     std::unordered_map<int, int> buffOfStruct_;          // buff struct -> index in buffs_
     std::deque<NetCast> netCasts_;
     std::deque<std::pair<long long, long long>> tickOffs_;   // (cycle, cycle - tick * 30) of recent 6570 records

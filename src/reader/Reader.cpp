@@ -4715,6 +4715,8 @@ void CombatForget(std::uint32_t pid) {
     g_cb.erase(pid);
 }
 
+static void perks_of(const int val[8], int out[8]);   // an item's instance vars -> perk id, rank x 4 (defined with the perk layout)
+
 bool CombatRead(std::uint32_t pid, bool bars, CombatSample& out) {
     out = CombatSample{};
     auto ps = snap_proc(pid);
@@ -4759,6 +4761,34 @@ bool CombatRead(std::uint32_t pid, bool bars, CombatSample& out) {
                         for (int s = 0; s < cap; ++s) {
                             const int item = sl[(std::size_t)s * 2], qty = sl[(std::size_t)s * 2 + 1];
                             dst.push_back({ item >= 0 && item < 0x1000000 ? item : -1, item >= 0 ? qty : 0 });
+                        }
+                        if (id == 94) {   // perks of each worn augmented item: the slot's instance vars (key +0, value +8)
+                            out.equipPerks.assign((std::size_t)cap, std::array<int, 8>{});
+                            const std::uint64_t xs = *reinterpret_cast<const std::uint64_t*>(e + 0x30);
+                            for (int s = 0; xs > 0x10000 && s < cap; ++s) {
+                                const int item = out.equip[(std::size_t)s].first;
+                                if (item < 0 || !rtx::cache::ItemIsAugmented(item)) continue;
+                                std::uint8_t xb[0x38];
+                                ++out.reads;
+                                if (!rpm_bytes(h, xs + (std::uint64_t)s * 0x38, xb, sizeof(xb))) { ++out.fails; continue; }
+                                const int cnt = *reinterpret_cast<const std::int32_t*>(xb + 0x18);
+                                const std::uint64_t arr = *reinterpret_cast<const std::uint64_t*>(xb + 0x10);
+                                if (cnt < 2 || cnt > 10 || arr <= 0x10000) continue;
+                                std::uint64_t ptrs[10] = {};
+                                ++out.reads;
+                                if (!rpm_bytes(h, arr, ptrs, (std::size_t)cnt * 8)) { ++out.fails; continue; }
+                                int val[8] = {};
+                                for (int j = 0; j < cnt; ++j) {
+                                    if (ptrs[j] <= 0x10000) continue;
+                                    std::int32_t node[4] = {};
+                                    ++out.reads;
+                                    if (!rpm_bytes(h, ptrs[j], node, sizeof(node))) { ++out.fails; continue; }
+                                    if (node[0] >= 0 && node[0] < 8) val[node[0]] = node[2];
+                                }
+                                int pk[8] = {};
+                                perks_of(val, pk);
+                                for (int k = 0; k < 8; ++k) out.equipPerks[(std::size_t)s][(std::size_t)k] = pk[k];
+                            }
                         }
                         (id == 93 ? got93 : got94) = true;
                     }
@@ -9910,6 +9940,19 @@ static const PerkFieldLayout& perk_field_layout() {
     }
     L.drift = drift; L.from_cache = true;
     return L;
+}
+
+static void perks_of(const int val[8], int out[8]) {
+    const PerkFieldLayout& L = perk_field_layout();
+    auto fld = [&](const PerkField& f) {
+        const std::uint32_t mask = (f.msb - f.lsb >= 31) ? 0xFFFFFFFFu : ((1u << (f.msb - f.lsb + 1)) - 1u);
+        return (int)(((std::uint32_t)val[f.var] >> f.lsb) & mask);
+    };
+    const PerkField* ids[4] = { &L.g1p1, &L.g1p2, &L.g2p1, &L.g2p2 }, * ranks[4] = { &L.g1p1r, &L.g1p2r, &L.g2p1r, &L.g2p2r };
+    for (int k = 0; k < 4; ++k) {
+        const int id = fld(*ids[k]);
+        out[k * 2] = id > 0 ? id : 0; out[k * 2 + 1] = id > 0 ? fld(*ranks[k]) : 0;
+    }
 }
 
 // Augmented items in inventory (93) + equipment (94): item XP / gizmo perks from instance vars.
