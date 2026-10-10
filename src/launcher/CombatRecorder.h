@@ -142,7 +142,9 @@ public:
     std::string DiagJson() const;                                              // what the recorder holds now (the headless report)
 
 private:
-    struct Ev { int type = 0; long long c = 0; std::vector<long long> f; std::string text; int a1 = -1, a2 = -1; std::uint64_t key = 0; int mech = -1; };
+    // prev: on an item, perks or stored-special row, the fields of the state it replaced (empty = none), so a log
+    // that opens after such a change still starts from what was worn and carried before it
+    struct Ev { int type = 0; long long c = 0; std::vector<long long> f; std::string text; int a1 = -1, a2 = -1; std::uint64_t key = 0; int mech = -1; std::vector<long long> prev; };
     struct ActorState {
         ActorRow row; bool present = false; long long lastSeenC = 0, leftC = 0;
         int anim = -0x7fffffff, target = -0x7fffffff, lp = -2, lpMax = -2, vis = -2, animCount = -0x7fffffff;

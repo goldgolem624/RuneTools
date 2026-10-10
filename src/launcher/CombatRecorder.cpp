@@ -748,13 +748,28 @@ void Recorder::openLog(long long c, long long wallMs, const std::vector<Ev>& pen
         if (st) add(7, sc, { st, 1, -1, b.last, -1 });
     }
     for (const auto& kv : trackers_) add(9, sc, { kv.first >> 16, (kv.first >> 8) & 0xFF, kv.first & 0xFF, kv.second });
+    std::vector<Ev> gearPrev[3];                         // item, perks, stored special
+    {
+        std::unordered_set<std::uint64_t> seen;
+        auto take = [&](const Ev& e) {
+            const int g = e.type == kTypeItem ? 0 : e.type == kTypePerks ? 1 : e.type == kTypeEof ? 2 : -1;
+            if (g < 0 || !e.key || baseline_.count(e.key) || !seen.insert(e.key).second || e.prev.empty()) return;
+            Ev s; s.type = e.type; s.c = sc; s.f = e.prev; s.key = e.key;
+            gearPrev[g].push_back(std::move(s));
+        };
+        for (const auto& e : preroll_) take(e);
+        for (const auto& e : pending) take(e);
+    }
     for (const auto& kv : items_) if (kv.second.first >= 0) add(kTypeItem, sc, { kv.first >> 8, kv.first & 0xFF, kv.second.first, kv.second.second });
+    for (auto& e : gearPrev[0]) snap.push_back(std::move(e));
     for (const auto& kv : perks_) {
         const auto& pk = kv.second;
         if (std::any_of(pk.begin(), pk.end(), [](int v) { return v != 0; }))
             add(kTypePerks, sc, { kv.first, pk[0], pk[1], pk[2], pk[3], pk[4], pk[5], pk[6], pk[7] });
     }
+    for (auto& e : gearPrev[1]) snap.push_back(std::move(e));
     for (const auto& kv : eof_) if (kv.second >= -1) add(kTypeEof, sc, { kv.first >> 8, kv.first & 0xFF, kv.second });
+    for (auto& e : gearPrev[2]) snap.push_back(std::move(e));
     std::vector<Ev> base;
     for (auto& kv : baseline_) base.push_back(std::move(kv.second));
     baseline_.clear();
@@ -1280,10 +1295,12 @@ void Recorder::Feed(const Tick& t) {
                 auto it = items_.find(key);
                 if (it != items_.end() && it->second == now) continue;
                 const bool had = it != items_.end();
+                const std::pair<int, int> old = had ? it->second : std::pair<int, int>{ -1, 0 };
                 items_[key] = now;
                 itemMoved.insert(key);
                 if (first || (!had && now.first < 0)) continue;
                 push(evs, kTypeItem, c, { cont, (long long)s, now.first, now.second });
+                if (old.first >= 0) evs.back().prev = { cont, (long long)s, old.first, old.second };
             }
         };
         if (!t.equip.empty()) scan(94, t.equip);
@@ -1295,10 +1312,13 @@ void Recorder::Feed(const Tick& t) {
             auto it = perks_.find((int)s);
             if (it != perks_.end() && it->second == pk) continue;
             const bool had = it != perks_.end();
+            const std::array<int, 8> old = had ? it->second : std::array<int, 8>{};
             perks_[(int)s] = pk;
             const bool none = std::all_of(pk.begin(), pk.end(), [](int v) { return v == 0; });
             if (firstPerks || (!had && none)) continue;
             push(evs, kTypePerks, c, { (long long)s, pk[0], pk[1], pk[2], pk[3], pk[4], pk[5], pk[6], pk[7] });
+            if (std::any_of(old.begin(), old.end(), [](int v) { return v != 0; }))
+                evs.back().prev = { (long long)s, old[0], old[1], old[2], old[3], old[4], old[5], old[6], old[7] };
         }
         // the special each Essence of Finality stores, worn or carried; written after the slot's item row, and only
         // while an amulet is there (an item row for the slot ends what the slot stored)
@@ -1309,10 +1329,12 @@ void Recorder::Feed(const Tick& t) {
                 const int w = idx[s] == -2 ? -2 : idx[s] > 0 && cfg_.names.eofWeapon ? std::max(-1, cfg_.names.eofWeapon(idx[s])) : -1;
                 const int key = (cont << 8) | (int)s;
                 auto it = eof_.find(key);
-                if ((it != eof_.end() ? it->second : -2) == w && !itemMoved.count(key)) continue;
+                const int was = it != eof_.end() ? it->second : -2;
+                if (was == w && !itemMoved.count(key)) continue;
                 eof_[key] = w;
                 if (firstEof || w == -2) continue;
                 push(evs, kTypeEof, c, { cont, (long long)s, w });
+                if (was >= -1) evs.back().prev = { cont, (long long)s, was };
             }
         };
         if (!t.equipEof.empty()) scanEof(94, t.equipEof);
