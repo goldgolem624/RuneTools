@@ -628,6 +628,64 @@ constexpr int kParamAugmentedFrom = 5525, kParamTradedForm = 5200, kParamCharged
 //         not traded itself, so the plain one is the nearest thing to a price it has.
 constexpr int kParamOtherState = 3382, kParamIsBroken = 3793, kParamPlainForm = 4338;
 
+namespace {   // defined further down with the name index
+void BuildNameIndexLocked(int kind);
+extern std::map<std::string, std::vector<int>> g_name_index[3];
+extern std::unordered_map<int, int> g_item_linked_from;
+}  // namespace
+
+namespace {
+bool item_tradeable_locked(int id) {
+    auto* index = g_store ? g_store->Get(kIndexItems) : nullptr;
+    if (!index || id < 0) return false;
+    auto bytes = index->ReadFile(id >> 8, id & 0xff);
+    return !bytes.empty() && DecodeItem(id, std::move(bytes)).tradeable;
+}
+std::string item_name_locked(int id) {
+    auto* index = g_store ? g_store->Get(kIndexItems) : nullptr;
+    if (!index || id < 0) return {};
+    auto bytes = index->ReadFile(id >> 8, id & 0xff);
+    return bytes.empty() ? std::string() : DecodeItem(id, std::move(bytes)).name;
+}
+// When the links run out on a form the market never lists: the item whose link points at this one (a charged
+// or worn form is named by the plain item it came from), then the same name with its add-ons taken off or the
+// state the market lists it in put on ("Augmented X (or)" -> "X", "X" -> "X (unattuned)"). Only a tradeable
+// item counts. -1 when nothing fits.
+int tradeable_by_relation_locked(int at) {
+    BuildNameIndexLocked(0);
+    int cur = at;
+    for (int step = 0; step < 4; ++step) {
+        auto b = g_item_linked_from.find(cur);
+        if (b == g_item_linked_from.end()) break;
+        cur = b->second;
+        if (item_tradeable_locked(cur)) return cur;
+    }
+    std::string own = item_name_locked(at);
+    if (own.empty()) return -1;
+    std::string plain = own;
+    const std::string aug = "Augmented ";
+    if (plain.compare(0, aug.size(), aug) == 0) plain.erase(0, aug.size());
+    static const char* const kTags[] = { " (or)", " (sp)", " (augmented)", " (shadow)", " (barrows)", " (third age)", " (blood)",
+                                         " (ice)", " (soul)", " (aurora)", " (sun)", " (jungle)", " (charged)", " (broken)",
+                                         " (damaged)", " (degraded)", " (used)", " (new)" };
+    for (bool cut = true; cut;) {
+        cut = false;
+        for (const char* t : kTags) {
+            const std::size_t n = std::strlen(t);
+            if (plain.size() > n && plain.compare(plain.size() - n, n, t) == 0) { plain.resize(plain.size() - n); cut = true; }
+        }
+    }
+    const std::string cands[] = { own, plain, plain + " (unattuned)", plain + " (uncharged)", plain + " (inactive)",
+                                  plain + " (empty)", plain + " (unpowered)" };
+    for (const auto& c : cands) {
+        auto hit = g_name_index[0].find(c);
+        if (hit == g_name_index[0].end()) continue;
+        for (int id : hit->second) if (id != at && item_tradeable_locked(id)) return id;
+    }
+    return -1;
+}
+}  // namespace
+
 int ItemTradeableForm(int item_id) {
     if (item_id < 0) return item_id;
     int at = item_id;
@@ -651,7 +709,10 @@ int ItemTradeableForm(int item_id) {
             auto p = def.params_i.find(kParamOtherState); if (p != def.params_i.end()) next = p->second;
         }
         if (next < 0) { auto p = def.params_i.find(kParamPlainForm); if (p != def.params_i.end()) next = p->second; }
-        if (next <= 0 || next == at) return at;
+        if (next <= 0 || next == at) {
+            const int other = tradeable_by_relation_locked(at);
+            return other >= 0 ? other : at;
+        }
         at = next;
     }
     return at;
@@ -795,6 +856,7 @@ void JsonEscTo(std::string& out, const std::string& in) {
 
 std::map<std::string, std::vector<int>> g_name_index[3];
 bool g_name_index_built[3] = { false, false, false };
+std::unordered_map<int, int> g_item_linked_from;   // item -> the item whose 3382 names it (built with the item name index)
 
 void BuildNameIndexLocked(int kind) {
     if (kind < 0 || kind > 2 || g_name_index_built[kind]) return;
@@ -812,7 +874,12 @@ void BuildNameIndexLocked(int kind) {
             any = true;
             const int id = (archive << IdSplitBits(idx)) | file;   // npcs hold 128 per archive
             std::string nm;
-            if (kind == 0)      nm = DecodeItem(id, std::move(bytes)).name;
+            if (kind == 0) {
+                ItemDef d = DecodeItem(id, std::move(bytes));
+                nm = std::move(d.name);
+                auto o = d.params_i.find(3382);
+                if (o != d.params_i.end() && o->second > 0 && o->second != id) g_item_linked_from.emplace(o->second, id);
+            }
             else if (kind == 1) nm = DecodeLoc(id, std::move(bytes)).name;
             else                nm = DecodeNpc(id, std::move(bytes)).name;
             if (!nm.empty()) g_name_index[kind][nm].push_back(id);
@@ -4820,6 +4887,7 @@ void ResetCacheStateLocked() {
     g_mapscene_sprite.clear(); g_mapscene_px.clear(); g_loc_mapscene.clear(); g_mapscenes_loaded = false;
     g_maplabel_def.clear(); g_maplabel_px.clear(); g_loc_mapfunc.clear(); g_loc_name.clear(); g_maplabels_loaded = false;
     for (int i = 0; i < 3; ++i) { g_name_index[i].clear(); g_name_index_built[i] = false; }
+    g_item_linked_from.clear();
     g_loc_morph_cache.clear(); g_npc_morph_cache.clear();
     g_myst_pages_json.clear(); g_arch_research_json.clear();
     g_dbtable_cols.clear(); g_dbtables_loaded = false;
