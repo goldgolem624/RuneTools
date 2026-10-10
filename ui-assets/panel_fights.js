@@ -223,6 +223,7 @@
     if (r.logId !== fl.liveId) {
       fl.liveId = r.logId; fl.liveSeq = 0;
       fl.live = { format: 1, log: {}, clock: null, dict: {}, actors: [], fights: [], events: [], __id: 'live' };
+      if (fl.wantLive) { fl.wantLive = false; fl.logId = 'live'; fl.fight = -1; fl.zoom = null; fl.hl = 0; fl.status = ''; }
     }
     const L = fl.live, h = r.header || {};
     Object.assign(L.log, h.log || (h.character ? h : {}));
@@ -252,6 +253,7 @@
     const want = !fl.rec;
     try { fl.rec = flBool(await flCall('combatRecordEnabled', want)); } catch (e) {}
     fl.recAt = 0;
+    if (want && fl.rec) { fl.wantLive = true; if (fl.live) { flSelectLog('live'); fl.wantLive = false; } }   // recording on: the panel follows the live log as soon as it opens
     flRecPoll(true);
   }
   function flPickDefaults() {
@@ -379,7 +381,7 @@
     for (const f of fights) {
       let what = f.boss || '';
       if (!what && f.kind === 'kills') { let k = f.kills || 0; if (log) { try { k = S().summary(log, f.n).kills; } catch (e) {} } what = k + (k === 1 ? ' kill' : ' kills'); }
-      let ms = (f.end - f.start) * 20;   // a kill shows the game's kill time: boss spawn to its death
+      let ms = ((log && S().fightEnd ? S().fightEnd(log, f) : f.end) - f.start) * 20;   // an open fight runs to the last event; a kill shows the game's kill time: boss spawn to its death
       if (log && f.kind === 'boss') { try { const info = S().fightInfo(log, f.n); if (info && info.killMs) ms = info.killMs; } catch (e) {} }
       const kt = log && f.kind === 'boss' && S().fmtMsTenths ? S().fmtMsTenths(ms) : S().fmtMs(ms);
       fi.push({ value: f.n, label: '#' + (f.n + 1) + ' ' + (what || f.kind || '') + ' ' + kt });

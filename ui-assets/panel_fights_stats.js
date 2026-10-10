@@ -304,7 +304,7 @@
   function range(log, n) {
     if (n !== null && typeof n === 'object') return resolve(log, n);
     const ev = log.events;
-    if (n != null && n >= 0 && log.fights && log.fights[n]) return { n, start: log.fights[n].start, end: log.fights[n].end };
+    if (n != null && n >= 0 && log.fights && log.fights[n]) return { n, start: log.fights[n].start, end: fightEnd(log, log.fights[n]) };   // an open (live) fight runs to the last event
     const start = ev.length ? ev[0][1] : 0, end = ev.length ? ev[ev.length - 1][1] : 0;
     return { n: -1, start, end: Math.max(end, start + TICK) };
   }
@@ -2308,7 +2308,7 @@
   const api = { version: 6, killWindow, CYCLE_MS, TICK, STYLES, EVENT_NAMES, MECH_KINDS, STYLE_LINE, MIN_FIGHT_MS, MAX_FIGHT_MS, DPS_CAP, MAX_HIT_CAP, PLAUSIBLE_RATIO, SUMMON_BUFFS,
                 PARSE_HEX, REASON_TEXT, token, ctx, reset, hmInfo, hitRole, isFoe, hitStyle, actorOf, actorLabel, cycleMs, cycleTick, range, resolve, inRange,
                 ability, shapeOf, seqIs, seqTag, seqInfoFrom, attribute, sourceOf, sources, summary, byAbility, bySource, series, uptimes, gear, slotName, itemName, perkList, casts, trackerCheck, styleSplit,
-                describe, followers, followerLabel, familiar, fightSummaries, isMech, typeName, mechInfo, mechCount, bossName, mechs, plain, shortName, fmtNum, fmtMs, fmtMsTenths,
+                describe, followers, followerLabel, familiar, fightEnd, fightSummaries, isMech, typeName, mechInfo, mechCount, bossName, mechs, plain, shortName, fmtNum, fmtMs, fmtMsTenths,
                 bossGroupKey, fightInfo, bossActors, phases, styleOf, metrics, fightHits, byTarget, bossShare, takenBy, enemyCasts, targetsOf, healing, deaths,
                 deathRecap, resources, rotation, dpsSeries, buffGroup, profile, compare, query, parseFilter, logSummary, liveClose, parseColor, sanitize };
   root.combatStats = api;
