@@ -4,7 +4,7 @@
 // functions (older launcher) the panel shows one line and nothing else.
 (function () {
 
-  const FL_TABS = [['overview', 'Overview'], ['dealt', 'Dealt'], ['taken', 'Taken'], ['health', 'Health'], ['buffs', 'Buffs'], ['casts', 'Casts'], ['mechs', 'Mechanics'], ['events', 'Events']];
+  const FL_TABS = [['overview', 'Overview'], ['dealt', 'Dealt'], ['taken', 'Taken'], ['health', 'Health'], ['buffs', 'Buffs'], ['gear', 'Gear'], ['casts', 'Casts'], ['mechs', 'Mechanics'], ['events', 'Events']];
   const FL_EV_CATS = [['hit', 'Hits'], ['cast', 'Casts'], ['buff', 'Buffs'], ['mech', 'Mechanics'], ['vitals', 'Vitals'], ['anim', 'Animations'], ['fx', 'Effects'], ['target', 'Targets'], ['tracker', 'Trackers'], ['other', 'Other']];
   const FL_EV_CAT = { hit: 'hit', cast: 'cast', buff: 'buff', channel: 'cast', mech: 'mech', lp: 'vitals', adren: 'vitals', prayer: 'vitals', bar: 'vitals', stat: 'vitals', anim: 'anim', gfx: 'fx', proj: 'fx', sound: 'fx', target: 'target', tracker: 'tracker' };
   const FL_ROWS = 400, FL_COLORS = ['#e0b34c', '#4cc0c0', '#c98cf0', '#e06c6c', '#7f9fbf', '#67c07a'], FL_MECH = '#ff9f43';
@@ -16,6 +16,9 @@
   const FL_TAC = new Map(), FL_TAC_PENDING = new Set(), FL_TAC_MISS = new Map();
   const S = () => window.combatStats;
   const FL_CSS = '.fl-chart .mk { stroke: ' + FL_MECH + '; stroke-width: 1.5; }\n.fl-chart .mk.hl { stroke: var(--accent-hi); stroke-width: 2.5; }\n' +
+    '.fl-gear .g { height: 16px; }\n.fl-gear .g i { background: #6f8fb8; color: #0b0d12; font: 600 10px/16px var(--font-mono); padding-left: 4px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; box-sizing: border-box; }\n.fl-gear .g i.k1 { background: #b89a5c; }\n.fl-gear .g i.k2 { background: #7fae8a; }\n' +
+    '.fl-table.swaps { --fl-cols: 52px minmax(56px, .8fr) minmax(0, 3fr); }\n.fl-table.used { --fl-cols: minmax(0, 2fr) 54px minmax(0, 2fr); }\n' +
+    '.fl-narrow .fl-table.used { --fl-cols: minmax(0, 1fr) 54px; }\n' +
     '.fl-chart .mkg { stroke: rgba(255,159,67,0.55); stroke-width: 1; stroke-dasharray: 2 3; }\n.fl-chart .mkr { stroke: var(--border); stroke-width: 1; }\n' +
     '.fl-chart .mkl { font: 9px var(--font-mono); fill: ' + FL_MECH + '; }\n' +
     '.fl-table.mech { --fl-cols: minmax(0, 1fr) 34px 46px 46px 50px 50px minmax(56px, .8fr); }\n' +
@@ -271,6 +274,8 @@
     flPaintPicker(has);
     const hasMech = !!(log && S().mechCount && S().mechCount(log) > 0);
     if (log && !hasMech && fl.tab === 'mechs') fl.tab = 'overview';
+    const hasGear = !!(log && log.events.some(e => e[0] === 20));
+    if (log && !hasGear && fl.tab === 'gear') fl.tab = 'overview';
     const width = ($('flBody') && $('flBody').clientWidth) || 0;
     const sig = [has, fl.logId, n, fl.tab, log ? log.events.length : -1, log ? (log.fights || []).length : -1, fl.zoom ? fl.zoom.join(',') : '', fl.hl, fl.mhl, fl.evSearch, JSON.stringify(fl.evFilt),
                  fl.evShow, fl.rec, fl.liveId, fl.loading, fl.status, fl.confirmDel, width, flRows().length].join('|');
@@ -282,13 +287,13 @@
     if (fl.rec === null) rec.style.display = 'none';
     else { rec.style.display = ''; rec.textContent = 'Record: ' + (fl.rec ? 'on' : 'off'); rec.className = 'fl-rec ' + (fl.rec ? 'on' : 'off'); rec.dataset.tip = fl.rec ? 'Fights are being recorded to disk. Click to stop.' : 'Nothing is recorded. Click to start recording fights.'; }
     $('flLiveChip').className = 'fl-chip' + (fl.live ? ' on' : '');
-    for (const b of $('flTabs').children) { b.classList.toggle('on', b.dataset.tab === fl.tab); if (b.dataset.tab === 'mechs') b.style.display = hasMech ? '' : 'none'; }
+    for (const b of $('flTabs').children) { b.classList.toggle('on', b.dataset.tab === fl.tab); if (b.dataset.tab === 'mechs') b.style.display = hasMech ? '' : 'none'; if (b.dataset.tab === 'gear') b.style.display = hasGear ? '' : 'none'; }
     flPaintStrip(log, n);
     const body = $('flBody'); body.innerHTML = '';
     if (!log) {
       body.appendChild(el('div', 'fl-empty', !has ? '' : fl.loading ? 'Loading...' : flRows().length || fl.live ? 'Select a log.' : 'No fights recorded yet.' + (fl.rec === false ? ' Recording is off.' : '')));
     } else {
-      const r = { overview: flOverview, dealt: flDealt, taken: flTaken, health: flHealth, buffs: flBuffs, casts: flCasts, mechs: flMechs, events: flEvents }[fl.tab] || flOverview;
+      const r = { overview: flOverview, dealt: flDealt, taken: flTaken, health: flHealth, buffs: flBuffs, gear: flGear, casts: flCasts, mechs: flMechs, events: flEvents }[fl.tab] || flOverview;
       try { r(log, n, body); } catch (e) { body.appendChild(el('div', 'fl-empty', 'Could not draw this tab: ' + (e && e.message ? e.message : e))); }
     }
     flPaintButtons(log);
@@ -334,7 +339,7 @@
       try { st = await flCall('fightUploadStatus', id); } catch (e) {}
       const state = st && st.state;
       if (state === 'sent') { fl.status = 'Uploaded to runetools.io.'; fl.rowsAt = 0; flPaint(); return; }
-      if (state === 'failed') { fl.status = 'Upload failed' + (st.error ? ': ' + String(st.error).slice(0, 120) : '.'); fl.rowsAt = 0; flPaint(); return; }
+      if (state === 'failed') { fl.status = st.error ? String(st.error).slice(0, 120) : 'Upload failed.'; fl.rowsAt = 0; flPaint(); return; }   // the launcher's text is a sentence
       if (state === 'queued' || state === 'sending' || state === 'retry') { const t = state === 'retry' ? 'Upload will retry.' : 'Uploading...'; if (fl.status !== t) { fl.status = t; flPaint(); } }
       flUploadFollow(id, tries + 1);
     }, 1500);
@@ -654,6 +659,54 @@
       g.appendChild(row);
     }
     body.appendChild(g);
+  }
+
+  // Gear: what each equipment slot held over the fight, every swap, and what left the inventory.
+  function flGear(log, n, body) {
+    const st = S(), g = st.gear ? st.gear(log, n) : null;
+    if (!g || !g.has) { body.appendChild(el('div', 'fl-empty', 'No gear in this log. Recorded from the next launcher update on.')); return; }
+    const dur = Math.max(1, g.range.end - g.range.start), at = c => st.fmtMsTenths((c - g.range.start) * st.CYCLE_MS);
+    body.appendChild(flH('Equipment'));
+    if (!g.slots.length) body.appendChild(el('div', 'fl-empty', 'Nothing worn.'));
+    else {
+      const gg = el('div', 'fl-gantt fl-gear');
+      for (const s of g.slots) {
+        const row = el('div', 'fl-gr'), nm = el('span', 'n', s.name), bar = el('span', 'g');
+        nm.dataset.tip = s.name + '\n' + s.spans.map(x => x.name).join(', then ');
+        s.spans.forEach((sp, k) => {
+          const i = el('i'); i.className = 'k' + (k % 3);
+          i.style.left = ((sp.from - g.range.start) / dur * 100).toFixed(2) + '%';
+          i.style.width = Math.max(0.3, (sp.to - sp.from) / dur * 100).toFixed(2) + '%';
+          i.dataset.tip = sp.name + '\n' + at(sp.from) + ' to ' + at(sp.to);
+          i.textContent = sp.name;
+          bar.appendChild(i);
+        });
+        row.appendChild(nm); row.appendChild(bar); row.appendChild(el('span', 'v', String(s.spans.length)));
+        row.lastChild.dataset.tip = s.spans.length === 1 ? 'Worn the whole time' : s.spans.length + ' items over the fight';
+        gg.appendChild(row);
+      }
+      body.appendChild(gg);
+    }
+    body.appendChild(flH('Swaps'));
+    if (!g.swaps.length) body.appendChild(el('div', 'fl-empty', 'No equipment changes.'));
+    else {
+      const rows = g.swaps.map(w => {
+        const r = el('div', 'fl-tr');
+        flCells(r, [[at(w.c), 'num'], [w.slotName, 'nt'], [(w.fromName || 'empty') + ' to ' + (w.toName || 'empty'), 'nt', (w.fromName || 'empty') + ' to ' + (w.toName || 'empty')]]);
+        return r;
+      });
+      body.appendChild(flTable('swaps', [['Time', 1], ['Slot'], ['Change']], rows));
+    }
+    body.appendChild(flH('Used from the inventory'));
+    if (!g.used.length) body.appendChild(el('div', 'fl-empty', 'Nothing used.'));
+    else {
+      const rows = g.used.map(u => {
+        const r = el('div', 'fl-tr');
+        flCells(r, [[u.name, 'nt', u.name], [String(u.used) + (u.unit ? ' ' + u.unit : ''), 'num'], [u.times.map(at).join(', '), 'nt opt', u.times.map(at).join(', ')]]);
+        return r;
+      });
+      body.appendChild(flTable('used', [['Item'], ['Used', 1], ['When', 0, 1]], rows));
+    }
   }
 
   function flCasts(log, n, body) {

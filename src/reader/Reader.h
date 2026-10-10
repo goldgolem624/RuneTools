@@ -150,6 +150,8 @@ struct CombatSample {
     std::uint32_t clock = 0;       // CLIENTCLOCK
     int localUid = -1;
     bool haveMapBase = false; int mapBaseX = 0, mapBaseY = 0;   // the loaded map's base tile (zone packets are relative to it)
+    bool haveItems = false;        // inventory (container 93) and equipment (94) were read this pass
+    std::vector<std::pair<int, int>> inv, equip;   // per slot (item id, count); item -1 = empty
     std::vector<CombatActorSample> actors;
     std::vector<std::pair<int, int>> varps, varcs;   // watched vars whose node exists: (id, value)
     int reads = 0, fails = 0;

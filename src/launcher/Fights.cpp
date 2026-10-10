@@ -689,8 +689,8 @@ bool CompactText(const std::string& jsonl, const char* endBy, std::string& outJs
              ",\"lpMax\":" + std::to_string(lpMax) + ",\"vis\":" + std::to_string(a.i("vis", -1)) + "}";
     }
     o += "],\"dict\":{";
-    static const char* kinds[] = { "abilities", "buffs", "hitmarks", "seqs", "encounters", "trackers", "mechs" };
-    for (int k = 0; k < 7; ++k) {
+    static const char* kinds[] = { "abilities", "buffs", "hitmarks", "seqs", "encounters", "trackers", "mechs", "items" };
+    for (int k = 0; k < 8; ++k) {
         if (k) o += ",";
         o += "\""; o += kinds[k]; o += "\":{";
         bool f1 = true;
@@ -713,7 +713,7 @@ bool CompactText(const std::string& jsonl, const char* endBy, std::string& outJs
          "\"9\":[\"tracker\",\"group\",\"row\",\"col\",\"value\"],\"10\":[\"death\",\"actor\",\"how\"],\"11\":[\"actor\",\"actor\",\"present\"],"
          "\"12\":[\"encounter\",\"struct\"],\"13\":[\"gfx\",\"actor\",\"gfx\"],\"14\":[\"proj\",\"from\",\"to\",\"gfx\"],\"15\":[\"xp\",\"skill\",\"xp\"],"
          "\"16\":[\"mark\",\"kind\",\"text\"],\"17\":[\"bar\",\"actor\",\"slot\",\"fill\"],\"18\":[\"stat\",\"actor\",\"idx\",\"cur\",\"base\"],"
-         "\"19\":[\"sound\",\"id\",\"area\"],\"mech\":[\"mech\",\"boss\",\"key\",\"kind\",\"id\",\"actor\"]},\"events\":[";
+         "\"19\":[\"sound\",\"id\",\"area\"],\"20\":[\"item\",\"container\",\"slot\",\"item\",\"count\"],\"mech\":[\"mech\",\"boss\",\"key\",\"kind\",\"id\",\"actor\"]},\"events\":[";
     for (std::size_t i = 0; i < order.size(); ++i) { if (i) o += ",\n"; o += events[order[i].at]; }
     o += "]}\n";
     outJson = std::move(o);

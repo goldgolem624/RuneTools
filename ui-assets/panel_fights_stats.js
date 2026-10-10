@@ -68,7 +68,7 @@
   const SEQ_FALLBACK = [];
   for (const k in FALLBACK_AB) SEQ_FALLBACK.push([Number(k), FALLBACK_AB[k].name]);
   SEQ_FALLBACK.push([14881, 'Global cooldown'], [14882, 'Global cooldown']);
-  const EVENT_NAMES = ['hit', 'cast', 'anim', 'target', 'lp', 'adren', 'prayer', 'buff', 'channel', 'tracker', 'death', 'actor', 'encounter', 'gfx', 'proj', 'xp', 'mark', 'bar', 'stat', 'sound'];
+  const EVENT_NAMES = ['hit', 'cast', 'anim', 'target', 'lp', 'adren', 'prayer', 'buff', 'channel', 'tracker', 'death', 'actor', 'encounter', 'gfx', 'proj', 'xp', 'mark', 'bar', 'stat', 'sound', 'item'];
   // Boss mechanic rows: ["mech", c, boss, key, kind, id, actor]; kind indexes this list.
   const MECH_KINDS = ['', 'animation', 'graphic', 'tile graphic', 'projectile', 'sound', 'hint arrow', 'var', 'spawn'];
 
@@ -740,6 +740,53 @@
   // same struct extends it; an off row closes it at its c.
   // A timer struct the game never draws on its buff bar: the dictionary row has neither a name nor an icon.
   function hiddenBuff(b) { return !!b && b.name === '' && !b.icon; }
+  // ---- Inventory (container 93) and equipment (94): [20, c, container, slot, item, count], one row per slot change.
+  const EQUIP_SLOTS = { 0: 'Head', 1: 'Back', 2: 'Neck', 3: 'Main hand', 4: 'Body', 5: 'Off-hand', 7: 'Legs', 9: 'Hands',
+                        10: 'Feet', 12: 'Ring', 13: 'Ammo', 14: 'Aura', 17: 'Pocket' };
+  function slotName(slot) { return EQUIP_SLOTS[slot] || 'Slot ' + slot; }
+  function itemName(log, id) {
+    const d = (log.dict && log.dict.items) || {}, x = own(d, id) ? d[id] : null;
+    return x && typeof x.name === 'string' && x.name ? x.name : 'Item ' + id;
+  }
+  // Gear over a selection: what each equipment slot held and when (spans), every equipment change (swaps, with the
+  // item it replaced), and what left the inventory (eaten, drunk, dropped or equipped). An item that leaves the
+  // inventory in the tick it is equipped is part of the swap, not used up.
+  function gear(log, n) {
+    const r = range(log, n), ev = log.events, cur = {}, spans = {}, swaps = [], moves = [];
+    const close = (slot, at) => { const o = cur[94 * 256 + slot]; if (o && o.item >= 0) { const a = Math.max(o.since, r.start), b = Math.min(at, r.end); if (b > a) (spans[slot] = spans[slot] || []).push({ from: a, to: b, item: o.item, name: itemName(log, o.item) }); } };
+    for (const e of ev) {
+      if (!Array.isArray(e) || e[0] !== 20) continue;
+      if (e[1] > r.end) break;
+      const cont = e[2], slot = e[3], key = cont * 256 + slot, prev = cur[key];
+      if (e[1] >= r.start) {
+        if (cont === 94) {
+          close(slot, e[1]);
+          const was = prev ? prev.item : -1;   // a slot with no row yet was empty
+          if (was !== e[4]) swaps.push({ c: e[1], slot, slotName: slotName(slot), from: was, fromName: was >= 0 ? itemName(log, was) : '', to: e[4], toName: e[4] >= 0 ? itemName(log, e[4]) : '' });
+        } else if (cont === 93 && prev && prev.item >= 0) {
+          // a stack going down; a potion or other dosed item losing a dose (Super restore (4) -> (3)); an item leaving
+          const stem = id => itemName(log, id).replace(/ \(\d\)$/, '');
+          if (prev.item === e[4] && e[5] < prev.count) moves.push({ c: e[1], item: prev.item, n: prev.count - e[5] });
+          else if (prev.item !== e[4] && e[4] >= 0 && stem(prev.item) === stem(e[4]) && stem(e[4]) !== itemName(log, e[4])) moves.push({ c: e[1], item: prev.item, n: 1, dose: true });
+          else if (prev.item !== e[4]) moves.push({ c: e[1], item: prev.item, n: Math.max(1, prev.count) });
+        }
+      }
+      cur[key] = { item: e[4], count: e[5], since: e[1] };
+    }
+    for (const k in cur) if (Math.floor(Number(k) / 256) === 94) close(Number(k) % 256, r.end);
+    // items that left the inventory: the ones equipped in the same tick are swaps
+    const usedBy = {};
+    for (const m of moves) {
+      if (swaps.some(w => w.to === m.item && Math.abs(w.c - m.c) <= TICK)) continue;
+      const nm = m.dose ? itemName(log, m.item).replace(/ \(\d\)$/, '') : itemName(log, m.item), key = m.dose ? 'dose:' + nm : m.item;
+      const u = usedBy[key] || (usedBy[key] = { item: m.item, name: nm, unit: m.dose ? 'doses' : '', used: 0, times: [] });
+      u.used += m.n; u.times.push(m.c);
+    }
+    const slots = Object.keys(spans).map(Number).sort((a, b) => a - b).map(slot => ({ slot, name: slotName(slot), spans: spans[slot] }));
+    const used = Object.keys(usedBy).map(k => usedBy[k]).sort((a, b) => b.used - a.used || a.times[0] - b.times[0]);
+    return { range: r, slots, swaps, used, has: ev.some(e => Array.isArray(e) && e[0] === 20) };
+  }
+
   function uptimes(log, n) {
     const r = range(log, n), c = ctx(log), open = {}, spans = {};
     function close(s, at) {
@@ -901,6 +948,8 @@
       case 17: row.actor = actorLabel(log, e[2]); row.value = e[4]; row.text = 'head bar ' + e[3] + ' fill ' + e[4]; break;
       case 18: row.actor = actorLabel(log, e[2]); row.value = e[4]; row.text = 'stat ' + e[3] + ' ' + e[4] + ' / ' + e[5]; break;
       case 19: row.value = e[2]; row.text = 'sound ' + e[2] + (e[3] ? ' on a tile' : ''); break;
+      case 20: row.value = e[4]; row.ability = e[4] >= 0 ? itemName(log, e[4]) : ''; row.kind = e[2] === 94 ? 'equipment' : 'inventory';
+        row.text = (e[2] === 94 ? slotName(e[3]) + ': ' : 'inventory slot ' + (e[3] + 1) + ': ') + (e[4] >= 0 ? row.ability + (e[5] > 1 ? ' x' + e[5] : '') : 'empty'); break;
       default: row.text = JSON.stringify(e.slice(2));
     }
     return row;
@@ -1109,17 +1158,27 @@
     }
     return isFinite(from) && isFinite(to) && to > from ? { from, to } : null;
   }
+  // A fight's result: a boss fight is a kill, an encounter fight a wipe, unless the boss itself (by name or by its
+  // mechanics) never took part, as with the adds killed after the boss died: then it is trash.
+  function resultOf(log, k) {
+    const f = (log.fights || [])[k];
+    if (!f) return 'trash';
+    let r = fightResult(f.kind);
+    if (r === 'wipe') { const b0 = bossActors(log, k); if (b0.by !== 'name' && b0.by !== 'mech') r = 'trash'; }
+    return r;
+  }
   function fightInfo(log, n) {
     const fights = log.fights || [], f = Number.isInteger(n) ? fights[n] : null;
     if (!f) return null;
     const c = ctx(log);
     if (!c.groups) c.groups = fights.map(x => bossGroupKey(x && x.boss));
-    const kind = f.kind, result = fightResult(kind), boss = f.boss == null ? null : String(f.boss);
+    const kind = f.kind, boss = f.boss == null ? null : String(f.boss);
+    const result = resultOf(log, n);
     const bar = boss == null ? -1 : boss.indexOf('|');
     const bossName = boss == null ? null : (bar >= 0 ? boss.slice(0, bar) : boss), mode = bar >= 0 ? boss.slice(bar + 1) : '';
     const group = c.groups[n];
     let pull = 0;
-    if (result !== 'trash' && group) for (let k = 0; k <= n; k++) if (c.groups[k] === group) pull++;
+    if (result !== 'trash' && group) for (let k = 0; k <= n; k++) if (c.groups[k] === group && resultOf(log, k) !== 'trash') pull++;
     const end = fightEnd(log, f), ba = bossActors(log, n);
     let bossPct = null;
     if (result === 'kill') bossPct = 0;
@@ -2036,9 +2095,9 @@
     return { log, warnings };
   }
 
-  const api = { version: 5, killWindow, CYCLE_MS, TICK, STYLES, EVENT_NAMES, MECH_KINDS, STYLE_LINE, MIN_FIGHT_MS, MAX_FIGHT_MS, DPS_CAP, MAX_HIT_CAP, PLAUSIBLE_RATIO, SUMMON_BUFFS,
+  const api = { version: 6, killWindow, CYCLE_MS, TICK, STYLES, EVENT_NAMES, MECH_KINDS, STYLE_LINE, MIN_FIGHT_MS, MAX_FIGHT_MS, DPS_CAP, MAX_HIT_CAP, PLAUSIBLE_RATIO, SUMMON_BUFFS,
                 PARSE_HEX, REASON_TEXT, token, ctx, reset, hmInfo, hitRole, isFoe, hitStyle, actorOf, actorLabel, cycleMs, cycleTick, range, resolve, inRange,
-                ability, shapeOf, seqIs, seqTag, seqInfoFrom, attribute, sourceOf, sources, summary, byAbility, bySource, series, uptimes, casts, trackerCheck, styleSplit,
+                ability, shapeOf, seqIs, seqTag, seqInfoFrom, attribute, sourceOf, sources, summary, byAbility, bySource, series, uptimes, gear, slotName, itemName, casts, trackerCheck, styleSplit,
                 describe, fightSummaries, isMech, typeName, mechInfo, mechCount, bossName, mechs, plain, shortName, fmtNum, fmtMs, fmtMsTenths,
                 bossGroupKey, fightInfo, bossActors, phases, styleOf, metrics, fightHits, byTarget, bossShare, takenBy, enemyCasts, targetsOf, healing, deaths,
                 deathRecap, resources, rotation, dpsSeries, buffGroup, profile, compare, query, parseFilter, logSummary, liveClose, parseColor, sanitize };

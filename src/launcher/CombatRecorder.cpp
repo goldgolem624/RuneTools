@@ -22,7 +22,7 @@ constexpr long long kCastMatch = 15;
 constexpr long long kBuffNameWaitPasses = 600;       // about a minute of 100 ms passes                 // a cooldown varc and script 6570 this many cycles apart are one cast
 constexpr long long kRestoreSlack = 45;              // a 6570 record this much older than the tick offset is a cooldown restore
 bool isGcdStruct(int st) { return st == 14881 || st == 14882 || st == 29145; }
-constexpr int kTypeSound = 19, kTypeMech = 100;      // kTypeMech is written as ["mech", c, boss, key, kind, id, actor]
+constexpr int kTypeSound = 19, kTypeItem = 20, kTypeMech = 100;   // kTypeItem: [20, c, container, slot, item, count]      // kTypeMech is written as ["mech", c, boss, key, kind, id, actor]
 constexpr long long kResendMs = 1200;                // tile items this soon after their zone was cleared are the zone sent again
 
 std::uint16_t nu16(const std::uint8_t* b) { return (std::uint16_t)((b[0] << 8) | b[1]); }
@@ -408,6 +408,7 @@ void Recorder::push(std::vector<Ev>& evs, int type, long long c, std::initialize
     case 9: e.key = stateKey(9, (e.f[0] << 16) | (e.f[1] << 8) | e.f[2]); break;
     case 17: e.key = stateKey(17, a1, e.f[1]); break;
     case 18: e.key = stateKey(18, a1, e.f[1]); break;
+    case kTypeItem: e.key = stateKey(kTypeItem, e.f[0], e.f[1]); break;
     default: e.key = 0; break;
     }
     evs.push_back(std::move(e));
@@ -658,15 +659,21 @@ void Recorder::ensureDict(const Ev& e) {
         dictLine("encounters", st, jstr(cfg_.names.structStr ? cfg_.names.structStr(st, 8849) : std::string()));
         break;
     }
+    case kTypeItem: {
+        const int item = (int)e.f[2];
+        if (item < 0 || !once(kTypeItem, item)) return;
+        dictLine("items", item, "{\"name\":" + jstr(plainText(cfg_.names.itemName ? cfg_.names.itemName(item) : std::string())) + "}");
+        break;
+    }
     case kTypeMech: mechDict(e); break;
     default: break;
     }
 }
 
 std::string Recorder::dictJson() const {
-    static const char* kinds[] = { "abilities", "buffs", "hitmarks", "seqs", "encounters", "trackers", "mechs" };
+    static const char* kinds[] = { "abilities", "buffs", "hitmarks", "seqs", "encounters", "trackers", "mechs", "items" };
     std::string o = "{";
-    for (int k = 0; k < 7; ++k) {
+    for (int k = 0; k < 8; ++k) {
         if (k) o += ",";
         o += "\""; o += kinds[k]; o += "\":{";
         auto it = dictJson_.find(kinds[k]);
@@ -724,6 +731,7 @@ void Recorder::openLog(long long c, long long wallMs, const std::vector<Ev>& pen
         if (st) add(7, sc, { st, 1, -1, b.last, -1 });
     }
     for (const auto& kv : trackers_) add(9, sc, { kv.first >> 16, (kv.first >> 8) & 0xFF, kv.first & 0xFF, kv.second });
+    for (const auto& kv : items_) if (kv.second.first >= 0) add(kTypeItem, sc, { kv.first >> 8, kv.first & 0xFF, kv.second.first, kv.second.second });
     std::vector<Ev> base;
     for (auto& kv : baseline_) base.push_back(std::move(kv.second));
     baseline_.clear();
@@ -770,7 +778,7 @@ void Recorder::endFight(long long c, const char* by) {
 void Recorder::resetScene() {
     actors_.clear(); byUid_.clear(); baseline_.clear(); preroll_.clear(); dict_.clear(); mechDict_.clear();
     selfIdx_ = -1;
-    sceneFresh_ = true; active_.clear(); tileSeen_.clear(); mechLast_.clear(); varLast_.clear();
+    sceneFresh_ = true; active_.clear(); tileSeen_.clear(); mechLast_.clear(); varLast_.clear(); items_.clear();
     haveMap_ = false; selfX_ = selfY_ = -1;
 }
 
@@ -1238,6 +1246,25 @@ void Recorder::Feed(const Tick& t) {
         b.on = on;
     }
 
+    // inventory (93) and equipment (94): one row per slot that changed; the first read only sets the state
+    if (t.haveItems) {
+        const bool first = items_.empty();
+        auto scan = [&](int cont, const std::vector<std::pair<int, int>>& slots) {
+            for (std::size_t s = 0; s < slots.size() && s < 64; ++s) {
+                const int key = (cont << 8) | (int)s;
+                const auto now = slots[s];
+                auto it = items_.find(key);
+                if (it != items_.end() && it->second == now) continue;
+                const bool had = it != items_.end();
+                items_[key] = now;
+                if (first || (!had && now.first < 0)) continue;
+                push(evs, kTypeItem, c, { cont, (long long)s, now.first, now.second });
+            }
+        };
+        if (!t.equip.empty()) scan(94, t.equip);
+        if (!t.inv.empty()) scan(93, t.inv);
+    }
+
     // trackers
     if (t.haveTrackers) {
         for (const auto& cell : t.trackers) {
@@ -1310,6 +1337,7 @@ std::string Recorder::DiagJson() const {
     for (const auto& b : buffs_) { if (b.known) ++buffsSeen; if (b.on) ++buffsOn; }
     std::string o = "{\"clock\":" + std::to_string(lastC_) + ",\"phase\":" + std::to_string(phase_) + ",\"lp\":" + std::to_string(lp_) + ",\"lpMax\":" + std::to_string(lpMax_) +
                     ",\"adren\":" + std::to_string(adren_) + ",\"prayer\":" + std::to_string(prayer_ == kUnknown ? -1 : prayer_) + ",\"encounter\":" + std::to_string(enc_ == kUnknown ? -2 : enc_) +
+                    ",\"itemSlots\":" + std::to_string(items_.size()) + ",\"itemsHeld\":" + std::to_string(std::count_if(items_.begin(), items_.end(), [](const auto& kv) { return kv.second.first >= 0; })) +
                     ",\"castVarsSeen\":" + std::to_string(castsSeen) + ",\"buffVarsSeen\":" + std::to_string(buffsSeen) + ",\"buffsOn\":" + std::to_string(buffsOn) +
                     ",\"casts\":{\"script\":" + std::to_string(netCasts0_) + ",\"varc\":" + std::to_string(varcCasts_) + ",\"restores\":" + std::to_string(restores_) +
                     ",\"tick0\":" + std::to_string(haveTickOff_ ? tickOff_ : -1) + "}" +

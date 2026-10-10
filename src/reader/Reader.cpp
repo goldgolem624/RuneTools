@@ -4730,6 +4730,40 @@ bool CombatRead(std::uint32_t pid, bool bars, CombatSample& out) {
     ++out.reads;
     if (!clk) { ++out.fails; return false; }
     out.clock = *clk;
+    if (bars) {   // inventory and equipment: the container list in one read, then each one's slots
+        ++out.reads;
+        const std::uint64_t cm = rpm<std::uint64_t>(h, *root + kOffInvData).value_or(0);
+        std::uint64_t se[2] = { 0, 0 };
+        if (cm > 0x10000 && (++out.reads, rpm_bytes(h, cm + 0x8, se, sizeof(se)))) {
+            const int n = container_count(se[0], se[1]);
+            if (n > 0 && se[0] > 0x10000) {
+                std::vector<std::uint8_t> list((std::size_t)n * kContainerStride);
+                ++out.reads;
+                if (rpm_bytes(h, se[0], list.data(), list.size())) {
+                    bool got93 = false, got94 = false;
+                    for (int k = 0; k < n; ++k) {
+                        const std::uint8_t* e = list.data() + (std::size_t)k * kContainerStride;
+                        const int id = *reinterpret_cast<const std::int32_t*>(e + 0x10);
+                        if (id != 93 && id != 94) continue;
+                        const std::uint64_t a = *reinterpret_cast<const std::uint64_t*>(e + 0x18), z = *reinterpret_cast<const std::uint64_t*>(e + 0x20);
+                        if (a <= 0x10000 || z < a || (z - a) % 8 || (z - a) / 8 > 64) continue;
+                        const int cap = (int)((z - a) / 8);
+                        std::vector<std::int32_t> sl((std::size_t)cap * 2);
+                        ++out.reads;
+                        if (cap && !rpm_bytes(h, a, sl.data(), sl.size() * 4)) { ++out.fails; continue; }
+                        auto& dst = id == 93 ? out.inv : out.equip;
+                        dst.clear();
+                        for (int s = 0; s < cap; ++s) {
+                            const int item = sl[(std::size_t)s * 2], qty = sl[(std::size_t)s * 2 + 1];
+                            dst.push_back({ item >= 0 && item < 0x1000000 ? item : -1, item >= 0 ? qty : 0 });
+                        }
+                        (id == 93 ? got93 : got94) = true;
+                    }
+                    out.haveItems = got93 || got94;
+                }
+            }
+        }
+    }
     {   // the map base at [MainData+0x19898]+0x698 / +0x69C, for the zone packets the recorder decodes
         ++out.reads;
         const std::uint64_t mm = rpm<std::uint64_t>(h, *root + kOffMapMgr).value_or(0);
