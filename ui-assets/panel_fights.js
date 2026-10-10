@@ -523,7 +523,14 @@
       rows.push(tr);
     }
     body.appendChild(flTable('', [['Ability'], ['Hits', 1], ['Crits', 1, 1], ['Avg', 1, 1], ['Max', 1, 1], ['Total', 1], ['Share', 1]], rows));
-    body.appendChild(el('div', 'fl-note2', 'Click a row to mark its hits on the Timeline.'));
+    body.appendChild(el('div', 'fl-note2', 'Click a row to mark its hits on the Timeline.'));    // your familiar's hits: apart from yours, not in your damage
+    const fam = st.familiar ? st.familiar(log, n) : null;
+    if (fam) {
+      body.appendChild(flH('Familiar'));
+      const fr = fam.rows.map(x => { const tr = el('div', 'fl-tr'); tr.appendChild(flName('n', x.name)); flCells(tr, [[String(x.hits), 'num'], [st.fmtNum(x.max), 'num opt', x.max.toLocaleString()], [st.fmtNum(x.total), 'num', x.total.toLocaleString()]]); return tr; });
+      body.appendChild(flTable('', [['Familiar'], ['Hits', 1], ['Max', 1, 1], ['Total', 1]], fr));
+      body.appendChild(el('div', 'fl-note2', 'Not counted in your damage or DPS.'));
+    }
   }
   function flTaken(log, n, body) {
     const st = S(), bs = st.bySource(log, n);

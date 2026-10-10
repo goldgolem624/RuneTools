@@ -682,6 +682,38 @@ int APIENTRY wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
             { std::ofstream f("item-extra.txt", std::ios::binary | std::ios::trunc); f << out; }
             return headless_exit(0);
         }
+        // --actor-targets <pid>: every actor the fight recorder reads, with both target fields (the interacting
+        // target +0x1B4 with its kind, and the NPC target), to actor-targets.txt.
+        if (argv && argc >= 3 && std::wstring(argv[1]) == L"--actor-targets") {
+            std::uint32_t pid = (std::uint32_t)_wtoi(argv[2]);
+            rtx::reader::SampleAll();
+            rtx::reader::CombatSample s;
+            const bool ok = rtx::reader::CombatRead(pid, false, s);
+            std::ofstream f("actor-targets.txt", std::ios::binary | std::ios::trunc);
+            f << "read " << (ok ? "ok" : "failed") << " local uid " << s.localUid << " actors " << s.actors.size() << "\n";
+            for (const auto& a : s.actors)
+                f << (a.type == 1 ? "npc " : "player ") << "uid " << a.uid << " id " << a.id << " " << a.name << (a.self ? " (self)" : "")
+                  << " tile " << a.tx << "," << a.ty << " anim " << a.anim << " target " << a.targetUid << " kind " << a.targetKind
+                  << " npcTarget " << a.npcTarget << "\n";
+            f.close();   // headless_exit ends the process without running destructors
+            return headless_exit(0);
+        }
+        // --entity-vars <pid>: every actor's entity vars (the per-entity var map the sync packets fill), to entity-vars.txt.
+        if (argv && argc >= 3 && std::wstring(argv[1]) == L"--entity-vars") {
+            std::uint32_t pid = (std::uint32_t)_wtoi(argv[2]);
+            rtx::reader::SampleAll();
+            std::ofstream f("entity-vars.txt", std::ios::binary | std::ios::trunc);
+            f << rtx::reader::EntityVarsJson(pid);
+            f.close();   // headless_exit ends the process without running destructors
+            return headless_exit(0);
+        }
+        // --npc-dump <id> [id...]: the cache definition of each NPC, one line each, to npc-dump.txt.
+        if (argv && argc >= 3 && std::wstring(argv[1]) == L"--npc-dump") {
+            std::ofstream f("npc-dump.txt", std::ios::binary | std::ios::trunc);
+            for (int k = 2; k < argc; ++k) { const int id = _wtoi(argv[k]); f << id << " " << rtx::cache::NpcJson(id) << "\n"; }
+            f.close();   // headless_exit ends the process without running destructors
+            return headless_exit(0);
+        }
         // --struct-dump <id> [id...]: every param of the given cache structs, one line each, to struct-dump.txt.
         if (argv && argc >= 3 && std::wstring(argv[1]) == L"--struct-dump") {
             std::ofstream f("struct-dump.txt", std::ios::binary | std::ios::trunc);

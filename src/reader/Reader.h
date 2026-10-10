@@ -137,10 +137,12 @@ struct CombatActorSample {
     int  anim = -1;                // sec+0xA90
     bool haveAnimStart = false; int animCount = 0, animCycle = 0;   // NPCs: sec+0xAFC moves on every animation start, +0xB00 its cycle
     int  targetUid = -1;           // sec+0x1B4 (players)
+    int  targetKind = -1;          // sec+0x228: what +0x1B4 indexes, 1 NPC, 2 player, 0x7F none (players and NPCs)
     int  npcTarget = -1;           // sec+0x1364 (NPCs)
     int  combat = -1;              // players
     bool haveStats = false; int stats[7] = {}, base[7] = {}; int vis = -1;   // NPCs
     int  lp = -1, lpMax = -1;      // NPC stats[3] / base[3]
+    std::uint64_t addr = 0;        // the actor object this was read from (diagnostics)
     bool haveRing = false; CombatHitRec ring[6];
     int  nbars = 0; int barStamp[4] = {}, barFill[4] = {};   // head bar slots (cycle stamp, fill 0..255)
 };
@@ -164,6 +166,9 @@ struct CombatSample {
 // The vars every CombatSample of this client reads. Call once per client (again to change the set).
 void CombatWatch(std::uint32_t pid, const std::vector<int>& varps, const std::vector<int>& varcs);
 bool CombatRead(std::uint32_t pid, bool bars, CombatSample& out);
+// Every actor's entity vars (the per-entity var map at +0x148 the sync packets fill: id, int value, type), as JSON
+// rows {type, uid, id, name, self, target, kind, vars: [[id, value, type], ...]}. Read only; diagnostics.
+std::string EntityVarsJson(std::uint32_t pid);
 // Three reads for the local player between passes: the clock, its animation and its target uid.
 bool CombatReadLocal(std::uint32_t pid, std::uint32_t& clock, int& anim, int& targetUid);
 // The game's own tracker grid (groups 1..3: skills, combat, loot) as (group, row, column, value) cells.

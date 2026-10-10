@@ -5,6 +5,7 @@
 #include "../../companion/ServerOps.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -17,13 +18,14 @@ namespace {
 
 constexpr int kUnknown = -0x7fffffff;
 constexpr int kVarpLp = 13537, kVarpLpMax = 13538, kVarpAdren = 679, kVarpPrayer = 3274, kVarpEncounter = 10946;
+constexpr int kVarpFamiliarPouch = 1831;   // the pouch or contract of the summoned familiar, 0 none
 constexpr int kGcdStart = 2091, kGcdEnd = 2092, kGcdStruct = 14881;   // the global cooldown's dummy struct
 constexpr int kScriptCooldown = 6570, kScriptChannel = 18766, kScriptBuffTimer = 4252;   // 4252: (struct, ticks left)   // (struct, start tick, end tick, 1, 1); (side, ticks, id, name)
 constexpr long long kCastMatch = 15;
 constexpr long long kBuffNameWaitPasses = 600;       // about a minute of 100 ms passes                 // a cooldown varc and script 6570 this many cycles apart are one cast
 constexpr long long kRestoreSlack = 45;              // a 6570 record this much older than the tick offset is a cooldown restore
 bool isGcdStruct(int st) { return st == 14881 || st == 14882 || st == 29145; }
-constexpr int kTypeSound = 19, kTypeItem = 20, kTypePerks = 21, kTypeEof = 22, kTypeMech = 100;   // kTypeItem: [20, c, container, slot, item, count]
+constexpr int kTypeSound = 19, kTypeItem = 20, kTypePerks = 21, kTypeEof = 22, kTypeFamiliar = 23, kTypeMech = 100;   // kTypeFamiliar: [23, c, actor] your familiar (-1 none)   // kTypeItem: [20, c, container, slot, item, count]
                                                     // kTypeEof: [22, c, container, slot, weapon] the special attack an Essence of Finality stores (-1 none)
                                                     // kTypePerks: [21, c, slot, perk, rank x 4] for a worn item      // kTypeMech is written as ["mech", c, boss, key, kind, id, actor]
 constexpr long long kResendMs = 1200;                // tile items this soon after their zone was cleared are the zone sent again
@@ -296,7 +298,7 @@ void NetDecoder::Decode(int op, const std::uint8_t* b, std::uint32_t n, long lon
 }
 
 void WantedVars(const Config& cfg, std::vector<int>& varps, std::vector<int>& varcs) {
-    varps = { kVarpLp, kVarpLpMax, kVarpAdren, kVarpPrayer, kVarpEncounter };
+    varps = { kVarpLp, kVarpLpMax, kVarpAdren, kVarpPrayer, kVarpEncounter, kVarpFamiliarPouch };
     varcs = { kGcdStart, kGcdEnd };
     for (const auto& a : cfg.abilities) { if (a.startVarc > 0) varcs.push_back(a.startVarc); if (a.endVarc > 0) varcs.push_back(a.endVarc); }
     for (const auto& b : cfg.bosses) { if (b.kc[0] > 0) varps.push_back(b.kc[0]); if (b.pr[0] > 0) varps.push_back(b.pr[0]); }
@@ -414,6 +416,7 @@ void Recorder::push(std::vector<Ev>& evs, int type, long long c, std::initialize
     case kTypeItem: e.key = stateKey(kTypeItem, e.f[0], e.f[1]); break;
     case kTypePerks: e.key = stateKey(kTypePerks, e.f[0]); break;
     case kTypeEof: e.key = stateKey(kTypeEof, e.f[0], e.f[1]); break;
+    case kTypeFamiliar: e.key = stateKey(kTypeFamiliar, 0); break;
     default: e.key = 0; break;
     }
     evs.push_back(std::move(e));
@@ -759,6 +762,7 @@ void Recorder::openLog(long long c, long long wallMs, const std::vector<Ev>& pen
     if (adren_ >= 0) add(5, sc, { adren_ });
     if (prayer_ != kUnknown) add(6, sc, { prayer_ & 0xFFFF, (prayer_ >> 16) & 0x7FFF });
     if (enc_ != kUnknown) add(12, sc, { enc_ });
+    if (famIdx_ >= 0) add(kTypeFamiliar, sc, { famIdx_ });
     for (const auto& b : buffs_) {
         if (!b.known || !b.on) continue;
         // the buff the server named for the var; a shared var nothing named yet waits for its queued row
@@ -834,7 +838,7 @@ void Recorder::endFight(long long c, const char* by) {
 void Recorder::resetScene() {
     actors_.clear(); byUid_.clear(); baseline_.clear(); preroll_.clear(); dict_.clear(); mechDict_.clear();
     selfIdx_ = -1;
-    sceneFresh_ = true; active_.clear(); tileSeen_.clear(); mechLast_.clear(); varLast_.clear(); items_.clear(); perks_.clear(); eof_.clear(); eofInit_ = false;
+    sceneFresh_ = true; active_.clear(); tileSeen_.clear(); mechLast_.clear(); varLast_.clear(); items_.clear(); perks_.clear(); eof_.clear(); eofInit_ = false; famIdx_ = -2;
     haveMap_ = false; selfX_ = selfY_ = -1;
 }
 
@@ -1142,6 +1146,13 @@ void Recorder::Feed(const Tick& t) {
         } else {
             int tgt = a.npcTarget < 0 ? -1 : indexOfUid(a.npcTarget);
             if (a.npcTarget >= 0 && (tgt < 0 || actors_[(std::size_t)tgt].row.type == "npc")) tgt = -a.npcTarget - 2;
+            if (a.npcTarget < 0 && a.targetUid >= 0 && (a.targetKind == 1 || a.targetKind == 2)) {
+                // no player target: its interacting target (+0x1B4, kind 1 NPC, 2 player). A familiar or pet targets
+                // its owner while idle and what it attacks while fighting
+                tgt = indexOfUid(a.targetUid);
+                const bool wantNpc = a.targetKind == 1;
+                if (tgt < 0 || (actors_[(std::size_t)tgt].row.type == "npc") != wantNpc) tgt = -a.targetUid - 2;
+            }
             if (tgt != s.target) { s.target = tgt; push(evs, 3, c, { i, tgt }, i); }
             if (a.haveStats) {
                 if (a.lp != s.lp || a.lpMax != s.lpMax) {
@@ -1219,6 +1230,30 @@ void Recorder::Feed(const Tick& t) {
         if (pr != vp.end() && pr->second != prayer_) { prayer_ = pr->second; push(evs, 6, c, { prayer_ & 0xFFFF, (prayer_ >> 16) & 0x7FFF }); }
     }
     if (selfDied && selfIdx_ >= 0) { push(evs, 10, c, { selfIdx_, 2 }, selfIdx_); if (inFight_) ++cur_.deaths; }
+
+    // your familiar: with a pouch summoned, the NPC whose name the pouch names that targets you (others' familiars
+    // target their owners). Kept while the pouch stays; its row is written whenever its actor index changes
+    {
+        auto pv = vp.find(kVarpFamiliarPouch);
+        if (pv != vp.end()) {
+            const int pouch = pv->second > 0 ? pv->second : 0;
+            if (pouch != famPouch_) { famPouch_ = pouch; famUid_ = -1; }
+            if (pouch && cfg_.names.itemName) {
+                int selfUid = -1;
+                for (const auto& a : t.actors) if (a.self) { selfUid = a.uid; break; }
+                std::string pn = cfg_.names.itemName(pouch);
+                for (char& ch : pn) ch = (char)std::tolower((unsigned char)ch);
+                for (const auto& a : t.actors) {
+                    if (a.type != 1 || selfUid < 0 || a.targetKind != 2 || a.targetUid != selfUid || a.name.size() < 3) continue;
+                    std::string nm = a.name;
+                    for (char& ch : nm) ch = (char)std::tolower((unsigned char)ch);
+                    if (pn.find(nm) != std::string::npos) { famUid_ = a.uid; break; }
+                }
+            }
+        }
+        const int idx = famUid_ >= 0 ? indexOfUid(famUid_) : -1;
+        if (idx != famIdx_ && (idx < 0 || actors_[(std::size_t)idx].row.type == "npc")) { famIdx_ = idx; push(evs, kTypeFamiliar, c, { idx }); }
+    }
 
     // encounter
     bool encEnded = false, encBegan = false;

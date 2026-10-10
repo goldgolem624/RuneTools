@@ -1996,6 +1996,42 @@ std::string ItemExtraIntsJson(std::uint32_t pid, int container_id, int item_id, 
 }
 std::string EquipmentJson(std::uint32_t pid) { return container_json_for(pid, 94); }
 
+std::string EntityVarsJson(std::uint32_t pid) {
+    CombatSample s;
+    if (!CombatRead(pid, false, s)) return "[]";
+    auto ps = snap_proc(pid);
+    if (!ps) return "[]";
+    HANDLE h = ps.h;
+    std::string o = "[";
+    bool first = true;
+    for (const auto& a : s.actors) {
+        if (!a.addr) continue;
+        // the map: bucket array +8, divisor +0x10, count +0x18; nodes of 0x30: id +0, value +8, type +0x20, next +0x28
+        const std::uint64_t m = a.addr + 0x148;
+        const std::uint64_t ba = rpm<std::uint64_t>(h, m + 8).value_or(0);
+        const int div = rpm<std::int32_t>(h, m + 0x10).value_or(0);
+        const int cnt = rpm<std::int32_t>(h, m + 0x18).value_or(0);
+        std::string vars;
+        if (ba > 0x10000 && div > 0 && div <= 4096 && cnt > 0 && cnt <= 4096) {
+            for (int b = 0; b < div; ++b) {
+                std::uint64_t node = rpm<std::uint64_t>(h, ba + (std::uint64_t)b * 8).value_or(0);
+                for (int k = 0; k < 64 && node > 0x10000; ++k) {
+                    std::uint8_t nb[0x30];
+                    if (!rpm_bytes(h, node, nb, sizeof(nb))) break;
+                    const int id = *reinterpret_cast<const std::int32_t*>(nb), v = *reinterpret_cast<const std::int32_t*>(nb + 8);
+                    vars += (vars.empty() ? "" : ",") + std::string("[") + std::to_string(id) + "," + std::to_string(v) + "," + std::to_string(nb[0x20]) + "]";
+                    std::memcpy(&node, nb + 0x28, 8);
+                }
+            }
+        }
+        o += first ? "" : ","; first = false;
+        o += "{\"type\":" + std::to_string(a.type) + ",\"uid\":" + std::to_string(a.uid) + ",\"id\":" + std::to_string(a.id) + ",\"name\":\"" + a.name +
+             "\",\"self\":" + (a.self ? "true" : "false") + ",\"target\":" + std::to_string(a.targetUid) + ",\"kind\":" + std::to_string(a.targetKind) +
+             ",\"count\":" + std::to_string(cnt) + ",\"vars\":[" + vars + "]}";
+    }
+    return o + "]";
+}
+
 // The varp's node (0x30 bytes: id +0, value +8, type byte +0x20, next +0x28). Unreadable = the map
 // itself could not be read (stale offset); Absent = the map holds no node for the id, which the
 // engine reads as the domain default (0 for an int).
@@ -4557,6 +4593,7 @@ constexpr std::uint64_t kCbNameLen   = 0x98;
 constexpr std::uint64_t kCbAnim      = 0xA90;
 constexpr std::uint64_t kCbAnimCount = 0xAFC, kCbAnimCycle = 0xB00;   // animation start count and its CLIENTCLOCK cycle
 constexpr std::uint64_t kCbTargetUid = 0x1B4;
+constexpr std::uint64_t kCbTargetKind = 0x228;
 constexpr std::uint64_t kCbNpcStats  = 0x1140, kCbNpcBase = 0x115C, kCbNpcVis = 0x1178;
 constexpr std::uint64_t kCbVarNode   = 0x30;     // var map node: id +0, value +8, type +0x20, next +0x28
 constexpr std::uint64_t kCbWindowGap = 0x8000, kCbWindowMax = 0x80000;
@@ -4677,8 +4714,8 @@ bool cb_read_actor(CombatCtx& c, std::uint64_t sec, bool bars, CombatActorSample
     if (type != 1 && type != 2) return false;
     const float fx = f32(rtx::scn::kPosX), fy = f32(rtx::scn::kPosY);
     if (!(fx > 0.f && fx < 1e8f && fy > 0.f && fy < 1e8f)) return false;
-    a.type = type; a.tx = (int)(fx / 512.f); a.ty = (int)(fy / 512.f); a.plane = i32(rtx::scn::kPlane);
-    a.uid = i32(rtx::scn::kUid); a.anim = i32(kCbAnim); a.targetUid = i32(kCbTargetUid);
+    a.type = type; a.tx = (int)(fx / 512.f); a.ty = (int)(fy / 512.f); a.plane = i32(rtx::scn::kPlane); a.addr = sec;
+    a.uid = i32(rtx::scn::kUid); a.anim = i32(kCbAnim); a.targetUid = i32(kCbTargetUid); a.targetKind = b[kCbTargetKind];
     cb_name(b + rtx::scn::kName, u64(kCbNameLen), a.name);
     a.self = (type == 2 && a.uid == c.out.localUid);
     if (type == 1) {

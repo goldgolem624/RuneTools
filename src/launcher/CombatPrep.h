@@ -487,7 +487,7 @@ inline std::vector<ActorItem> actor_items(int type) {
     switch (type) {
     case 0: case 2: case 4: case 10: case 11: case 17: case 18: return { { 2, false } };
     case 3: return { { 2, false }, { 3, true } };
-    case 13: return { { 2, true } };
+    case 13: case 23: return { { 2, true } };
     case 14: return { { 2, true }, { 3, true } };
     case 1000: return { { 6, true } };
     default: return {};

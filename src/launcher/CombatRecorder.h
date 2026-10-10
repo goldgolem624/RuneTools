@@ -211,6 +211,9 @@ private:
     std::map<int, std::pair<int, int>> items_;           // container << 8 | slot -> (item, count) as last written
     std::map<int, int> eof_;                             // (container << 8) | slot -> stored special weapon: -2 no amulet there, -1 nothing stored
     bool eofInit_ = false;
+    // your summoned familiar: the pouch it came from (varp 1831), the uid of the NPC that showed to be it (one
+    // whose name the pouch names, seen targeting you), and the actor index last written for it (-2 not written)
+    int famPouch_ = 0, famUid_ = -1, famIdx_ = -2;
     std::map<int, std::array<int, 8>> perks_;            // equipment slot -> its item's perks as last written                      // shared-var buff rows waiting for the struct the server names
     std::unordered_map<int, int> buffOfStruct_;          // buff struct -> index in buffs_
     std::deque<NetCast> netCasts_;

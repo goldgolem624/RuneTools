@@ -68,7 +68,7 @@
   const SEQ_FALLBACK = [];
   for (const k in FALLBACK_AB) SEQ_FALLBACK.push([Number(k), FALLBACK_AB[k].name]);
   SEQ_FALLBACK.push([14881, 'Global cooldown'], [14882, 'Global cooldown']);
-  const EVENT_NAMES = ['hit', 'cast', 'anim', 'target', 'lp', 'adren', 'prayer', 'buff', 'channel', 'tracker', 'death', 'actor', 'encounter', 'gfx', 'proj', 'xp', 'mark', 'bar', 'stat', 'sound', 'item', 'perks'];
+  const EVENT_NAMES = ['hit', 'cast', 'anim', 'target', 'lp', 'adren', 'prayer', 'buff', 'channel', 'tracker', 'death', 'actor', 'encounter', 'gfx', 'proj', 'xp', 'mark', 'bar', 'stat', 'sound', 'item', 'perks', 'special', 'familiar'];
   // Boss mechanic rows: ["mech", c, boss, key, kind, id, actor]; kind indexes this list.
   const MECH_KINDS = ['', 'animation', 'graphic', 'tile graphic', 'projectile', 'sound', 'hint arrow', 'var', 'spawn'];
 
@@ -157,6 +157,94 @@
   // Drops the per-log cache (after actors, dict or events were replaced in place).
   function reset(log) { if (log && own(log, '__cs')) delete log.__cs; }
 
+  // Familiars and other followers. Yours is named by [23] rows (the recorder ties it to your summoning pouch). Any
+  // other NPC that nobody hits and that targets players follows the one it targets longest (a familiar or pet
+  // targets its owner while idle). A follower attacks the NPC it targets, or its owner's target when it keeps
+  // targeting the owner (a Kal'gerion demon does); its hits land a fixed time after its attack animation starts,
+  // learned per follower from the log (the delay most of its attacks show, half a tick either way), so the owner's
+  // own hits on that target at other times stay with the other players. Logs from before NPC targets were
+  // recorded have none.
+  const FOLLOW_MAX_DELAY = 300, FOLLOW_SLACK = 15;
+  function followers(log) {
+    const c = ctx(log);
+    if (c.follow) return c.follow;
+    const ev = log.events, mine = new Set(), hitOn = new Set(), tgtTime = {}, open = {};
+    const endC = ev.length ? ev[ev.length - 1][1] : 0;
+    const isNpc = a => actorOf(log, a).type === 'npc';
+    for (const e of ev) {
+      if (e[0] === 23 && e[2] >= 0) mine.add(e[2]);
+      else if (e[0] === 0) hitOn.add(e[2]);
+      else if (e[0] === 3 && e[2] !== c.self && isNpc(e[2])) {
+        const o = open[e[2]];
+        if (o && o.p >= 0) { const t = tgtTime[e[2]] || (tgtTime[e[2]] = {}); t[o.p] = (t[o.p] || 0) + e[1] - o.c; }
+        open[e[2]] = { p: e[3] >= 0 && !isNpc(e[3]) ? e[3] : -1, c: e[1] };
+      }
+    }
+    for (const a in open) { const o = open[a]; if (o.p >= 0) { const t = tgtTime[a] || (tgtTime[a] = {}); t[o.p] = (t[o.p] || 0) + Math.max(1, endC - o.c); } }
+    const owner = {};
+    for (const a of mine) owner[a] = c.self;
+    for (const a in tgtTime) {
+      const k = Number(a);
+      if (mine.has(k) || hitOn.has(k)) continue;   // an NPC anyone hits is a foe, not a follower
+      let best = -1, bt = -1;
+      for (const p in tgtTime[a]) if (tgtTime[a][p] > bt) { bt = tgtTime[a][p]; best = Number(p); }
+      if (best >= 0 && best !== c.self) owner[k] = best;   // yours only by [23]
+    }
+    // per follower: its attack starts and the target each one was aimed at
+    const tgt = {}, starts = {};
+    for (const e of ev) {
+      if (e[0] === 3) tgt[e[2]] = e[3];
+      else if (e[0] === 2 && owner[e[2]] != null && e[3] >= 0) {
+        const a = e[2], own = owner[a], t = tgt[a] >= 0 && isNpc(tgt[a]) ? tgt[a] : tgt[own] >= 0 && isNpc(tgt[own]) ? tgt[own] : -1;
+        if (t >= 0) (starts[a] = starts[a] || []).push([e[1], t]);
+      }
+    }
+    // other-set hits by target, in order
+    const others = {};
+    for (let i = 0; i < ev.length; i++) { const e = ev[i]; if (e[0] === 0 && e[2] !== c.self && hitRole(log, e) === 'other') (others[e[2]] = others[e[2]] || []).push(i); }
+    const firstAfter = (list, cyc) => { let lo = 0, hi = list.length; while (lo < hi) { const m = (lo + hi) >> 1; if (ev[list[m]][1] < cyc) lo = m + 1; else hi = m; } return lo; };
+    const hitBy = new Map(), delay = {};
+    for (const a in starts) {
+      // the delay most attacks show: the first other-set hit on the target after each start, by tick
+      const count = {};
+      for (const [sc, t] of starts[a]) {
+        const list = others[t]; if (!list) continue;
+        const k = firstAfter(list, sc + 1);
+        if (k < list.length && ev[list[k]][1] - sc <= FOLLOW_MAX_DELAY) { const d = Math.round((ev[list[k]][1] - sc) / TICK); count[d] = (count[d] || 0) + 1; }
+      }
+      let d = -1, n = 0;
+      for (const k in count) if (count[k] > n) { n = count[k]; d = Number(k); }
+      if (d < 0 || n < 3 || n * 2 < starts[a].length) continue;
+      delay[a] = d * TICK;
+      for (const [sc, t] of starts[a]) {
+        const list = others[t]; if (!list) continue;
+        for (let k = firstAfter(list, sc + delay[a] - FOLLOW_SLACK); k < list.length && ev[list[k]][1] <= sc + delay[a] + FOLLOW_SLACK; k++) if (!hitBy.has(list[k])) hitBy.set(list[k], Number(a));
+      }
+    }
+    c.follow = { owner, mine, hitBy, delay };
+    return c.follow;
+  }
+  // "your Ripper Demon", "Marshal Mudd's Kal'gerion demon"
+  function followerLabel(log, a) {
+    const f = followers(log), o = f.owner[a], nm = actorName(log, a);
+    return o === ctx(log).self ? 'your ' + nm : actorName(log, o) + "'s " + nm;
+  }
+  // Your familiar's damage in a selection, kept apart from yours: null when it hit nothing.
+  function familiar(log, n) {
+    const r = range(log, n), f = followers(log), ev = log.events;
+    if (!f.mine.size) return null;
+    const by = {};
+    for (const [i, a] of f.hitBy) {
+      if (!f.mine.has(a) || !inR(ev[i][1], r)) continue;
+      const v = ev[i][4] > 0 ? ev[i][4] : 0, nm = actorName(log, a);
+      const x = by[nm] || (by[nm] = { name: nm, hits: 0, total: 0, max: 0 });
+      x.hits++; x.total += v; if (v > x.max) x.max = v;
+    }
+    const rows = Object.keys(by).map(k => by[k]).sort((a, b) => b.total - a.total);
+    if (!rows.length) return null;
+    const durMs = durOf(r), total = rows.reduce((t, x) => t + x.total, 0);
+    return { rows, total, dps: total / durMs * 1000, names: rows.map(x => x.name).join(', ') };
+  }
   // Actors that can be a kill: an NPC you hit or targeted. Summons (yours or anyone's) dying or expiring are not kills.
   function isFoe(log, i) {
     const c = ctx(log);
@@ -547,6 +635,7 @@
     const tgt = {}, anim = {};
     for (let k = 0; k < ev.length && ev[k][1] <= S; k++) {
       const e = ev[k];
+      if (followers(log).owner[e[2]] != null) continue;   // a familiar targets its owner; it never hits you
       if (e[0] === 3 && e[2] !== c.self) tgt[e[2]] = e[3];
       if (e[0] === 2 && e[2] !== c.self && S - e[1] <= 2 * TICK) anim[e[2]] = e[3];
     }
@@ -568,7 +657,7 @@
       c.src = out;
       return out;
     }
-    const self = c.self, onSelf = new Set(), last = new Map(), animQ = [];
+    const self = c.self, onSelf = new Set(), last = new Map(), animQ = [], fol = followers(log).owner;
     let qh = 0, i = 0;
     const byNum = (a, b) => a - b;
     while (i < n) {
@@ -577,6 +666,7 @@
       while (j < n && ev[j][1] === S) j++;
       for (let k = i; k < j; k++) {
         const e = ev[k];
+        if (fol[e[2]] != null) continue;   // a familiar targets its owner; it never hits you
         if (e[0] === 3 && e[2] !== self) { if (e[3] === self) onSelf.add(e[2]); else onSelf.delete(e[2]); }
         if (e[0] === 2 && e[2] !== self) { last.set(e[2], e[3]); animQ.push([e[1], e[2]]); }
       }
@@ -1005,7 +1095,7 @@
         row.actor = actorLabel(log, e[2]); row.kind = h.kind; row.value = e[4]; row.hitmark = e[3];
         row.ability = at.struct[i] ? ability(log, at.struct[i]).name : (role === 'dealt' ? 'Unattributed' : '');
         row.text = role === 'dealt' ? 'you hit ' + row.actor : role === 'taken' ? 'hit on you' : role === 'blocked' ? 'blocked on you' : role === 'heal' ? 'you healed'
-                 : role === 'npcheal' ? row.actor + ' healed' : role === 'other' ? row.actor + ' hit by others' : row.actor + ' ' + h.kind;
+                 : role === 'npcheal' ? row.actor + ' healed' : role === 'other' ? row.actor + ' hit by ' + (followers(log).hitBy.has(i) ? followerLabel(log, followers(log).hitBy.get(i)) : 'others') : row.actor + ' ' + h.kind;
         if (role === 'taken' || role === 'blocked') { const s = sources(log)[i]; if (s >= 0) row.text += ' by ' + actorLabel(log, s); }
         if (e[5] >= 0) row.text += ' (+' + e[6] + ' soaked)';
         break;
@@ -1030,6 +1120,9 @@
       case 18: row.actor = actorLabel(log, e[2]); row.value = e[4]; row.text = 'stat ' + e[3] + ' ' + e[4] + ' / ' + e[5]; break;
       case 19: row.value = e[2]; row.text = 'sound ' + e[2] + (e[3] ? ' on a tile' : ''); break;
       case 21: { const pl = perkList(log, e.slice(3, 11)); row.kind = 'equipment'; row.text = slotName(e[2]) + ' perks: ' + (pl.length ? pl.join(', ') : 'none'); break; }
+      case 23: row.actor = e[2] >= 0 ? actorLabel(log, e[2]) : ''; row.text = e[2] >= 0 ? 'your familiar: ' + row.actor : 'no familiar'; break;
+      case 22: row.value = e[4]; row.ability = e[4] >= 0 ? itemName(log, e[4]) : ''; row.kind = e[2] === 94 ? 'equipment' : 'inventory';
+        row.text = (e[2] === 94 ? slotName(e[3]) : 'inventory slot ' + (e[3] + 1)) + ' stores ' + (e[4] >= 0 ? row.ability : 'nothing'); break;
       case 20: row.value = e[4]; row.ability = e[4] >= 0 ? itemName(log, e[4]) : ''; row.kind = e[2] === 94 ? 'equipment' : 'inventory';
         row.text = (e[2] === 94 ? slotName(e[3]) + ': ' : 'inventory slot ' + (e[3] + 1) + ': ') + (e[4] >= 0 ? row.ability + (e[5] > 1 ? ' x' + e[5] : '') : 'empty'); break;
       default: row.text = JSON.stringify(e.slice(2));
@@ -2180,7 +2273,7 @@
   const api = { version: 6, killWindow, CYCLE_MS, TICK, STYLES, EVENT_NAMES, MECH_KINDS, STYLE_LINE, MIN_FIGHT_MS, MAX_FIGHT_MS, DPS_CAP, MAX_HIT_CAP, PLAUSIBLE_RATIO, SUMMON_BUFFS,
                 PARSE_HEX, REASON_TEXT, token, ctx, reset, hmInfo, hitRole, isFoe, hitStyle, actorOf, actorLabel, cycleMs, cycleTick, range, resolve, inRange,
                 ability, shapeOf, seqIs, seqTag, seqInfoFrom, attribute, sourceOf, sources, summary, byAbility, bySource, series, uptimes, gear, slotName, itemName, perkList, casts, trackerCheck, styleSplit,
-                describe, fightSummaries, isMech, typeName, mechInfo, mechCount, bossName, mechs, plain, shortName, fmtNum, fmtMs, fmtMsTenths,
+                describe, followers, followerLabel, familiar, fightSummaries, isMech, typeName, mechInfo, mechCount, bossName, mechs, plain, shortName, fmtNum, fmtMs, fmtMsTenths,
                 bossGroupKey, fightInfo, bossActors, phases, styleOf, metrics, fightHits, byTarget, bossShare, takenBy, enemyCasts, targetsOf, healing, deaths,
                 deathRecap, resources, rotation, dpsSeries, buffGroup, profile, compare, query, parseFilter, logSummary, liveClose, parseColor, sanitize };
   root.combatStats = api;
