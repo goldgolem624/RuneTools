@@ -4532,6 +4532,7 @@ struct CombatReadState {
     std::unordered_map<int, std::string> npcNames;             // NPC id -> cache name
     std::uint64_t localSec = 0;                                // the local player's object from the last pass
     CombatVarDomain vp, vc;
+    std::uint32_t itemsTick = 0xFFFFFFFFu;                     // the game tick the gear was last read in
 };
 std::mutex g_cbMu;
 std::unordered_map<std::uint32_t, CombatReadState> g_cb;
@@ -4730,7 +4731,9 @@ bool CombatRead(std::uint32_t pid, bool bars, CombatSample& out) {
     ++out.reads;
     if (!clk) { ++out.fails; return false; }
     out.clock = *clk;
-    if (bars) {   // inventory and equipment: the container list in one read, then each one's slots
+    // inventory and equipment: once per game tick (the game changes them no faster), the container list in one
+    // read, then each one's slots
+    if (out.clock / 30 != st.itemsTick && (st.itemsTick = out.clock / 30, true)) {
         ++out.reads;
         const std::uint64_t cm = rpm<std::uint64_t>(h, *root + kOffInvData).value_or(0);
         std::uint64_t se[2] = { 0, 0 };
