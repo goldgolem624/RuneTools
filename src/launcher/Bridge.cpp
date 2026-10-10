@@ -3245,6 +3245,10 @@ bool build_config() {
     };
     for (const auto& e : rtx::buffvars::kTimer) varbit(e);
     for (const auto& e : rtx::buffvars::kCount) varbit(e);
+    for (int vb : { 19034, 27403 }) {   // the summoned familiar's life points and maximum: they identify it among same-named NPCs
+        int vp = -1, lsb = -1, msb = -1;
+        if (rtx::cache::GetVarbit(vb, vp, lsb, msb) && vp >= 0) c.varbits.push_back({ vb, vp, lsb, msb });
+    }
     BuiltinMechanics(c.mechRows, c.mechBosses);
     c.names.official = [](const char* kind, int id) { return rtx::names::Name(kind, id); };
     c.names.structStr = [](int s, int p) { std::string v; rtx::cache::StructStrParam(s, p, v); return v; };

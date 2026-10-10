@@ -19,6 +19,7 @@ namespace {
 constexpr int kUnknown = -0x7fffffff;
 constexpr int kVarpLp = 13537, kVarpLpMax = 13538, kVarpAdren = 679, kVarpPrayer = 3274, kVarpEncounter = 10946;
 constexpr int kVarpFamiliarPouch = 1831;   // the pouch or contract of the summoned familiar, 0 none
+constexpr int kVarbitFamLp = 19034, kVarbitFamLpMax = 27403;   // the summoned familiar's life points and maximum (the Familiar window)
 constexpr int kGcdStart = 2091, kGcdEnd = 2092, kGcdStruct = 14881;   // the global cooldown's dummy struct
 constexpr int kVarcJustUsed = 4098;                                   // the struct of the ability used last (COMBATV2_JUST_USED_ABILITY)
 constexpr int kScriptCooldown = 6570, kScriptChannel = 18766, kScriptBuffTimer = 4252;   // 4252: (struct, ticks left)   // (struct, start tick, end tick, 1, 1); (side, ticks, id, name)
@@ -300,6 +301,7 @@ void NetDecoder::Decode(int op, const std::uint8_t* b, std::uint32_t n, long lon
 
 void WantedVars(const Config& cfg, std::vector<int>& varps, std::vector<int>& varcs) {
     varps = { kVarpLp, kVarpLpMax, kVarpAdren, kVarpPrayer, kVarpEncounter, kVarpFamiliarPouch };
+    for (const auto& d : cfg.varbits) if (d.varbit == kVarbitFamLp || d.varbit == kVarbitFamLpMax) varps.push_back(d.varp);
     varcs = { kGcdStart, kGcdEnd, kVarcJustUsed };
     for (const auto& a : cfg.abilities) { if (a.startVarc > 0) varcs.push_back(a.startVarc); if (a.endVarc > 0) varcs.push_back(a.endVarc); }
     for (const auto& b : cfg.bosses) { if (b.kc[0] > 0) varps.push_back(b.kc[0]); if (b.pr[0] > 0) varps.push_back(b.pr[0]); }
@@ -1275,24 +1277,44 @@ void Recorder::Feed(const Tick& t) {
     }
     if (selfDied && selfIdx_ >= 0) { push(evs, 10, c, { selfIdx_, 2 }, selfIdx_); if (inFight_) ++cur_.deaths; }
 
-    // your familiar: with a pouch summoned, the NPC whose name the pouch names that targets you (others' familiars
-    // target their owners). Kept while the pouch stays; its row is written whenever its actor index changes
+    // your familiar: with a pouch summoned, among the NPCs whose name the pouch names, the one the game ties to you:
+    // it targets you (idle), or its life points are the Familiar window's (varbits 19034 / 27403) and no other
+    // candidate's are, or it attacks your target and no other candidate does. Kept while the pouch stays; its row
+    // is written whenever its actor index changes
     {
         auto pv = vp.find(kVarpFamiliarPouch);
         if (pv != vp.end()) {
             const int pouch = pv->second > 0 ? pv->second : 0;
             if (pouch != famPouch_) { famPouch_ = pouch; famUid_ = -1; }
-            if (pouch && cfg_.names.itemName) {
+            if (pouch && cfg_.names.itemName && (famUid_ < 0 || indexOfUid(famUid_) < 0)) {
                 int selfUid = -1;
                 for (const auto& a : t.actors) if (a.self) { selfUid = a.uid; break; }
                 std::string pn = cfg_.names.itemName(pouch);
                 for (char& ch : pn) ch = (char)std::tolower((unsigned char)ch);
+                std::vector<const rtx::reader::CombatActorSample*> cand;
                 for (const auto& a : t.actors) {
-                    if (a.type != 1 || selfUid < 0 || a.targetKind != 2 || a.targetUid != selfUid || a.name.size() < 3) continue;
+                    if (a.type != 1 || a.name.size() < 3) continue;
                     std::string nm = a.name;
                     for (char& ch : nm) ch = (char)std::tolower((unsigned char)ch);
-                    if (pn.find(nm) != std::string::npos) { famUid_ = a.uid; break; }
+                    if (pn.find(nm) != std::string::npos) cand.push_back(&a);
                 }
+                bool lpOk = false, mxOk = false;
+                const int famLp = varValue(vp, vc, 3, kVarbitFamLp, lpOk), famMax = varValue(vp, vc, 3, kVarbitFamLpMax, mxOk);
+                int myTgtUid = -1;
+                if (selfIdx_ >= 0) { const int tg = actors_[(std::size_t)selfIdx_].target; if (tg >= 0 && tg < (int)actors_.size() && actors_[(std::size_t)tg].row.type == "npc") myTgtUid = actors_[(std::size_t)tg].row.uid; }
+                const rtx::reader::CombatActorSample* pick = nullptr;
+                for (const auto* a : cand) if (selfUid >= 0 && a->targetKind == 2 && a->targetUid == selfUid) { pick = a; break; }
+                if (!pick && lpOk && famLp > 0) {
+                    int n = 0; const rtx::reader::CombatActorSample* one = nullptr;
+                    for (const auto* a : cand) if (a->haveStats && a->lp == famLp && (!mxOk || famMax <= 0 || a->lpMax == famMax)) { ++n; one = a; }
+                    if (n == 1) pick = one;
+                }
+                if (!pick && myTgtUid >= 0) {
+                    int n = 0; const rtx::reader::CombatActorSample* one = nullptr;
+                    for (const auto* a : cand) if (a->targetKind == 1 && a->targetUid == myTgtUid) { ++n; one = a; }
+                    if (n == 1) pick = one;
+                }
+                if (pick) famUid_ = pick->uid;
             }
         }
         const int idx = famUid_ >= 0 ? indexOfUid(famUid_) : -1;
