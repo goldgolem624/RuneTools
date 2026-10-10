@@ -1048,7 +1048,7 @@
     for (const k of at.casts) {
       if (!inR(k.c, r) || (r.abilities && !r.abilities.has(k.struct))) continue;
       const a = ability(log, k.struct), shape = k.shape;
-      list.push({ c: k.c, tick: Math.floor((k.c - r.start) / TICK), struct: k.struct, name: a.name, icon: a.icon || 0, src: k.src, resolved: k.resolved, style: a.style || '',
+      list.push({ c: k.c, tick: Math.floor((k.c - r.start) / TICK), struct: k.struct, name: a.name, icon: a.icon || 0, item: a.item || 0, src: k.src, resolved: k.resolved, style: a.style || '',
                   span: a.channel ? Math.max(1, (a.channel[0] || 1) * (a.channel[1] || 1) + 1) : (shape.length > 3 ? shape[shape.length - 1] + 1 : 1) });
     }
     let idle = 0, prev = null, prevSpan = -1;
@@ -1884,7 +1884,7 @@
     const lanes = [], laneOf = new Map();
     for (const k of counted) {
       let L = laneOf.get(k.struct);
-      if (!L) { const a = ability(log, k.struct); laneOf.set(k.struct, L = { struct: k.struct, name: a.name, icon: a.icon || 0, style: a.style || '', cd: isNum(a.cd) ? a.cd : 0, ticks: [], count: 0 }); lanes.push(L); }
+      if (!L) { const a = ability(log, k.struct); laneOf.set(k.struct, L = { struct: k.struct, name: a.name, icon: a.icon || 0, item: a.item || 0, style: a.style || '', cd: isNum(a.cd) ? a.cd : 0, ticks: [], count: 0 }); lanes.push(L); }
       L.ticks.push(k.tick); L.count++;
     }
     const minutes = durOf(r) / 60000;

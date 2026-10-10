@@ -457,15 +457,16 @@
   function flH(text) { return el('div', 'fl-h', text); }
   function flIcon(sid) { const i = el('span', 'fl-ico' + (sid ? '' : ' none')); flSprite(i, sid); return i; }
   // A name cell: the icon, or an empty slot of the same size when `slot` asks for alignment, then the text.
-  function flName(cls, text, icon, slot) {
+  // A name with its icon: a sprite, else the item it comes from (the familiar's pouch), else an empty slot.
+  function flName(cls, text, icon, slot, item) {
     const nm = el('span', cls);
-    if (icon || slot) nm.appendChild(flIcon(icon));
+    if (icon || slot) { const box = flIcon(icon); if (!icon && item > 0) flItemIcon(box, item); nm.appendChild(box); }
     nm.appendChild(el('span', 'nt', text));
     return nm;
   }
-  function flBar(label, value, total, cls, icon) {
+  function flBar(label, value, total, cls, icon, item) {
     const st = S(), row = el('div', 'fl-bar' + (cls ? ' ' + cls : ''));
-    const nm = flName('n', label, icon, icon !== undefined); nm.dataset.tip = label;
+    const nm = flName('n', label, icon, icon !== undefined, item); nm.dataset.tip = label;
     const b = el('span', 'b'); const i = el('i'); i.style.width = (total ? value / total * 100 : 0).toFixed(1) + '%'; b.appendChild(i);
     const v = el('span', 'v'); v.textContent = st.fmtNum(value); const sm = el('small', '', (total ? value / total * 100 : 0).toFixed(1) + '%'); v.appendChild(sm);
     v.dataset.tip = value.toLocaleString();
@@ -481,7 +482,7 @@
     body.appendChild(g);
     body.appendChild(flH('Top abilities'));
     const g2 = el('div', 'fl-bars');
-    for (const row of ab.rows.filter(r => r.struct).slice(0, 5)) g2.appendChild(flBar(row.name, row.total, ab.total, '', row.icon || 0));
+    for (const row of ab.rows.filter(r => r.struct).slice(0, 5)) g2.appendChild(flBar(row.name, row.total, ab.total, '', row.icon || 0, row.item || 0));
     if (sm.unattributed) g2.appendChild(flBar('Unattributed', sm.unattributed, ab.total, 'dim', 0));
     body.appendChild(g2);
     body.appendChild(flH('Game tracker'));
@@ -516,8 +517,7 @@
     const rows = [];
     for (const r of ab.rows) {
       const tr = el('div', 'fl-tr click' + (r.struct ? '' : ' dim') + (fl.hl && fl.hl === r.struct ? ' on' : ''));
-      const nm = flName('n', r.name, r.icon, true); nm.dataset.tip = flRowTip(r); tr.appendChild(nm);
-      if (!r.icon && r.item > 0 && nm.firstChild) flItemIcon(nm.firstChild, r.item);
+      const nm = flName('n', r.name, r.icon, true, r.item); nm.dataset.tip = flRowTip(r); tr.appendChild(nm);
       flCells(tr, [[String(r.hits), 'num'], [String(r.crits), 'num opt'], [st.fmtNum(r.avg), 'num opt', Math.round(r.avg).toLocaleString()], [st.fmtNum(r.max), 'num opt', r.max.toLocaleString()], [st.fmtNum(r.total), 'num tot', r.total.toLocaleString()]]);
       tr.appendChild(flShare(r.share));
       tr.addEventListener('click', () => { fl.hl = fl.hl === r.struct ? 0 : r.struct; fl.tab = 'health'; flPaint(); });
@@ -884,7 +884,7 @@
     const rows = [];
     for (const r of ca.table) {
       const tr = el('div', 'fl-tr');
-      const nm = flName('n', r.name, r.icon, true); nm.dataset.tip = flRowTip(r); tr.appendChild(nm);
+      const nm = flName('n', r.name, r.icon, true, r.item); nm.dataset.tip = flRowTip(r); tr.appendChild(nm);
       flCells(tr, [[String(r.casts), 'num'], [st.fmtNum(r.avg), 'num opt', Math.round(r.avg).toLocaleString()], [st.fmtNum(r.total), 'num tot', r.total.toLocaleString()], [st.fmtNum(r.perCast), 'num', Math.round(r.perCast).toLocaleString()]]);
       rows.push(tr);
     }
