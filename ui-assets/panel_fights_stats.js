@@ -436,7 +436,10 @@
     const a = ability(log, struct), t = token(a.name);
     if (SHAPES[t]) return SHAPES[t];
     if (/^(CONJURE|COMMAND)_/.test(t)) return [];
-    if (a.channel) { const n = Math.max(1, (a.channel[0] || 1) * (a.channel[1] || 1)) + 1; const s = []; for (let i = 0; i <= n; i++) s.push(i); return s; }
+    // a channel from the game's own params (8884 ticks between hits, 8885 hits after the first): the first hit lands
+    // one tick after the cast, then one every interval; Assault [2, 3] = ticks 1, 3, 5, 7, as the tooltip's
+    // "4 times over 4.2s" and the logs agree
+    if (a.channel) { const iv = Math.max(1, a.channel[0] || 1), n = Math.max(0, a.channel[1] || 0); const s = []; for (let k = 0; k <= n; k++) s.push(1 + k * iv); return s; }
     if (a.dot != null) { const n = Math.max(a.dot || 0, 5); const s = []; for (let i = 0; i <= n; i++) s.push(i); return s; }
     return [0, 1, 2];
   }
@@ -561,7 +564,7 @@
       }
       struct = aliasOf(log, struct);
       const tok = token(ability(log, struct).name);
-      casts.push({ i, c: ev[i][1], struct, src: ev[i][4], resolved, seq, seqId, shape: shapeOf(log, struct), known: !!SHAPES[tok], style: ability(log, struct).style || '',
+      casts.push({ i, c: ev[i][1], struct, src: ev[i][4], resolved, seq, seqId, shape: shapeOf(log, struct), known: !!SHAPES[tok] || !!ability(log, struct).channel, style: ability(log, struct).style || '',
                    cap: CAP[tok] || 0, dot: DOT[tok] || 0, used: 0 });
     }
     // two cooldown stamps in one tick (Corruption Blast and Shot move together): keep the one the animation
