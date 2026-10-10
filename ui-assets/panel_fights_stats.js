@@ -17,6 +17,7 @@
   const SHAPES = {
     CONCENTRATED_BLAST: [0, 1, 2], CHAIN: [0, 1, 2, 3], DRAGON_BREATH: [1, 0], CORRUPTION_BLAST: [0, 1, 2, 3, 4, 5], CORRUPTION_SHOT: [0, 1, 2, 3, 4, 5],
     MAGMA_TEMPEST: [0, 1, 2, 3, 4, 5, 6, 7, 8], WILD_MAGIC: [0, 1], TSUNAMI: [0, 1, 2], OMNIPOWER: [3, 0, 1, 2], ASPHYXIATE: [0, 1, 2, 3],
+    OVERPOWER: [3], METEOR_STRIKE: [2],   // measured: Overpower's two hits land 3 ticks after the cast (same tick as the next ability's cast), Meteor Strike's one 2 ticks after
     SNIPE: [1, 2], RAPID_FIRE: [0, 1, 2, 3, 4], SMOKE_TENDRILS: [0, 1, 2, 3], SUNSHINE: [], METAMORPHOSIS: [], DEATHS_SWIFTNESS: [],
     ANTICIPATION: [], FREEDOM: [], PREPARATION: [], RESONANCE: [], REFLECT: [], DEVOTION: [], BARRICADE: [], IMMORTALITY: [],
     SURGE: [], ESCAPE: [], DIVE: [], BLADED_DIVE: [0, 1], LIMITLESS: [], NATURAL_INSTINCT: [], BERSERK: [], REJUVENATE: [], GUTHIXS_BLESSING: [],
@@ -33,7 +34,7 @@
   // lands 15 ticks after the cast), and never less than the 9 ticks the loose match needs.
   let LOOKBACK = 9;
   for (const k in SHAPES) for (const t of SHAPES[k]) if (t + 1 > LOOKBACK) LOOKBACK = t + 1;
-  const CAP = { TOUCH_OF_DEATH: 1, SOUL_SAP: 1, FINGER_OF_DEATH: 1, SOUL_STRIKE: 1, BLOAT: 1, VOLLEY_OF_SOULS: 5, DEATH_SKULLS: 8 };
+  const CAP = { TOUCH_OF_DEATH: 1, SOUL_SAP: 1, FINGER_OF_DEATH: 1, SOUL_STRIKE: 1, BLOAT: 1, VOLLEY_OF_SOULS: 5, DEATH_SKULLS: 8, OVERPOWER: 2, METEOR_STRIKE: 1 };
   // Damage over time with a fixed value per application, ticking on the target every 3 ticks: the ticks after
   // the cast it can run for. A later cast of the same ability on the target replaces the value.
   const DOT = { BLOAT: 36 }, DOT_MAX = 36;
@@ -560,7 +561,7 @@
       }
       struct = aliasOf(log, struct);
       const tok = token(ability(log, struct).name);
-      casts.push({ i, c: ev[i][1], struct, src: ev[i][4], resolved, seq, seqId, shape: shapeOf(log, struct), style: ability(log, struct).style || '',
+      casts.push({ i, c: ev[i][1], struct, src: ev[i][4], resolved, seq, seqId, shape: shapeOf(log, struct), known: !!SHAPES[tok], style: ability(log, struct).style || '',
                    cap: CAP[tok] || 0, dot: DOT[tok] || 0, used: 0 });
     }
     // two cooldown stamps in one tick (Corruption Blast and Shot move together): keep the one the animation
@@ -640,9 +641,11 @@
         if (K.style && style && style !== 'typeless' && style !== 'poison' && K.style !== style && K.style !== 'typeless') continue;
         if (style === 'typeless' && !(ability(log, K.struct).dot != null)) continue;
         if (K.shape.indexOf(L) >= 0) {
-          // most recent cast first; two casts stamped in one tick (a shared cooldown pair) are told apart by the animation
+          // most recent cast first, unless the earlier cast has a measured shape and the recent one only the default
+          // (Overpower's hits land on the tick the next basic is cast); two casts stamped in one tick (a shared
+          // cooldown pair) are told apart by the animation
           if (!exact) exact = K;
-          else if (K.c !== exact.c) break;
+          else if (K.c !== exact.c) { if (K.known && !exact.known) exact = K; else break; }
           else if (!seqIs(log, exact.seqId, exact.struct) && seqIs(log, K.seqId, K.struct)) exact = K;
         } else if (!loose && L <= 2 && !K.cap) loose = K;
       }
