@@ -17,6 +17,7 @@
   const S = () => window.combatStats;
   const FL_CSS = '.fl-chart .mk { stroke: ' + FL_MECH + '; stroke-width: 1.5; }\n.fl-chart .mk.hl { stroke: var(--accent-hi); stroke-width: 2.5; }\n' +
     '.fl-gear .g { height: 16px; }\n.fl-gear .g i { background: #6f8fb8; color: #0b0d12; font: 600 10px/16px var(--font-mono); padding-left: 4px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; box-sizing: border-box; }\n.fl-gear .g i.k1 { background: #b89a5c; }\n.fl-gear .g i.k2 { background: #7fae8a; }\n' +
+    '.fl-gear .g i.k3 { background: #a77fb0; }\n.fl-gear .g i.k4 { background: #c27f6f; }\n.fl-gear .g i.k5 { background: #6fa9ad; }\n' +
     '.fl-gear .g i .fl-ico { width: 14px; height: 14px; vertical-align: -3px; margin-right: 4px; background-color: transparent; background-size: contain; background-position: center; background-repeat: no-repeat; }\n' +
     '.fl-inv { display: grid; grid-template-columns: repeat(4, 40px); gap: 3px; margin: 2px 0 6px; }\n' +
     '.fl-inv > span { position: relative; height: 36px; border-radius: 4px; background-color: var(--bg-elev-2); background-repeat: no-repeat; background-position: center; background-size: 36px 32px; }\n' +
@@ -729,8 +730,11 @@
       for (const s of g.slots) {
         const row = el('div', 'fl-gr'), nm = el('span', 'n', s.name), bar = el('span', 'g');
         nm.dataset.tip = s.name + '\n' + s.spans.map(x => x.name + (x.perks && x.perks.length ? ' (' + x.perks.join(', ') + ')' : '')).join(', then ');
+        const tone = {};   // one colour per item in this slot, kept wherever it comes back
         s.spans.forEach((sp, k) => {
-          const i = el('i'); i.className = 'k' + (k % 3);
+          const key = String(sp.item);
+          if (tone[key] == null) tone[key] = Object.keys(tone).length % 6;
+          const i = el('i'); i.className = 'k' + tone[key];
           i.style.left = ((sp.from - g.range.start) / dur * 100).toFixed(2) + '%';
           i.style.width = Math.max(0.3, (sp.to - sp.from) / dur * 100).toFixed(2) + '%';
           i.dataset.tip = sp.name + (sp.perks && sp.perks.length ? '\n' + sp.perks.join(', ') : '') + '\n' + at(sp.from) + ' to ' + at(sp.to);
