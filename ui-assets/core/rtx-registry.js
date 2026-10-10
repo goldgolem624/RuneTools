@@ -101,7 +101,7 @@
   const TAB_AFTER = { fights: 'combatlog' };   // Fight Logs (panel_fights.js) next to Combat Log
   function tabAdopt(d) {
     if (!d.label || TABS.some(t => t.id === d.id)) return;
-    const row = { id: d.id, label: d.label, cat: d.cat || 'Utility', icon: d.icon || '' };
+    const row = { id: d.id, label: d.label, cat: d.cat || 'Utility', icon: d.icon || '', hidden: !!d.hidden };   // hidden: registered, not in the menu
     const at = TAB_AFTER[d.id] ? TABS.findIndex(t => t.id === TAB_AFTER[d.id]) : -1;
     if (at >= 0) TABS.splice(at + 1, 0, row); else TABS.push(row);
   }

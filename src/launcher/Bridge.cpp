@@ -3191,14 +3191,16 @@ Config g_cfg; bool g_cfgOk = false;
 std::vector<fights::IndexRow> g_saved;       // logs compacted this session (the headless report reads it)
 bool g_enabled = false; long long g_enabledAt = 0;
 bool g_recovered = false;
+constexpr bool kFightLogsBeta = true;        // Fight Logs is disabled (beta) in this release: nothing records, the setting stays off
 
 long long wall_ms() { using namespace std::chrono; return duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count(); }
 
 bool enabled(long long now) {
+    if (kFightLogsBeta) return false;
     if (now - g_enabledAt >= 2000) { g_enabled = fights::RecordEnabled(); g_enabledAt = now; }
     return g_enabled;
 }
-void set_enabled(bool on) { fights::SetRecordEnabled(on); std::lock_guard<std::mutex> lk(g_mu); g_enabled = on; g_enabledAt = (long long)GetTickCount64(); }
+void set_enabled(bool on) { if (kFightLogsBeta) on = false; fights::SetRecordEnabled(on); std::lock_guard<std::mutex> lk(g_mu); g_enabled = on; g_enabledAt = (long long)GetTickCount64(); }
 
 // The ability pairs, boss kill counts, varbit definitions and name lookups the recorder needs; the
 // cache has to be open, so this is retried until it is.
@@ -3425,8 +3427,13 @@ std::string current_json(std::uint32_t pid, std::uint64_t since) {
 
 // Settings and controls of the recorder, and the logs on disk, for the pages.
 JSValueRef CombatRecordEnabled(JSContextRef ctx, JSObjectRef, JSObjectRef, size_t argc, const JSValueRef argv[], JSValueRef*) {
+    if (combatrec::kFightLogsBeta) return JSValueMakeBoolean(ctx, false);
     if (argc >= 1) { const bool on = JSValueToBoolean(ctx, argv[0]); combatrec::set_enabled(on); rtx::log::Launcher(std::string("combat: recording ") + (on ? "enabled" : "disabled")); }
     return JSValueMakeBoolean(ctx, fights::RecordEnabled());
+}
+// fightLogsBeta(): true while Fight Logs is disabled (beta); the pages show it as such
+JSValueRef FightLogsBeta(JSContextRef ctx, JSObjectRef, JSObjectRef, size_t, const JSValueRef[], JSValueRef*) {
+    return JSValueMakeBoolean(ctx, combatrec::kFightLogsBeta);
 }
 JSValueRef CombatUploadAuto(JSContextRef ctx, JSObjectRef, JSObjectRef, size_t argc, const JSValueRef argv[], JSValueRef*) {
     if (argc >= 1) { const bool on = JSValueToBoolean(ctx, argv[0]); fights::SetUploadAuto(on); rtx::log::Launcher(std::string("combat: automatic upload ") + (on ? "on" : "off")); }
@@ -6692,6 +6699,7 @@ void AttachBridge(ultralight::View* view) {
     install_fn(ctx, ns, "combatUploadLive",  CombatUploadLive);
     install_fn(ctx, ns, "combatLiveState",   CombatLiveState);
     install_fn(ctx, ns, "combatKeepNames",   CombatKeepNames);
+    install_fn(ctx, ns, "fightLogsBeta",     FightLogsBeta);
     install_fn(ctx, ns, "combatUploadVisibility", CombatUploadVisibility);
     install_fn(ctx, ns, "combatRecordActive", CombatRecordActive);
     install_fn(ctx, ns, "combatRecordState", CombatRecordState);

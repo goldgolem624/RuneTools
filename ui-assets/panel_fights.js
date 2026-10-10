@@ -291,8 +291,17 @@
   function flPoll() { flFetchList(false); flLivePoll(false); flRecPoll(false); }
 
   // ---- shell -----------------------------------------------------------------------------------------------
+  function flBeta() { const b = bridge(); try { return !!(b && typeof b.fightLogsBeta === 'function' && b.fightLogsBeta()); } catch (e) { return false; } }
   function renderFights() {
     const c = $('content');
+    if (flBeta()) {
+      c.innerHTML = '';
+      const w = el('div', 'pk-wrap fl-wrap');
+      w.appendChild(el('div', 'fl-h', 'Fight Logs'));
+      w.appendChild(el('div', 'fl-empty', 'Disabled (beta).'));
+      c.appendChild(w);
+      return;
+    }
     let w = $('flWrap');
     flCss();
     if (!w) {
@@ -986,6 +995,7 @@
   }
 
   Object.assign(window, { fetchFights: flPoll, flPaint });
-  registerTab({ id: 'fights', label: 'Fight Logs', cat: 'Combat', icon: '<path d="M4 19h16"/><path d="M4 19V7"/><path d="M7 15l3-5 3 3 4-7"/><path d="M14 4l6 6-9 9-6-6z" opacity=".35"/>',
+  // disabled (beta): the tab is registered but kept out of the menu
+  registerTab({ id: 'fights', label: 'Fight Logs', cat: 'Combat', hidden: flBeta(), icon: '<path d="M4 19h16"/><path d="M4 19V7"/><path d="M7 15l3-5 3 3 4-7"/><path d="M14 4l6 6-9 9-6-6z" opacity=".35"/>',
                 render: renderFights, open: function () { fl.sig = ''; fl.rowsAt = 0; } });
 })();

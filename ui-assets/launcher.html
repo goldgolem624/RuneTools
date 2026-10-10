@@ -3037,6 +3037,8 @@
     const b = bridge();
     if (!b || !b.combatRecordEnabled) { const r = $('combat-record-row'); if (r) r.style.display = 'none'; return; }
     const lbl = $('combat-record-lbl');
+    let beta = false; try { beta = !!(b.fightLogsBeta && b.fightLogsBeta()); } catch (e) {}
+    if (beta) { box.checked = false; box.disabled = true; if (lbl) lbl.textContent = 'Disabled (beta)'; return; }
     const show = (on) => { box.checked = !!on; if (lbl) lbl.textContent = on ? 'On' : 'Off'; };
     try { show(await b.combatRecordEnabled()); } catch (e) { return; }
     box.addEventListener('change', async () => {
@@ -3497,6 +3499,8 @@
   }
   function combatUploadRows(f) {
     if (!f) return '';
+    let beta = false; try { beta = !!(bridge().fightLogsBeta && bridge().fightLogsBeta()); } catch (e) {}
+    if (beta) return '<div class="link-opt"><div class="set-text"><b>Fight logs</b><span>Disabled (beta).</span></div></div>';
     const row = (id, title, text, on) => '<div class="link-opt"><div class="set-text"><b>' + title + '</b><span>' + text + '</span></div>'
       + '<label class="acct-cap"><input type="checkbox" id="' + id + '"' + (on ? ' checked' : '') + '><span class="box"></span><span class="lbl">' + (on ? 'On' : 'Off') + '</span></label></div>';
     return row('link-cup-auto', 'Upload fight logs automatically', 'Every finished log goes to your runetools.io account.', f.auto)
