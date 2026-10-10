@@ -17,11 +17,11 @@
   const S = () => window.combatStats;
   const FL_CSS = '.fl-chart .mk { stroke: ' + FL_MECH + '; stroke-width: 1.5; }\n.fl-chart .mk.hl { stroke: var(--accent-hi); stroke-width: 2.5; }\n' +
     '.fl-gear .g { height: 16px; }\n.fl-gear .g i { background: #6f8fb8; color: #0b0d12; font: 600 10px/16px var(--font-mono); padding-left: 4px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; box-sizing: border-box; }\n.fl-gear .g i.k1 { background: #b89a5c; }\n.fl-gear .g i.k2 { background: #7fae8a; }\n' +
-    '.fl-gear .g i .fl-ico { width: 14px; height: 14px; vertical-align: -3px; margin-right: 4px; background-color: transparent; }\n' +
-    '.fl-inv { display: grid; grid-template-columns: repeat(4, 36px); gap: 3px; margin: 2px 0 6px; }\n' +
-    '.fl-inv > span { position: relative; height: 34px; border-radius: 4px; background: var(--bg-elev-2) center / 26px no-repeat; }\n' +
+    '.fl-gear .g i .fl-ico { width: 14px; height: 14px; vertical-align: -3px; margin-right: 4px; background-color: transparent; background-size: contain; background-position: center; background-repeat: no-repeat; }\n' +
+    '.fl-inv { display: grid; grid-template-columns: repeat(4, 40px); gap: 3px; margin: 2px 0 6px; }\n' +
+    '.fl-inv > span { position: relative; height: 36px; border-radius: 4px; background-color: var(--bg-elev-2); background-repeat: no-repeat; background-position: center; background-size: 36px 32px; }\n' +
     '.fl-inv > span b { position: absolute; left: 2px; top: 1px; font: 600 9.5px var(--font-mono); color: #ffe066; text-shadow: 0 1px 1px #000; }\n' +
-    '.fl-chg { display: inline-flex; align-items: center; gap: 4px; min-width: 0; }\n.fl-chg .fl-ico { width: 14px; height: 14px; background-color: transparent; }\n' +
+    '.fl-chg { display: inline-flex; align-items: center; gap: 4px; min-width: 0; }\n.fl-chg .fl-ico { width: 14px; height: 14px; background-color: transparent; background-size: contain; background-position: center; background-repeat: no-repeat; }\n' +
     '.fl-table.inv { --fl-cols: 52px 30px minmax(0, 3fr); }\n' +
     '.fl-table.swaps { --fl-cols: 52px minmax(56px, .8fr) minmax(0, 3fr); }\n.fl-table.used { --fl-cols: minmax(0, 2fr) 54px minmax(0, 2fr); }\n' +
     '.fl-narrow .fl-table.used { --fl-cols: minmax(0, 1fr) 54px; }\n' +
