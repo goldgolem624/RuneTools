@@ -1740,7 +1740,7 @@
     if (SUMMON_BUFFS.indexOf(struct) >= 0) return 'summon';
     const bs = log.dict && log.dict.buffs, b = own(bs, struct) && isObj(bs[struct]) ? bs[struct] : {};
     if (b.type === 1) return 'debuff';
-    if (/overload|prayer renew|anti-?fire|super antifire|perfect plus|adrenaline renewal|aggression|weapon poison/i.test(String(b.name || ''))) return 'consumable';
+    if (/overload|prayer renew|anti-?fire|anti-?poison|potion|super antifire|perfect plus|adrenaline renewal|aggression|weapon poison/i.test(String(b.name || ''))) return 'consumable';
     return 'buff';
   }
   // A fight or selection reduced to numbers keyed by struct ids, comparable across logs.

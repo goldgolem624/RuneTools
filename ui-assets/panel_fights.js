@@ -4,14 +4,14 @@
 // functions (older launcher) the panel shows one line and nothing else.
 (function () {
 
-  const FL_TABS = [['overview', 'Overview'], ['dealt', 'Dealt'], ['taken', 'Taken'], ['health', 'Health'], ['buffs', 'Buffs'], ['gear', 'Gear'], ['casts', 'Casts'], ['mechs', 'Mechanics'], ['events', 'Events']];
+  const FL_TABS = [['overview', 'Overview'], ['dealt', 'Dealt'], ['taken', 'Taken'], ['health', 'Timeline'], ['buffs', 'Buffs'], ['gear', 'Gear'], ['casts', 'Casts'], ['mechs', 'Mechanics'], ['events', 'Events']];
   const FL_EV_CATS = [['hit', 'Hits'], ['cast', 'Casts'], ['buff', 'Buffs'], ['mech', 'Mechanics'], ['vitals', 'Vitals'], ['anim', 'Animations'], ['fx', 'Effects'], ['target', 'Targets'], ['tracker', 'Trackers'], ['other', 'Other']];
   const FL_EV_CAT = { hit: 'hit', cast: 'cast', buff: 'buff', channel: 'cast', mech: 'mech', lp: 'vitals', adren: 'vitals', prayer: 'vitals', bar: 'vitals', stat: 'vitals', anim: 'anim', gfx: 'fx', proj: 'fx', sound: 'fx', target: 'target', tracker: 'tracker' };
   const FL_ROWS = 400, FL_COLORS = ['#e0b34c', '#4cc0c0', '#c98cf0', '#e06c6c', '#7f9fbf', '#67c07a'], FL_MECH = '#ff9f43';
   const FL_STYLE_COLOR = { melee: '#e06c6c', ranged: '#67c07a', magic: '#7f9fbf', necromancy: '#c98cf0', conjure: '#9a7fd0', typeless: '#9aa0ad', poison: '#5fd07a' };
   const fl = { rows: null, rowsAt: 0, char: '', logId: '', fight: -2, tab: 'overview', log: null, loading: '', live: null, liveId: '', liveSeq: 0, liveAt: 0,
                rec: null, recAt: 0, zoom: null, hl: 0, mhl: '', evFilt: { hit: true, cast: true, buff: true, mech: true, vitals: false, anim: false, fx: false, target: true, tracker: false, other: true },
-               evSearch: '', evShow: FL_ROWS, sig: '', pickSig: '', status: '', confirmDel: 0, drag: null };
+               evSearch: '', evShow: FL_ROWS, sig: '', pickSig: '', status: '', confirmDel: 0, drag: null, hide: {} };
   const FL_SPR = new Map(), FL_SPR_PENDING = new Set();
   const FL_TAC = new Map(), FL_TAC_PENDING = new Set(), FL_TAC_MISS = new Map();
   const S = () => window.combatStats;
@@ -26,6 +26,7 @@
     '.fl-table.inv { --fl-cols: 52px 30px minmax(0, 3fr); }\n' +
     '.fl-gear .fl-perks { grid-column: 1 / -1; margin: -2px 0 3px; padding-left: 2px; font: 500 10.5px var(--font-mono); color: var(--text-dim, #9aa3b2); white-space: normal; }\n' +
     '.fl-perkd { display: block; font: 500 10.5px var(--font-mono); color: var(--text-dim, #9aa3b2); padding-left: 2px; white-space: normal; }\n' +
+    '.fl-lgt span { cursor: pointer; user-select: none; }\n.fl-lgt span:hover { color: var(--text); }\n.fl-lgt span.off { opacity: 0.4; text-decoration: line-through; }\n' +
     '.fl-swapc { display: flex; flex-direction: column; min-width: 0; }\n.fl-swapc .fl-chg { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }\n' +
     '.fl-table.swaps { --fl-cols: 52px minmax(56px, .8fr) minmax(0, 3fr); }\n.fl-table.used { --fl-cols: minmax(0, 2fr) 54px minmax(0, 2fr); }\n' +
     '.fl-narrow .fl-table.used { --fl-cols: minmax(0, 1fr) 54px; }\n' +
@@ -321,7 +322,7 @@
     const hasGear = !!(log && log.events.some(e => e[0] === 20));
     if (log && !hasGear && fl.tab === 'gear') fl.tab = 'overview';
     const width = ($('flBody') && $('flBody').clientWidth) || 0;
-    const sig = [has, fl.logId, n, fl.tab, log ? log.events.length : -1, log ? (log.fights || []).length : -1, fl.zoom ? fl.zoom.join(',') : '', fl.hl, fl.mhl, fl.evSearch, JSON.stringify(fl.evFilt),
+    const sig = [has, fl.logId, n, fl.tab, log ? log.events.length : -1, log ? (log.fights || []).length : -1, fl.zoom ? fl.zoom.join(',') : '', fl.hl, fl.mhl, fl.evSearch, JSON.stringify(fl.evFilt), JSON.stringify(fl.hide),
                  fl.evShow, fl.rec, fl.liveId, fl.loading, fl.status, fl.confirmDel, width, flRows().length].join('|');
     if (sig === fl.sig) return;
     fl.sig = sig;
@@ -507,7 +508,7 @@
       rows.push(tr);
     }
     body.appendChild(flTable('', [['Ability'], ['Hits', 1], ['Crits', 1, 1], ['Avg', 1, 1], ['Max', 1, 1], ['Total', 1], ['Share', 1]], rows));
-    body.appendChild(el('div', 'fl-note2', 'Click a row to mark its hits on the Health chart.'));
+    body.appendChild(el('div', 'fl-note2', 'Click a row to mark its hits on the Timeline.'));
   }
   function flTaken(log, n, body) {
     const st = S(), bs = st.bySource(log, n);
@@ -530,19 +531,25 @@
     const st = S(), se = st.series(log, n);
     se.mk = st.mechs ? st.mechs(log, n) : null;
     const cont = el('div', 'fl-chart'); cont.id = 'flChart'; body.appendChild(cont);
-    const legend = el('div', 'fl-legend');
-    const lg = (c, t) => { const s = el('span'); const i = el('i'); i.style.background = c; s.appendChild(i); s.appendChild(document.createTextNode(t)); legend.appendChild(s); };
-    lg('#e8eaf0', 'your LP'); lg('rgba(232,194,106,0.8)', 'adrenaline'); lg('#4cc0c0', 'prayer'); lg('#5fd07a', 'dealt'); lg('#ff6b6b', 'taken');
-    if (se.mk && se.mk.uses.length) lg(FL_MECH, 'mechanic');
+    const legend = el('div', 'fl-legend fl-lgt');
+    const lg = (c, t, key) => {
+      const s = el('span', fl.hide[key] ? 'off' : ''); const i = el('i'); i.style.background = c; s.appendChild(i); s.appendChild(document.createTextNode(t));
+      s.dataset.tip = (fl.hide[key] ? 'Show ' : 'Hide ') + t;
+      s.addEventListener('click', () => { if (fl.hide[key]) delete fl.hide[key]; else fl.hide[key] = 1; flPaint(); });
+      legend.appendChild(s);
+    };
+    lg('#e8eaf0', 'your LP', 'lp'); lg('rgba(232,194,106,0.8)', 'adrenaline', 'adr'); lg('#4cc0c0', 'prayer', 'pr'); lg('#5fd07a', 'dealt', 'hd'); lg('#ff6b6b', 'taken', 'ht');
+    if (st.uptimes(log, n).rows.some(u => u.uptime < 0.98)) lg('#6f8fb8', 'buff bars', 'band');
+    if (se.mk && se.mk.uses.length) lg(FL_MECH, 'mechanic', 'mech');
     const tops = st.summary(log, n).targets.slice(0, 4);
     const tnames = tops.map(([a]) => st.actorOf(log, a).name || 'NPC'), tseen = {};
     tops.forEach((t, i) => {
       const nm = tnames[i], dup = tnames.filter(x => x === nm).length > 1;
       tseen[nm] = (tseen[nm] || 0) + 1;
-      lg(FL_COLORS[i % FL_COLORS.length], nm + (dup ? ' ' + tseen[nm] : '') + ' LP %');
+      lg(FL_COLORS[i % FL_COLORS.length], nm + (dup ? ' ' + tseen[nm] : '') + ' LP %', 't' + t[0]);
     });
     body.appendChild(legend);
-    body.appendChild(el('div', 'fl-note2', fl.zoom ? 'Zoomed. Double-click to reset.' : 'Drag to zoom. Hover for the nearest hit.'));
+    body.appendChild(el('div', 'fl-note2', (fl.zoom ? 'Zoomed. Double-click to reset.' : 'Drag to zoom. Hover for the nearest hit.') + ' Click a legend entry to hide it.'));
     flDraw(cont, log, n, se, tops.map(t => t[0]));
     cont.addEventListener('mousedown', e => { const m = cont.__m; if (!m) return; fl.drag = { x0: flPx(cont, e), x1: flPx(cont, e) }; });
     cont.addEventListener('mousemove', e => {
@@ -579,7 +586,7 @@
   function flDraw(cont, log, n, se, tops) {
     const st = S(), r = se.range;
     const W = Math.max(300, cont.clientWidth || (cont.parentElement && cont.parentElement.clientWidth) || 360);
-    const mk = se.mk && se.mk.uses.length ? se.mk : null, mkB = mk ? mk.bosses : [], MR = 12, MT = mkB.length ? 4 + mkB.length * MR : 0;
+    const hid = fl.hide, mk = se.mk && se.mk.uses.length && !hid.mech ? se.mk : null, mkB = mk ? mk.bosses : [], MR = 12, MT = mkB.length ? 4 + mkB.length * MR : 0;
     const bossLbl = mkB.map(b => { const bn = st.bossName(log, b); return /^NPC \d+$/.test(bn) ? String(b) : bn; });
     const L = Math.round(Math.max(44, Math.min(W * 0.2, 8 + 5.4 * Math.max(0, ...bossLbl.map(t => t.length))))), R = 34, PT = 8 + MT, PH = 148, TB = 34, AX = 14, BB = 20;
     const axisY = PT + PH, H = axisY + TB + AX + BB + 2;
@@ -606,18 +613,18 @@
       const ph = (log.clock && log.clock.phase) || 0;
       for (let c = z0 - ((z0 - ph) % st.TICK + st.TICK) % st.TICK; c <= z1; c += st.TICK) s += '<line class="tick" x1="' + f1(x(c)) + '" x2="' + f1(x(c)) + '" y1="' + PT + '" y2="' + (axisY + TB) + '"/>';
     }
-    if (se.adren.length) s += '<path class="adr" d="' + step(se.adren, p => p[1] / 1000, yPct, true) + '"/>';
-    if (se.prayer.length) s += '<path class="pr" d="' + step(se.prayer, p => p[2] > 0 ? p[1] / (p[2] * 100) : 0, yPct, false) + '"/>';
+    if (se.adren.length && !hid.adr) s += '<path class="adr" d="' + step(se.adren, p => p[1] / 1000, yPct, true) + '"/>';
+    if (se.prayer.length && !hid.pr) s += '<path class="pr" d="' + step(se.prayer, p => p[2] > 0 ? p[1] / (p[2] * 100) : 0, yPct, false) + '"/>';
     tops.forEach((a, i) => {
-      const t = se.targets[a]; if (!t) return;
+      const t = se.targets[a]; if (!t || hid['t' + a]) return;
       for (const seg of t.segs) if (seg.length) s += '<path class="tg" stroke="' + FL_COLORS[i % FL_COLORS.length] + '" d="' + step(seg, p => (p[2] || t.lpMax) ? p[1] / (p[2] || t.lpMax) : 0, yPct, false, seg[seg.length - 1][0] + st.TICK) + '"/>';
     });
-    if (se.lp.length) s += '<path class="lp" d="' + step(se.lp, p => p[1], yLp, false) + '"/>';
+    if (se.lp.length && !hid.lp) s += '<path class="lp" d="' + step(se.lp, p => p[1], yLp, false) + '"/>';
     for (const k of se.kills) if (k[0] >= z0 && k[0] <= z1) s += '<line class="kill" x1="' + f1(x(k[0])) + '" x2="' + f1(x(k[0])) + '" y1="' + PT + '" y2="' + (axisY + TB) + '"/>';
     for (const d of se.deaths) if (d[0] >= z0 && d[0] <= z1) s += '<line class="death" x1="' + f1(x(d[0])) + '" x2="' + f1(x(d[0])) + '" y1="' + PT + '" y2="' + (axisY + TB) + '"/>';
     const maxD = se.dealt.reduce((m, h) => Math.max(m, h[1]), 1), maxT = se.taken.reduce((m, h) => Math.max(m, h[1]), 1);
-    for (const h of se.dealt) { if (h[0] < z0 || h[0] > z1) continue; const hh = 3 + 28 * h[1] / maxD; s += '<line class="hd' + (fl.hl && h[2] === fl.hl ? ' hl' : '') + (h[4] ? ' crit' : '') + '" x1="' + f1(x(h[0])) + '" x2="' + f1(x(h[0])) + '" y1="' + axisY + '" y2="' + f1(axisY - hh) + '"/>'; }
-    for (const h of se.taken) { if (h[0] < z0 || h[0] > z1) continue; const hh = h[1] ? 3 + 28 * h[1] / maxT : 3; s += '<line class="ht' + (h[1] ? '' : ' blk') + '" x1="' + f1(x(h[0])) + '" x2="' + f1(x(h[0])) + '" y1="' + axisY + '" y2="' + f1(axisY + hh) + '"/>'; }
+    if (!hid.hd) for (const h of se.dealt) { if (h[0] < z0 || h[0] > z1) continue; const hh = 3 + 28 * h[1] / maxD; s += '<line class="hd' + (fl.hl && h[2] === fl.hl ? ' hl' : '') + (h[4] ? ' crit' : '') + '" x1="' + f1(x(h[0])) + '" x2="' + f1(x(h[0])) + '" y1="' + axisY + '" y2="' + f1(axisY - hh) + '"/>'; }
+    if (!hid.ht) for (const h of se.taken) { if (h[0] < z0 || h[0] > z1) continue; const hh = h[1] ? 3 + 28 * h[1] / maxT : 3; s += '<line class="ht' + (h[1] ? '' : ' blk') + '" x1="' + f1(x(h[0])) + '" x2="' + f1(x(h[0])) + '" y1="' + axisY + '" y2="' + f1(axisY + hh) + '"/>'; }
     s += '<line class="ax" x1="' + L + '" x2="' + (W - R) + '" y1="' + axisY + '" y2="' + axisY + '"/>';
     s += '<text class="lbl" x="' + (L - 4) + '" y="' + (PT + 8) + '" text-anchor="end">' + st.fmtNum(lpMax) + '</text><text class="lbl" x="' + (L - 4) + '" y="' + f1(yLp(lpMax / 2) + 3) + '" text-anchor="end">' + st.fmtNum(lpMax / 2) + '</text><text class="lbl" x="' + (L - 4) + '" y="' + (axisY - 1) + '" text-anchor="end">0</text>';
     s += '<text class="lbl" x="' + (W - R + 4) + '" y="' + (PT + 8) + '">100%</text><text class="lbl" x="' + (W - R + 4) + '" y="' + f1(yPct(0.5) + 3) + '">50%</text><text class="lbl" x="' + (W - R + 4) + '" y="' + (axisY - 1) + '">0%</text>';
@@ -627,7 +634,7 @@
       const c = r.start + t / st.CYCLE_MS;
       s += '<line class="ax" x1="' + f1(x(c)) + '" x2="' + f1(x(c)) + '" y1="' + (axisY + TB) + '" y2="' + (axisY + TB + 3) + '"/><text class="lbl" x="' + f1(x(c)) + '" y="' + (axisY + TB + AX - 2) + '" text-anchor="middle">' + st.fmtMs(t) + '</text>';
     }
-    const up = st.uptimes(log, n).rows.filter(u => u.uptime < 0.98).slice(0, 6);
+    const up = hid.band ? [] : st.uptimes(log, n).rows.filter(u => u.uptime < 0.98).slice(0, 6);
     up.forEach((u, i) => {
       const y = axisY + TB + AX + 2 + i * 3;
       for (const sp of u.spans) { if (sp[1] < z0 || sp[0] > z1) continue; s += '<line class="buffb" stroke="' + (u.type ? '#e06c6c' : FL_COLORS[i % FL_COLORS.length]) + '" x1="' + f1(x(Math.max(z0, sp[0]))) + '" x2="' + f1(x(Math.min(z1, sp[1]))) + '" y1="' + y + '" y2="' + y + '"><title>' + flEsc(u.name) + '</title></line>'; }
@@ -663,8 +670,8 @@
     const row = m.MT && py != null && py < m.MT + 2 ? m.mkB[Math.max(0, Math.min(m.mkB.length - 1, Math.floor((py - 4) / m.MR)))] : null;
     if (m.mk) for (const k of m.mk.uses) if (k.c >= m.z0 && k.c <= m.z1 && (row == null || k.boss === row)) consider(k.c, st.bossName(log, k.boss, k.actor) + ': ' + k.label, 'mech', k);
     if (row == null) {
-      for (const h of se.dealt) if (h[0] >= m.z0 && h[0] <= m.z1) consider(h[0], 'you hit ' + st.actorLabel(log, h[3]) + ' ' + h[1].toLocaleString() + (h[4] ? ' crit' : '') + (h[2] ? ' (' + st.ability(log, h[2]).name + ')' : ''), 'hd');
-      for (const h of se.taken) if (h[0] >= m.z0 && h[0] <= m.z1) consider(h[0], (h[1] ? 'hit on you ' + h[1].toLocaleString() : 'blocked') + (h[2] >= 0 ? '' : ''), 'ht');
+      if (!fl.hide.hd) for (const h of se.dealt) if (h[0] >= m.z0 && h[0] <= m.z1) consider(h[0], 'you hit ' + st.actorLabel(log, h[3]) + ' ' + h[1].toLocaleString() + (h[4] ? ' crit' : '') + (h[2] ? ' (' + st.ability(log, h[2]).name + ')' : ''), 'hd');
+      if (!fl.hide.ht) for (const h of se.taken) if (h[0] >= m.z0 && h[0] <= m.z1) consider(h[0], (h[1] ? 'hit on you ' + h[1].toLocaleString() : 'blocked') + (h[2] >= 0 ? '' : ''), 'ht');
       for (const k of se.kills) if (k[0] >= m.z0 && k[0] <= m.z1) consider(k[0], st.actorLabel(log, k[1]) + ' died', 'kill');
       for (const d of se.deaths) if (d[0] >= m.z0 && d[0] <= m.z1) consider(d[0], 'you died', 'death');
     }
@@ -677,7 +684,7 @@
       for (const q of k.cues) { const t = (st.MECH_KINDS[q.kind] || 'kind ' + q.kind) + ' ' + q.id; if (seen.indexOf(t) < 0) seen.push(t); }
       for (const l of flWrap(seen.join(', ') + (k.actor >= 0 ? ', ' + st.actorLabel(log, k.actor) : ''), cols, 2)) lines.push(l);
     }
-    const lp = se.lp.filter(p => p[0] <= best.c).pop(); if (lp) lines.push('your LP ' + lp[1].toLocaleString() + ' / ' + lp[2].toLocaleString());
+    const lp = fl.hide.lp ? null : se.lp.filter(p => p[0] <= best.c).pop(); if (lp) lines.push('your LP ' + lp[1].toLocaleString() + ' / ' + lp[2].toLocaleString());
     const tac = best.mech && best.mech.tactic ? flTactic(best.mech.tactic) : null;
     if (tac) {
       if (tac.title) lines.push(tac.title.length > cols ? tac.title.slice(0, cols - 3) + '...' : tac.title);
@@ -694,9 +701,16 @@
   function flBuffs(log, n, body) {
     const st = S(), up = st.uptimes(log, n);
     if (!up.rows.length) { body.appendChild(el('div', 'fl-empty', 'No buffs or debuffs in this fight.')); return; }
-    const dur = Math.max(1, up.range.end - up.range.start), g = el('div', 'fl-gantt');
-    for (const u of up.rows) {
-      const row = el('div', 'fl-gr' + (u.type ? ' debuff' : ''));
+    const dur = Math.max(1, up.range.end - up.range.start);
+    const grp = u => st.buffGroup ? st.buffGroup(log, u.struct) : (u.type ? 'debuff' : 'buff');
+    for (const [key, title] of [['buff', 'Buffs'], ['debuff', 'Debuffs on you'], ['consumable', 'Consumables'], ['summon', 'Conjures']]) {
+    const rows = up.rows.filter(u => { const k = grp(u); return k === key || (key === 'buff' && ['debuff', 'consumable', 'summon'].indexOf(k) < 0); });
+    if (!rows.length && key !== 'buff' && key !== 'debuff') continue;
+    body.appendChild(flH(title));
+    if (!rows.length) { body.appendChild(el('div', 'fl-empty', key === 'debuff' ? 'No debuffs.' : 'No buffs.')); continue; }
+    const g = el('div', 'fl-gantt');
+    for (const u of rows) {
+      const row = el('div', 'fl-gr' + (key === 'debuff' ? ' debuff' : ''));
       const nm = flName('n', u.name, u.icon, true); if (!u.icon && nm.firstChild) flBuffItem(nm.firstChild, u.struct, u.item); nm.dataset.tip = (u.fullName || u.name) + '\n' + (u.type ? 'debuff' : 'buff') + ', struct ' + u.struct + ', ' + u.spans.length + ' span' + (u.spans.length === 1 ? '' : 's');
       const bar = el('span', 'g');
       for (const sp of u.spans) { const i = el('i'); i.style.left = ((sp[0] - up.range.start) / dur * 100).toFixed(2) + '%'; i.style.width = Math.max(0.3, (sp[1] - sp[0]) / dur * 100).toFixed(2) + '%'; i.dataset.tip = st.fmtMs((sp[0] - up.range.start) * st.CYCLE_MS) + ' to ' + st.fmtMs((sp[1] - up.range.start) * st.CYCLE_MS); bar.appendChild(i); }
@@ -704,6 +718,7 @@
       g.appendChild(row);
     }
     body.appendChild(g);
+    }
   }
 
   // A change cell: the old item's icon and name (and count), then the new one; an empty slot reads "empty".
@@ -869,7 +884,7 @@
       }
       body.appendChild(flTable('mech', [['Mechanic'], ['Uses', 1], ['First', 1, 1], ['Last', 1, 1], ['Avg gap', 1], ['Min gap', 1, 1], ['Timeline']], rows));
     }
-    body.appendChild(el('div', 'fl-note2', 'Click a row to mark it on the Health chart.'));
+    body.appendChild(el('div', 'fl-note2', 'Click a row to mark it on the Timeline.'));
   }
 
   function flEvRows(log, n) {

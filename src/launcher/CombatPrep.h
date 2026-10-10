@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <functional>
 #include <map>
 #include <set>
 #include <string>
@@ -22,7 +23,12 @@
 
 namespace rtx::launcher::combatprep {
 
-struct Options { bool keepNames = false; };
+struct Options {
+    bool keepNames = false;
+    // When set: the pictures the log names (ability and buff sprites 's', items 'i') as small PNG data URLs in
+    // dict.icons, so a shared report can show them; "" for one it does not have.
+    std::function<std::string(char kind, int id)> icon;
+};
 struct Stats {
     int playersRenamed = 0, npcNamesFixed = 0, seqNamesDropped = 0, hitmarkNamesDropped = 0, seqinfo = 0,
         devNamesDropped = 0, nameStringsCleared = 0, xpDropped = 0, actorsRenumbered = 0;
@@ -790,6 +796,25 @@ inline bool Prepare(const std::string& json, const Options& opt, std::string& ou
     }
     if (Node* an = log->get("anonymised")) { const std::string key = an->key, keyRaw = an->keyRaw; *an = detail::make_bool(!opt.keepNames); an->key = key; an->keyRaw = keyRaw; }
     else log->c.push_back(detail::member("anonymised", detail::make_bool(!opt.keepNames)));
+
+    // icons: every sprite and item the dictionary names, once each, capped
+    dict->remove("icons");
+    if (opt.icon) {
+        std::set<std::pair<char, long long>> want;
+        auto addNum = [&](const Node* n, char kind) { if (n && n->k == Node::Num && n->num > 0 && n->num < 2147483647.0) want.insert({ kind, (long long)n->num }); };
+        if (const Node* ab = dict->get("abilities"); ab && ab->k == Node::Obj) for (const auto& m : ab->c) if (m.k == Node::Obj) addNum(m.get("icon"), 's');
+        if (const Node* bf = dict->get("buffs"); bf && bf->k == Node::Obj) for (const auto& m : bf->c) if (m.k == Node::Obj) { addNum(m.get("icon"), 's'); addNum(m.get("item"), 'i'); }
+        if (const Node* it = dict->get("items"); it && it->k == Node::Obj) for (const auto& m : it->c) { const long long id = std::atoll(m.key.c_str()); if (id > 0) want.insert({ 'i', id }); }
+        Node icons = detail::make_obj();
+        for (const auto& w : want) {
+            if (icons.c.size() >= 300) break;
+            const std::string url = opt.icon(w.first, (int)w.second);
+            if (url.empty() || url.size() > 8000 || url.compare(0, 22, "data:image/png;base64,") != 0) continue;
+            Node v; detail::set_str(v, url);
+            icons.c.push_back(detail::member(std::string(1, w.first) + ":" + std::to_string(w.second), std::move(v)));
+        }
+        dict->c.push_back(detail::member("icons", std::move(icons)));
+    }
 
     // write; the events: experience rows out, mark and channel texts through the same rules
     out.reserve(json.size());

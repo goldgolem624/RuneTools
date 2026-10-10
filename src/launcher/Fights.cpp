@@ -2,6 +2,8 @@
 #include "CombatPrep.h"
 #include "Http.h"
 #include "Link.h"
+#include "IconCache.h"
+#include "../cache/CacheReader.h"
 #include "../reader/Hitmarks.h"
 #include "../shared/Log.h"
 #include "../cache/vendor/zlib/zlib.h"
@@ -998,6 +1000,8 @@ bool prepare_body(const std::string& gz, bool keep, std::string& body, combatpre
     bool capped = false;
     if (!Gunzip(gz, json, kMaxRaw, &capped)) { err = capped ? "too_large" : "unreadable"; return false; }
     combatprep::Options opt; opt.keepNames = keep;
+    // a shared report shows the log's own pictures: ability and buff sprites at 24 px, item icons as the game draws them
+    opt.icon = [](char kind, int id) { return kind == 's' ? rtx::cache::SpriteDataUrlScaled(id, 24) : rtx::launcher::icons::ItemIconDataUrl(id); };
     if (!combatprep::Prepare(json, opt, out, st, err)) return false;
     return Gzip(out, body);
 }
