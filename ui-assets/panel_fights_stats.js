@@ -752,13 +752,25 @@
   // item it replaced), and what left the inventory (eaten, drunk, dropped or equipped). An item that leaves the
   // inventory in the tick it is equipped is part of the swap, not used up.
   function gear(log, n) {
-    const r = range(log, n), ev = log.events, cur = {}, spans = {}, swaps = [], moves = [];
+    const r = range(log, n), ev = log.events, cur = {}, spans = {}, swaps = [], moves = [], invChanges = [];
+    let startInv = null;
+    const snapInv = () => {   // the 28 inventory slots as they stand now
+      const out = [];
+      for (let s = 0; s < 28; s++) { const o = cur[93 * 256 + s]; out.push(o && o.item >= 0 ? { slot: s, item: o.item, count: o.count, name: itemName(log, o.item) } : { slot: s, item: -1, count: 0, name: '' }); }
+      return out;
+    };
     const close = (slot, at) => { const o = cur[94 * 256 + slot]; if (o && o.item >= 0) { const a = Math.max(o.since, r.start), b = Math.min(at, r.end); if (b > a) (spans[slot] = spans[slot] || []).push({ from: a, to: b, item: o.item, name: itemName(log, o.item) }); } };
     for (const e of ev) {
       if (!Array.isArray(e) || e[0] !== 20) continue;
       if (e[1] > r.end) break;
       const cont = e[2], slot = e[3], key = cont * 256 + slot, prev = cur[key];
-      if (e[1] >= r.start) {
+      if (e[1] > r.start && !startInv) startInv = snapInv();
+      if (e[1] > r.start && cont === 93) {
+        const was = prev ? prev.item : -1, wasN = prev ? prev.count : 0;
+        if (was !== e[4] || wasN !== e[5]) invChanges.push({ c: e[1], slot, from: was, fromName: was >= 0 ? itemName(log, was) : '', fromCount: wasN,
+                                                             to: e[4], toName: e[4] >= 0 ? itemName(log, e[4]) : '', toCount: e[5] });
+      }
+      if (e[1] > r.start) {
         if (cont === 94) {
           close(slot, e[1]);
           const was = prev ? prev.item : -1;   // a slot with no row yet was empty
@@ -784,7 +796,8 @@
     }
     const slots = Object.keys(spans).map(Number).sort((a, b) => a - b).map(slot => ({ slot, name: slotName(slot), spans: spans[slot] }));
     const used = Object.keys(usedBy).map(k => usedBy[k]).sort((a, b) => b.used - a.used || a.times[0] - b.times[0]);
-    return { range: r, slots, swaps, used, has: ev.some(e => Array.isArray(e) && e[0] === 20) };
+    if (!startInv) startInv = snapInv();
+    return { range: r, slots, swaps, used, startInv, invChanges, has: ev.some(e => Array.isArray(e) && e[0] === 20) };
   }
 
   function uptimes(log, n) {

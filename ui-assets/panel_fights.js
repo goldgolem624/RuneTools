@@ -17,6 +17,12 @@
   const S = () => window.combatStats;
   const FL_CSS = '.fl-chart .mk { stroke: ' + FL_MECH + '; stroke-width: 1.5; }\n.fl-chart .mk.hl { stroke: var(--accent-hi); stroke-width: 2.5; }\n' +
     '.fl-gear .g { height: 16px; }\n.fl-gear .g i { background: #6f8fb8; color: #0b0d12; font: 600 10px/16px var(--font-mono); padding-left: 4px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; box-sizing: border-box; }\n.fl-gear .g i.k1 { background: #b89a5c; }\n.fl-gear .g i.k2 { background: #7fae8a; }\n' +
+    '.fl-gear .g i .fl-ico { width: 14px; height: 14px; vertical-align: -3px; margin-right: 4px; background-color: transparent; }\n' +
+    '.fl-inv { display: grid; grid-template-columns: repeat(4, 36px); gap: 3px; margin: 2px 0 6px; }\n' +
+    '.fl-inv > span { position: relative; height: 34px; border-radius: 4px; background: var(--bg-elev-2) center / 26px no-repeat; }\n' +
+    '.fl-inv > span b { position: absolute; left: 2px; top: 1px; font: 600 9.5px var(--font-mono); color: #ffe066; text-shadow: 0 1px 1px #000; }\n' +
+    '.fl-chg { display: inline-flex; align-items: center; gap: 4px; min-width: 0; }\n.fl-chg .fl-ico { width: 14px; height: 14px; background-color: transparent; }\n' +
+    '.fl-table.inv { --fl-cols: 52px 30px minmax(0, 3fr); }\n' +
     '.fl-table.swaps { --fl-cols: 52px minmax(56px, .8fr) minmax(0, 3fr); }\n.fl-table.used { --fl-cols: minmax(0, 2fr) 54px minmax(0, 2fr); }\n' +
     '.fl-narrow .fl-table.used { --fl-cols: minmax(0, 1fr) 54px; }\n' +
     '.fl-chart .mkg { stroke: rgba(255,159,67,0.55); stroke-width: 1; stroke-dasharray: 2 3; }\n.fl-chart .mkr { stroke: var(--border); stroke-width: 1; }\n' +
@@ -695,6 +701,18 @@
     body.appendChild(g);
   }
 
+  // A change cell: the old item's icon and name (and count), then the new one; an empty slot reads "empty".
+  function flChange(from, fromName, fromN, to, toName, toN) {
+    const c = el('span', 'fl-chg nt');
+    const side = (id, nm, n) => {
+      if (id >= 0) { const ic = el('span', 'fl-ico none'); flItemIcon(ic, id); c.appendChild(ic); }
+      c.appendChild(document.createTextNode((id >= 0 ? nm : 'empty') + (id >= 0 && n > 1 ? ' x' + n.toLocaleString() : '')));
+    };
+    side(from, fromName, fromN);
+    c.appendChild(el('span', 'dim', ' to '));
+    side(to, toName, toN);
+    return c;
+  }
   // Gear: what each equipment slot held over the fight, every swap, and what left the inventory.
   function flGear(log, n, body) {
     const st = S(), g = st.gear ? st.gear(log, n) : null;
@@ -712,7 +730,7 @@
           i.style.left = ((sp.from - g.range.start) / dur * 100).toFixed(2) + '%';
           i.style.width = Math.max(0.3, (sp.to - sp.from) / dur * 100).toFixed(2) + '%';
           i.dataset.tip = sp.name + '\n' + at(sp.from) + ' to ' + at(sp.to);
-          i.textContent = sp.name;
+          const ic = el('span', 'fl-ico none'); flItemIcon(ic, sp.item); i.appendChild(ic); i.appendChild(document.createTextNode(sp.name));
           bar.appendChild(i);
         });
         row.appendChild(nm); row.appendChild(bar); row.appendChild(el('span', 'v', String(s.spans.length)));
@@ -726,10 +744,36 @@
     else {
       const rows = g.swaps.map(w => {
         const r = el('div', 'fl-tr');
-        flCells(r, [[at(w.c), 'num'], [w.slotName, 'nt'], [(w.fromName || 'empty') + ' to ' + (w.toName || 'empty'), 'nt', (w.fromName || 'empty') + ' to ' + (w.toName || 'empty')]]);
+        flCells(r, [[at(w.c), 'num'], [w.slotName, 'nt']]);
+        const ch = flChange(w.from, w.fromName, 0, w.to, w.toName, 0); ch.dataset.tip = (w.fromName || 'empty') + ' to ' + (w.toName || 'empty');
+        r.appendChild(ch);
         return r;
       });
       body.appendChild(flTable('swaps', [['Time', 1], ['Slot'], ['Change']], rows));
+    }
+    body.appendChild(flH('Inventory at the start'));
+    const inv = el('div', 'fl-inv');
+    for (const x of g.startInv) {
+      const cell = el('span');
+      if (x.item >= 0) {
+        flItemIcon(cell, x.item); cell.dataset.tip = x.name + (x.count > 1 ? ' x' + x.count.toLocaleString() : '') + '\nslot ' + (x.slot + 1);
+        if (x.count > 1) cell.appendChild(el('b', '', x.count >= 100000 ? Math.floor(x.count / 1000) + 'K' : String(x.count)));
+      } else cell.dataset.tip = 'Empty, slot ' + (x.slot + 1);
+      inv.appendChild(cell);
+    }
+    body.appendChild(inv);
+    body.appendChild(flH('Inventory changes'));
+    if (!g.invChanges.length) body.appendChild(el('div', 'fl-empty', 'No inventory changes.'));
+    else {
+      const rows = g.invChanges.map(w => {
+        const r = el('div', 'fl-tr');
+        flCells(r, [[at(w.c), 'num'], [String(w.slot + 1), 'num', 'Inventory slot ' + (w.slot + 1)]]);
+        const ch = flChange(w.from, w.fromName, w.fromCount, w.to, w.toName, w.toCount);
+        ch.dataset.tip = (w.fromName ? w.fromName + (w.fromCount > 1 ? ' x' + w.fromCount : '') : 'empty') + ' to ' + (w.toName ? w.toName + (w.toCount > 1 ? ' x' + w.toCount : '') : 'empty');
+        r.appendChild(ch);
+        return r;
+      });
+      body.appendChild(flTable('inv', [['Time', 1], ['Slot', 1], ['Change']], rows));
     }
     body.appendChild(flH('Used from the inventory'));
     if (!g.used.length) body.appendChild(el('div', 'fl-empty', 'Nothing used.'));
