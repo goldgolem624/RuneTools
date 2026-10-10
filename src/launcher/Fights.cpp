@@ -1,5 +1,9 @@
 #include "Fights.h"
+#include "CombatPrep.h"
+#include "Http.h"
+#include "Link.h"
 #include "../reader/Hitmarks.h"
+#include "../shared/Log.h"
 #include "../cache/vendor/zlib/zlib.h"
 
 #include <Windows.h>
@@ -8,7 +12,13 @@
 #include <bcrypt.h>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
+#include <condition_variable>
+#include <deque>
+#include <memory>
+#include <set>
+#include <thread>
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
@@ -19,6 +29,8 @@
 #include <queue>
 #include <sstream>
 #include <unordered_map>
+
+namespace rtx::launcher { std::string running_version(); }   // Update.cpp
 
 namespace rtx::launcher::fights {
 namespace {
@@ -57,6 +69,19 @@ void flag_write(const wchar_t* name, bool on) {
     std::ofstream f(root_locked() / name, std::ios::trunc);
     if (f) f << (on ? 1 : 0);
 }
+// A flag file's second number ("1 <ms>"), else the file's change time in ms; 0 when off or absent.
+long long flag_since(const wchar_t* name) {
+    std::lock_guard<std::mutex> lk(g_mu);
+    const std::filesystem::path p = root_locked(false) / name;
+    std::ifstream f(p);
+    long long on = 0, since = 0;
+    if (!f || !(f >> on) || on == 0) return 0;
+    if (f >> since && since > 0) return since;
+    WIN32_FILE_ATTRIBUTE_DATA fa{};
+    if (!GetFileAttributesExW(p.c_str(), GetFileExInfoStandard, &fa)) return 0;
+    const unsigned long long t = ((unsigned long long)fa.ftLastWriteTime.dwHighDateTime << 32) | fa.ftLastWriteTime.dwLowDateTime;
+    return t > 116444736000000000ull ? (long long)((t - 116444736000000000ull) / 10000) : 0;
+}
 
 std::string jesc(const std::string& s) {
     std::string o; o.reserve(s.size() + 2);
@@ -90,6 +115,18 @@ bool write_file(const std::filesystem::path& p, const std::string& data) {
     if (!f) return false;
     f.write(data.data(), (std::streamsize)data.size());
     return (bool)f;
+}
+// The whole file or the old one, never a cut one: a temporary file flushed to disk, then moved over it.
+bool write_file_atomic(const std::filesystem::path& p, const std::string& data) {
+    std::filesystem::path tmp = p; tmp += L".tmp";
+    HANDLE h = CreateFileW(tmp.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return false;
+    DWORD put = 0;
+    const bool ok = WriteFile(h, data.data(), (DWORD)data.size(), &put, nullptr) && put == (DWORD)data.size() && FlushFileBuffers(h);
+    CloseHandle(h);
+    if (!ok) { DeleteFileW(tmp.c_str()); return false; }
+    if (!MoveFileExW(tmp.c_str(), p.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) { DeleteFileW(tmp.c_str()); return false; }
+    return true;
 }
 
 // ---- a small JSON reader for the header, actor, fight and dict lines and index.json ----
@@ -356,6 +393,18 @@ std::uint32_t crc32_of(const std::string& d) {
     return c ^ 0xFFFFFFFFu;
 }
 
+// The site's answer to an accepted upload, before anything is stored: a 12 character id and exactly
+// https://runetools.io/combat/<that id>.
+bool id_chars(const std::string& s, std::size_t n) {
+    if (s.size() != n) return false;
+    for (char c : s) if (!((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' || c == '_')) return false;
+    return true;
+}
+bool upload_ok(const UploadInfo& u) {
+    return id_chars(u.id, 12) && u.url == "https://runetools.io/combat/" + u.id &&
+           (u.visibility == "private" || u.visibility == "unlisted" || u.visibility == "public");
+}
+
 // ---- index.json ----
 std::filesystem::path index_path_locked(bool create = false) { return root_locked(create) / L"index.json"; }
 
@@ -376,6 +425,17 @@ bool row_from_json(const JV& v, IndexRow& r) {
             r.fights.push_back(std::move(x));
         }
     }
+    if (const JV* u = v.get("upload"); u && u->k == JV::Obj) {
+        UploadInfo x; x.id = u->str("id"); x.url = u->str("url"); x.visibility = u->str("visibility"); x.at = u->i("at");
+        if (upload_ok(x)) r.upload = x;
+    }
+    if (const JV* u = v.get("uploadState"); u && u->k == JV::Obj) {
+        UploadState x; x.state = u->str("state"); x.error = u->str("error"); x.code = u->str("code");
+        x.tries = (int)u->i("tries"); x.next = u->i("next");
+        const std::string mode = u->str("mode"); x.manual = mode == "manual"; x.final = mode == "final";
+        static const char* states[] = { "queued", "sending", "failed", "unlinked", "skipped" };
+        for (const char* st : states) if (x.state == st) { r.state = x; break; }
+    }
     return !r.id.empty();
 }
 std::vector<IndexRow> index_read_locked() {
@@ -390,7 +450,7 @@ void index_write_locked(std::vector<IndexRow>& rows) {
     std::string o = "[";
     for (std::size_t i = 0; i < rows.size(); ++i) { if (i) o += ",\n"; o += RowJson(rows[i]); }
     o += "]\n";
-    write_file(index_path_locked(true), o);
+    write_file_atomic(index_path_locked(true), o);
 }
 void index_put_locked(const IndexRow& r) {
     auto rows = index_read_locked();
@@ -430,7 +490,23 @@ void SetRoot(const std::filesystem::path& p) { std::lock_guard<std::mutex> lk(g_
 bool RecordEnabled() { return flag_read(L"combat_record.txt"); }
 void SetRecordEnabled(bool on) { flag_write(L"combat_record.txt", on); }
 bool UploadAuto() { return flag_read(L"combat_upload.txt"); }
-void SetUploadAuto(bool on) { flag_write(L"combat_upload.txt", on); }
+void SetUploadAuto(bool on) {
+    if (!on) { flag_write(L"combat_upload.txt", false); return; }
+    if (flag_read(L"combat_upload.txt")) {                        // already on: keep its start, written out
+        const long long since = flag_since(L"combat_upload.txt");
+        std::lock_guard<std::mutex> lk(g_mu);
+        std::ofstream f(root_locked() / L"combat_upload.txt", std::ios::trunc);
+        if (f) f << "1 " << (since > 0 ? since : (long long)std::time(nullptr) * 1000);
+        return;
+    }
+    const long long now = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+    std::lock_guard<std::mutex> lk(g_mu);
+    std::ofstream f(root_locked() / L"combat_upload.txt", std::ios::trunc);
+    if (f) f << "1 " << now;
+}
+long long UploadAutoSince() { return flag_since(L"combat_upload.txt"); }
+bool UploadLive() { return flag_read(L"combat_live.txt"); }
+void SetUploadLive(bool on) { flag_write(L"combat_live.txt", on); }
 bool KeepNames() { return flag_read(L"combat_names.txt"); }
 void SetKeepNames(bool on) { flag_write(L"combat_names.txt", on); }
 
@@ -482,7 +558,16 @@ std::string RowJson(const IndexRow& r) {
              ",\"kind\":" + jstr(f.kind) + ",\"boss\":" + (f.boss.empty() ? std::string("null") : jstr(f.boss)) +
              ",\"kills\":" + std::to_string(f.kills) + ",\"deaths\":" + std::to_string(f.deaths) + ",\"summary\":" + summary_json(f.summary) + "}";
     }
-    o += "],\"upload\":null,\"version\":" + std::to_string(r.version) + "}";
+    o += "],\"upload\":";
+    if (r.upload.id.empty()) o += "null";
+    else o += "{\"id\":" + jstr(r.upload.id) + ",\"url\":" + jstr(r.upload.url) + ",\"at\":" + std::to_string(r.upload.at) +
+              ",\"visibility\":" + jstr(r.upload.visibility) + "}";
+    o += ",\"uploadState\":";
+    if (r.state.state.empty()) o += "null";
+    else o += "{\"state\":" + jstr(r.state.state) + ",\"tries\":" + std::to_string(r.state.tries) + ",\"next\":" + std::to_string(r.state.next) +
+              ",\"error\":" + jstr(r.state.error) + ",\"code\":" + jstr(r.state.code) +
+              ",\"mode\":" + jstr(r.state.final ? "final" : r.state.manual ? "manual" : "auto") + "}";
+    o += ",\"version\":" + std::to_string(r.version) + "}";
     return o;
 }
 
@@ -590,6 +675,7 @@ bool CompactText(const std::string& jsonl, const char* endBy, std::string& outJs
                     ",\"startedAt\":" + std::to_string(row.startedAt) + ",\"endedAt\":" + std::to_string(row.endedAt) +
                     ",\"endBy\":" + jstr(haveEnd ? endObj.str("endBy") : std::string(endBy ? endBy : "")) +
                     ",\"anonymised\":false,\"companion\":false,\"readFails\":" + std::to_string(haveEnd ? endObj.i("readFails") : 0) +
+                    (haveEnd && endObj.i("reads") > 0 ? ",\"reads\":" + std::to_string(endObj.i("reads")) : std::string()) +
                     ",\"gaps\":" + std::to_string(haveEnd ? endObj.i("gaps") : 0) + "},\"clock\":{\"c0\":" + std::to_string(c0) +
                     ",\"wall0\":" + std::to_string(wall0) + ",\"phase\":" + std::to_string(phase) + ",\"tick0\":-1},\"actors\":[";
     bool first = true;
@@ -669,7 +755,7 @@ void Recover() {
             }
         }
     }
-    for (const auto& p : found) Compact(p, "recovered");
+    for (const auto& p : found) { IndexRow row; if (Compact(p, "recovered", &row)) AfterCompact(row); }
 }
 
 void Retention() {
@@ -686,6 +772,10 @@ void Retention() {
             files.push_back({ f.path(), (long long)t.time_since_epoch().count(), f.file_size(ec) });
         }
     }
+    // a log waiting for its upload stays
+    std::set<std::filesystem::path> busy;
+    for (const auto& r : index_read_locked()) if (r.state.state == "queued" || r.state.state == "sending") busy.insert(root_locked(false) / to_wide(r.file));
+    files.erase(std::remove_if(files.begin(), files.end(), [&](const F& f) { return busy.count(f.p) > 0; }), files.end());
     std::sort(files.begin(), files.end(), [](const F& a, const F& b) { return a.mtime < b.mtime; });
     std::uintmax_t total = 0; for (const auto& f : files) total += f.size;
     const auto now = std::filesystem::file_time_type::clock::now();
@@ -791,8 +881,9 @@ bool Gzip(const std::string& in, std::string& out) {
     return true;
 }
 
-bool Gunzip(const std::string& in, std::string& out, std::size_t cap) {
+bool Gunzip(const std::string& in, std::string& out, std::size_t cap, bool* capped) {
     out.clear();
+    if (capped) *capped = false;
     z_stream s{};
     if (inflateInit2(&s, 15 + 16) != Z_OK) return false;
     s.next_in = reinterpret_cast<Bytef*>(const_cast<char*>(in.data())); s.avail_in = (uInt)in.size();
@@ -803,10 +894,929 @@ bool Gunzip(const std::string& in, std::string& out, std::size_t cap) {
         rc = inflate(&s, Z_NO_FLUSH);
         if (rc != Z_OK && rc != Z_STREAM_END) { inflateEnd(&s); out.clear(); return false; }
         out.append(buf.data(), buf.size() - s.avail_out);
-        if (out.size() > cap) { inflateEnd(&s); out.clear(); return false; }
+        if (out.size() > cap) { inflateEnd(&s); out.clear(); if (capped) *capped = true; return false; }
     }
     inflateEnd(&s);
     return true;
+}
+
+// ---- uploads: one thread sends queued logs and the chunks of open logs, one request at a time ----
+namespace {
+
+constexpr wchar_t kUploadHost[] = L"runetools.io";    // the only host an upload or the account token goes to
+constexpr wchar_t kLogsPath[] = L"/api/client/combat/logs";
+constexpr wchar_t kLivePath[] = L"/api/client/combat/live";
+constexpr std::size_t kMaxBody = 2u * 1024 * 1024;     // gzip body
+constexpr std::size_t kMaxRaw = 16u * 1024 * 1024;     // inflated log
+constexpr std::size_t kChunkEvents = 20000;
+constexpr std::size_t kLivePending = 50000;            // event lines held for an open log before live stops
+
+long long wall_now() { return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count(); }
+long long tick_now() { return (long long)GetTickCount64(); }
+
+bool code_ok(const std::string& c) {
+    if (c.empty() || c.size() > 24) return false;
+    for (char ch : c) if (!((ch >= 'a' && ch <= 'z') || ch == '_')) return false;
+    return true;
+}
+// The launcher's own words for a code; the site's error text is never shown.
+std::string error_text(const std::string& code) {
+    if (code == "too_large") return "Log is too large to upload.";
+    if (code == "unlinked") return "Link this PC to a RuneTools account first.";
+    if (code == "deleted") return "Deleted on runetools.io.";
+    if (code == "storage_full") return "Your runetools.io storage is full.";
+    if (code == "daily_limit") return "Daily upload limit reached.";
+    if (code == "disabled") return "Uploads are paused on runetools.io.";
+    if (code == "live_too_long") return "Log is too long to upload live; it uploads when it ends.";
+    if (code == "gap") return "Live upload paused; the log uploads when it ends.";
+    if (code == "final") return "This log is already finished on runetools.io.";
+    if (code == "seq" || code == "head") return "Live upload lost its place; the log uploads when it ends.";
+    return "Upload failed.";
+}
+
+struct Answer {
+    bool ok = false; int status = 0;
+    std::string code;                  // the site's code, when well formed
+    long long retryAfter = -1;         // seconds
+    std::string body;
+    JV json; bool haveJson = false;
+};
+Answer to_answer(const http::Response& r) {
+    Answer a; a.ok = r.ok; a.status = r.status; a.body = r.body;
+    if (!r.body.empty() && parse_json(r.body, a.json) && a.json.k == JV::Obj) {
+        a.haveJson = true;
+        const std::string c = a.json.str("code");
+        if (code_ok(c)) a.code = c;
+    }
+    const std::string ra = r.header("Retry-After");
+    if (!ra.empty() && ra.size() <= 7 && std::all_of(ra.begin(), ra.end(), [](char ch) { return ch >= '0' && ch <= '9'; }))
+        a.retryAfter = std::min<long long>(std::atoll(ra.c_str()), 2 * 86400);
+    return a;
+}
+bool site_answer(const Answer& a, UploadInfo& u) {
+    if (!a.haveJson) return false;
+    UploadInfo x; x.id = a.json.str("id"); x.url = a.json.str("url"); x.visibility = a.json.str("visibility"); x.at = wall_now();
+    if (!upload_ok(x)) return false;
+    u = x; return true;
+}
+
+// What an answer to a finished log's upload means for its row.
+struct Outcome { std::string state, code; long long delayMs = 0; bool retry = false, verify = false, sent = false; };
+Outcome classify(const Answer& a, int tries, UploadInfo& info) {
+    Outcome o;
+    if (a.ok && (a.status == 200 || a.status == 201)) {
+        if (site_answer(a, info)) { o.sent = true; return o; }
+        o.state = "failed"; o.code = "bad_answer"; return o;
+    }
+    if (a.ok && a.status == 401) { o.state = "unlinked"; o.code = "unlinked"; o.verify = true; return o; }
+    if (a.ok && (a.status == 400 || a.status == 413 || a.status == 415 || a.status == 409)) { o.state = "failed"; o.code = a.code.empty() ? "rejected" : a.code; return o; }
+    if (a.ok && a.status == 410) { o.state = "skipped"; o.code = "deleted"; return o; }
+    if (a.ok && a.status == 429) { o.state = "queued"; o.code = a.code; o.delayMs = (a.retryAfter >= 0 ? a.retryAfter : 60) * 1000; return o; }
+    // a busy site that says when to come back: wait, without using up a try
+    if (a.ok && a.status == 503 && a.retryAfter >= 0) { o.state = "queued"; o.code = a.code.empty() ? "busy" : a.code; o.delayMs = std::max<long long>(a.retryAfter, 5) * 1000; return o; }
+    if (!a.ok || a.status >= 500) {
+        o.retry = true; o.code = a.ok ? (a.code.empty() ? "unavailable" : a.code) : "network";
+        if (tries + 1 >= 4) { o.state = "failed"; return o; }
+        static const long long backoff[3] = { 60, 300, 1800 };
+        o.state = "queued"; o.delayMs = (a.retryAfter >= 0 ? a.retryAfter : backoff[tries < 0 ? 0 : tries > 2 ? 2 : tries]) * 1000;
+        return o;
+    }
+    o.state = "failed"; o.code = a.code.empty() ? "bad_answer" : a.code;
+    return o;
+}
+
+std::vector<http::Header> upload_headers(const std::string& auth, const std::string& logId, const char* mode) {
+    const std::string ver = rtx::launcher::running_version();
+    return { { "Authorization", auth }, { "Content-Type", "application/x-rtx-combatlog+gzip" }, { "X-RTX-Log-Id", logId },
+             { "X-RTX-Version", ver }, { "User-Agent", "RuneToolsX/" + ver }, { "X-RTX-Upload", mode } };
+}
+
+// A stored .json.gz as the gzip upload body.
+bool prepare_body(const std::string& gz, bool keep, std::string& body, combatprep::Stats& st, std::string& err) {
+    std::string json, out;
+    bool capped = false;
+    if (!Gunzip(gz, json, kMaxRaw, &capped)) { err = capped ? "too_large" : "unreadable"; return false; }
+    combatprep::Options opt; opt.keepNames = keep;
+    if (!combatprep::Prepare(json, opt, out, st, err)) return false;
+    return Gzip(out, body);
+}
+
+template <class F> bool update_row(const std::string& id, F f) {
+    std::lock_guard<std::mutex> lk(g_mu);
+    auto rows = index_read_locked();
+    for (auto& r : rows) if (r.id == id) { f(r); index_write_locked(rows); return true; }
+    return false;
+}
+
+std::mutex g_up_mu;
+std::condition_variable g_up_cv;
+bool g_up_started = false, g_up_kick = false;
+std::atomic<bool> g_headless{ false };
+long long g_lastFinalTick = -100000;
+std::size_t g_unlinkedAuth = 0;                        // the token a 401 came back for (hashed); upload thread only
+
+void kick() { { std::lock_guard<std::mutex> lk(g_up_mu); g_up_kick = true; } g_up_cv.notify_one(); }
+
+// ---- live: an open log rebuilt from its lines, cut into chunks ----
+struct Chunk { int seq = 0; long long first = 0, count = 0; std::string gz; };
+
+// The actor indexes an event refers to (the highest; -1 none).
+long long max_ref(const std::string& line, combatprep::detail::EventView& v) {
+    if (!combatprep::detail::view_event(line.data(), line.size(), v)) return -1;
+    auto at = [&](std::size_t k) -> long long {
+        if (k >= v.items.size()) return -1;
+        return std::strtoll(std::string(line, v.items[k].first, v.items[k].second - v.items[k].first).c_str(), nullptr, 10);
+    };
+    switch (v.type) {
+    case 0: case 2: case 4: case 10: case 11: case 13: case 17: case 18: return at(2);
+    case 3: case 14: return std::max(at(2), at(3));
+    case 1000: return at(6);
+    default: return -1;
+    }
+}
+
+const char* kSchemaJson =
+    "{\"0\":[\"hit\",\"actor\",\"hm\",\"value\",\"hm2\",\"value2\",\"delay\"],\"1\":[\"cast\",\"struct\",\"ready\",\"src\"],"
+    "\"2\":[\"anim\",\"actor\",\"seq\"],\"3\":[\"target\",\"actor\",\"target\"],\"4\":[\"lp\",\"actor\",\"lp\",\"lpMax\"],\"5\":[\"adren\",\"value\"],"
+    "\"6\":[\"prayer\",\"points\",\"level\"],\"7\":[\"buff\",\"struct\",\"on\",\"start\",\"end\",\"stacks\"],\"8\":[\"channel\",\"side\",\"ticks\",\"name\"],"
+    "\"9\":[\"tracker\",\"group\",\"row\",\"col\",\"value\"],\"10\":[\"death\",\"actor\",\"how\"],\"11\":[\"actor\",\"actor\",\"present\"],"
+    "\"12\":[\"encounter\",\"struct\"],\"13\":[\"gfx\",\"actor\",\"gfx\"],\"14\":[\"proj\",\"from\",\"to\",\"gfx\"],\"15\":[\"xp\",\"skill\",\"xp\"],"
+    "\"16\":[\"mark\",\"kind\",\"text\"],\"17\":[\"bar\",\"actor\",\"slot\",\"fill\"],\"18\":[\"stat\",\"actor\",\"idx\",\"cur\",\"base\"],"
+    "\"19\":[\"sound\",\"id\",\"area\"],\"mech\":[\"mech\",\"boss\",\"key\",\"kind\",\"id\",\"actor\"]}";
+
+struct LiveLog {
+    bool haveHeader = false; JV log, clock;
+    long long c0 = 0, wall0 = 0;
+    std::map<int, std::string> actors;                                 // i -> object
+    // actor rows are written when first used, so the recorder's indexes can skip numbers: they are renumbered in
+    // the order the rows arrive, which keeps the head's actor list dense and only ever appended to
+    std::unordered_map<long long, long long> remap;                    // recorder index -> sent index
+    std::map<std::string, std::map<long long, std::string>> dict;      // kind -> id -> value
+    struct Fight { std::string json; std::vector<long long> targets; };
+    std::vector<Fight> closed;
+    bool open = false; long long openStart = 0; std::string openBy;
+    long long curEnc = -2, openEnc = -2;                               // the encounter now and at the open fight's start
+    bool ended = false; JV end;
+    std::deque<std::string> pending;                                   // event lines not sent yet
+    bool headDirty = false;
+    // chunks
+    int seq = 0; long long first = 0;                                  // the next chunk's seq and first event
+    bool haveInflight = false, haveAccepted = false, resendPrev = false;
+    Chunk inflight, accepted;
+    int acceptedCount = 0, netFails = 0;
+    long long nextTry = 0, lastSend = -1000000, fightEndAt = 0;
+    std::string siteId, siteUrl;
+    bool stopped = false; std::string stopCode;
+
+    void feed(const std::vector<std::string>& lines) {
+        combatprep::detail::EventView v;
+        for (const std::string& line : lines) {
+            if (line.size() < 2) continue;
+            if (line[0] == '{') {
+                JV h;
+                if (haveHeader || !parse_json(line, h)) continue;
+                const JV* l = h.get("log"); const JV* c = h.get("clock");
+                if (!l || l->k != JV::Obj || !c || c->k != JV::Obj) continue;
+                log = *l; clock = *c; c0 = c->i("c0"); wall0 = c->i("wall0", log.i("startedAt"));
+                haveHeader = true; headDirty = true;
+                continue;
+            }
+            if (line[0] != '[') continue;
+            if (line[1] == '"' && line.compare(0, 7, "[\"mech\"") != 0) {
+                JV a;
+                if (!parse_json(line, a) || a.k != JV::Arr || a.a.size() < 2 || a.a[0].k != JV::Str) continue;
+                const std::string& kind = a.a[0].s;
+                if (kind == "actor" && a.a[1].k == JV::Obj) {
+                    JV row = a.a[1];
+                    const long long raw = row.i("i", -1);
+                    auto it = remap.find(raw);
+                    const long long k = it != remap.end() ? it->second : (long long)remap.size();
+                    if (it == remap.end()) remap[raw] = k;
+                    for (auto& kv : row.o) if (kv.first == "i") { kv.second = JV{}; kv.second.k = JV::Num; kv.second.num = (double)k; }
+                    std::string j; emit_json(row, j); actors[(int)k] = j; headDirty = true;
+                }
+                else if (kind == "dict" && a.a.size() >= 4 && a.a[1].k == JV::Str && a.a[2].k == JV::Num) { std::string j; emit_json(a.a[3], j); dict[a.a[1].s][(long long)a.a[2].num] = j; headDirty = true; }
+                else if (kind == "fight" && a.a[1].k == JV::Obj) { add_fight(a.a[1]); open = false; fightEndAt = tick_now(); headDirty = true; }
+                else if (kind == "end" && a.a[1].k == JV::Obj) { end = a.a[1]; ended = true; headDirty = true; }
+                continue;
+            }
+            if (combatprep::detail::view_event(line.data(), line.size(), v) && v.type == 16 && v.items.size() == 4 &&
+                line.compare(v.items[2].first, v.items[2].second - v.items[2].first, "0") == 0) {
+                std::string by;
+                combatprep::detail::decode_string(line.data() + v.items[3].first, v.items[3].second - v.items[3].first, by);
+                open = true; openStart = std::strtoll(std::string(line, v.items[1].first, v.items[1].second - v.items[1].first).c_str(), nullptr, 10); openBy = by;
+                openEnc = curEnc;
+                headDirty = true;
+            } else if (v.type == 12 && v.items.size() >= 3) {
+                // the encounter row can follow the start mark within the same tick
+                const long long ec = std::strtoll(std::string(line, v.items[1].first, v.items[1].second - v.items[1].first).c_str(), nullptr, 10);
+                curEnc = std::strtoll(std::string(line, v.items[2].first, v.items[2].second - v.items[2].first).c_str(), nullptr, 10);
+                if (open && ec >= openStart && ec - openStart <= 30 && openEnc != curEnc) { openEnc = curEnc; headDirty = true; }
+            }
+            std::string moved;
+            if (!combatprep::detail::remap_actors(line.data(), line.size(), remap, moved, v)) continue;
+            pending.push_back(std::move(moved));
+        }
+    }
+    void add_fight(const JV& f) {
+        Fight x;
+        std::string targets = "[";
+        if (const JV* t = f.get("targets"); t && t->k == JV::Arr)
+            for (std::size_t i = 0; i < t->a.size(); ++i) {
+                auto it = remap.find((long long)t->a[i].num);
+                if (it == remap.end()) continue;
+                if (!x.targets.empty()) targets += ",";
+                targets += std::to_string(it->second); x.targets.push_back(it->second);
+            }
+        targets += "]";
+        const long long start = f.i("start");
+        x.json = "{\"n\":" + std::to_string(f.i("n")) + ",\"start\":" + std::to_string(start) + ",\"end\":" + std::to_string(f.i("end")) +
+                 ",\"startMs\":" + std::to_string(wall0 + (start - c0) * 20) + ",\"kind\":" + jstr(f.str("kind")) +
+                 ",\"boss\":" + (f.str("boss").empty() ? std::string("null") : jstr(f.str("boss"))) + ",\"targets\":" + targets +
+                 ",\"kills\":" + std::to_string(f.i("kills")) + ",\"deaths\":" + std::to_string(f.i("deaths")) +
+                 ",\"startBy\":" + jstr(f.str("startBy")) + ",\"endBy\":" + jstr(f.str("endBy")) + "}";
+        closed.push_back(std::move(x));
+    }
+    int dense() const { int k = 0; while (actors.count(k)) ++k; return k; }
+    bool idle() const { return pending.empty() && !headDirty; }
+
+    // The log object so far (actors up to the first missing index; no events).
+    std::string head_text(int d) const {
+        std::string o = "{\"format\":1,\"log\":{\"id\":" + jstr(log.str("id")) + ",\"character\":" + jstr(log.str("character")) +
+                        ",\"launcher\":" + jstr(log.str("launcher")) + ",\"client\":" + jstr(log.str("client")) +
+                        ",\"startedAt\":" + std::to_string(log.i("startedAt"));
+        if (ended) o += ",\"endedAt\":" + std::to_string(end.i("endedAt")) + ",\"endBy\":" + jstr(end.str("endBy"));
+        o += ",\"anonymised\":false,\"companion\":false";
+        if (ended) o += ",\"readFails\":" + std::to_string(end.i("readFails")) + (end.i("reads") > 0 ? ",\"reads\":" + std::to_string(end.i("reads")) : std::string()) +
+                        ",\"gaps\":" + std::to_string(end.i("gaps"));
+        o += "},\"clock\":";
+        emit_json(clock, o);
+        o += ",\"actors\":[";
+        for (int k = 0; k < d; ++k) { if (k) o += ","; o += actors.at(k); }
+        o += "],\"dict\":{";
+        static const char* kinds[] = { "abilities", "buffs", "hitmarks", "seqs", "encounters", "trackers", "mechs" };
+        for (int k = 0; k < 7; ++k) {
+            if (k) o += ",";
+            o += "\""; o += kinds[k]; o += "\":{";
+            bool f1 = true;
+            if (auto it = dict.find(kinds[k]); it != dict.end())
+                for (const auto& kv : it->second) { o += f1 ? "" : ","; f1 = false; o += "\"" + std::to_string(kv.first) + "\":" + kv.second; }
+            o += "}";
+        }
+        o += "},\"fights\":[";
+        // a closed fight shows once every target it names is in the actor list; later ones wait behind it
+        std::size_t n = 0;
+        for (; n < closed.size(); ++n) {
+            bool ok = true;
+            for (long long t : closed[n].targets) if (t < 0 || t >= d) ok = false;
+            if (!ok) break;
+            if (n) o += ",";
+            o += closed[n].json;
+        }
+        if (n == closed.size() && open) {
+            if (n) o += ",";
+            std::string kind = "\"kills\"", boss = "null";
+            if (openEnc >= 0)
+                if (auto e = dict.find("encounters"); e != dict.end())
+                    if (auto nm = e->second.find(openEnc); nm != e->second.end() && nm->second.size() > 2 && nm->second[0] == '"') { kind = "\"encounter\""; boss = nm->second; }
+            o += "{\"n\":" + std::to_string(n) + ",\"start\":" + std::to_string(openStart) + ",\"end\":-1,\"startMs\":" + std::to_string(wall0 + (openStart - c0) * 20) +
+                 ",\"kind\":" + kind + ",\"boss\":" + boss + ",\"targets\":[],\"kills\":0,\"deaths\":0,\"startBy\":" + jstr(openBy) + ",\"endBy\":\"\"}";
+        }
+        o += "],\"schema\":"; o += kSchemaJson; o += ",\"events\":[]}";
+        return o;
+    }
+
+    // The next chunk from what is pending; false when there is nothing new to send.
+    bool build(bool keepNames, Chunk& out) {
+        if (!haveHeader) return false;
+        const int d = dense();
+        std::vector<std::string> take;
+        combatprep::detail::EventView v;
+        for (const std::string& l : pending) {
+            if (take.size() >= kChunkEvents) break;
+            if (max_ref(l, v) >= d) break;                              // its actor row is not out yet
+            take.push_back(l);
+        }
+        if (take.empty() && !headDirty) return false;
+        const std::string raw = head_text(d);
+        combatprep::Options opt; opt.keepNames = keepNames;
+        combatprep::Stats st; std::string prepared, err;
+        if (!combatprep::Prepare(raw, opt, prepared, st, err)) return false;
+        combatprep::detail::Node doc; combatprep::detail::Parser ps; ps.p = prepared.data(); ps.e = prepared.data() + prepared.size();
+        if (!ps.val(doc) || doc.k != combatprep::detail::Node::Obj) return false;
+        std::string head = "{";
+        bool f1 = true;
+        for (const auto& m : doc.c) {
+            if (m.key == "format" || m.key == "events") continue;
+            if (!f1) head += ",";
+            f1 = false;
+            head += m.keyRaw; head += ":"; combatprep::detail::write(m, head);
+        }
+        head += "}";
+        std::vector<std::string> lines;
+        combatprep::FilterEventLines(take, combatprep::NamesForFilter(raw), opt, lines, st);
+        std::string body = "{\"format\":1,\"live\":1,\"seq\":" + std::to_string(seq) + ",\"first\":" + std::to_string(first) + ",\"head\":" + head + ",\"events\":[";
+        for (std::size_t i = 0; i < lines.size(); ++i) { if (i) body += ",\n"; body += lines[i]; }
+        body += "]}\n";
+        out = Chunk{}; out.seq = seq; out.first = first; out.count = (long long)lines.size();
+        if (!Gzip(body, out.gz)) return false;
+        pending.erase(pending.begin(), pending.begin() + (std::ptrdiff_t)take.size());
+        headDirty = false;
+        return true;
+    }
+
+    void stop(const std::string& code) { stopped = true; stopCode = code; haveInflight = false; resendPrev = false; pending.clear(); }
+
+    // One answer to the chunk just sent (`prev`: the resend of the last accepted chunk).
+    void answer(const Answer& a, bool prev) {
+        const long long t = tick_now();
+        if (a.ok && (a.status == 200 || a.status == 201)) {
+            netFails = 0;
+            UploadInfo u;
+            if (site_answer(a, u)) { siteId = u.id; siteUrl = u.url; }
+            if (prev) { resendPrev = false; return; }
+            accepted = inflight; haveAccepted = true; haveInflight = false;
+            seq = accepted.seq + 1; first = accepted.first + accepted.count; ++acceptedCount;
+            return;
+        }
+        if (a.ok && a.status == 409 && a.code == "seq" && a.haveJson && !prev) {
+            const long long expect = a.json.i("expect", -1), events = a.json.i("events", -1);
+            if (haveAccepted && expect == accepted.seq && events == accepted.first) { resendPrev = true; nextTry = t; return; }
+            stop("seq"); return;
+        }
+        if (a.ok && (a.status == 429 || a.status == 503)) { nextTry = t + (a.retryAfter >= 0 ? a.retryAfter : 60) * 1000; return; }
+        if (!a.ok || a.status >= 500) {
+            if (++netFails >= 10) { stop(a.ok ? "unavailable" : "network"); return; }
+            nextTry = t + 30000; return;
+        }
+        if (a.ok && a.status == 410) { stop("deleted"); return; }
+        if (a.ok && a.status == 401) { stop("unlinked"); return; }
+        stop(a.code.empty() ? "rejected" : a.code);
+    }
+
+    // Sends one request (a resend, the chunk in flight, or a new one). False when nothing was sent.
+    bool send_one(const http::Endpoint& ep, const std::string& auth, bool keepNames, int& status, Chunk* sentOut = nullptr) {
+        bool prev = false;
+        const Chunk* c = nullptr;
+        if (resendPrev && haveAccepted) { c = &accepted; prev = true; }
+        else {
+            if (!haveInflight) { if (!build(keepNames, inflight)) return false; haveInflight = true; }
+            c = &inflight;
+        }
+        auto hdr = upload_headers(auth, log.str("id"), "auto");
+        hdr.push_back({ "X-RTX-Live-Seq", std::to_string(c->seq) });
+        const Chunk sent = *c;
+        const http::Response r = http::Post(ep, kLivePath, hdr, c->gz);
+        lastSend = tick_now();
+        status = r.ok ? r.status : 0;
+        if (sentOut) *sentOut = sent;
+        answer(to_answer(r), prev);
+        return true;
+    }
+};
+
+struct LiveSession {
+    std::uint32_t pid = 0; std::string logId;
+    std::vector<std::string> inbox; std::size_t inboxEvents = 0;   // under g_live_mu
+    bool closing = false, overflow = false, gap = false;           // under g_live_mu
+    LiveLog L;                                                     // the upload thread's
+    // shown and decided under g_live_mu
+    bool done = false, stopped = false, rowPending = false, decided = false;
+    long long rowEndedAt = 0, doneAt = 0;
+    int seqShown = 0; long long eventsShown = 0; std::string id, url, code;
+};
+std::mutex g_live_mu;
+std::map<std::string, std::unique_ptr<LiveSession>> g_live;
+std::set<std::string> g_live_skip;                     // logs whose first lines were not seen here
+std::set<std::string> g_live_gone;                     // logs the site answered 410 for while live
+std::atomic<long long> g_liveWantedAt{ -100000 };
+std::atomic<bool> g_liveWanted{ false };
+
+bool event_line(const std::string& l) { return l.size() > 1 && l[0] == '[' && (l[1] != '"' || l.compare(0, 7, "[\"mech\"") == 0); }
+
+bool live_busy(const std::string& logId) {
+    std::lock_guard<std::mutex> lk(g_live_mu);
+    auto it = g_live.find(logId);
+    return it != g_live.end() && !it->second->done;
+}
+
+// A marker that a log had live chunks accepted, so its final upload is still decided after a restart.
+std::filesystem::path live_mark_locked(const std::string& id, bool create) { return root_locked(create) / (L"live_" + to_wide(id) + L".mark"); }
+void live_mark(const std::string& id) {
+    if (!id_chars(id, 22)) return;
+    std::lock_guard<std::mutex> lk(g_mu);
+    write_file(live_mark_locked(id, true), "1");
+}
+bool live_marked(const std::string& id) {
+    if (!id_chars(id, 22)) return false;
+    std::lock_guard<std::mutex> lk(g_mu);
+    std::error_code ec;
+    return std::filesystem::exists(live_mark_locked(id, false), ec);
+}
+void live_unmark(const std::string& id) {
+    if (!id_chars(id, 22)) return;
+    std::lock_guard<std::mutex> lk(g_mu);
+    std::error_code ec;
+    std::filesystem::remove(live_mark_locked(id, false), ec);
+}
+
+void queue_row(const std::string& id, bool final) {
+    if (update_row(id, [&](IndexRow& r) { r.state = UploadState{}; r.state.state = "queued"; r.state.final = final; }))
+        rtx::log::Launcher("combat: upload " + id + " queued");
+    kick();
+}
+// After a log closed: the final upload when live chunks went out and an upload setting is still on, else the
+// auto rule.
+void decide_after_close(const std::string& id, long long endedAt, int liveAccepted, bool gone) {
+    live_unmark(id);
+    if (gone) { update_row(id, [&](IndexRow& r) { r.state = UploadState{}; r.state.state = "skipped"; r.state.code = "deleted"; r.state.error = error_text("deleted"); }); return; }
+    if (liveAccepted > 0 && (UploadLive() || UploadAuto())) { queue_row(id, true); return; }
+    if (UploadAuto() && !link::AuthHeader().empty() && endedAt >= UploadAutoSince()) queue_row(id, false);
+}
+
+void live_pass() {
+    std::vector<LiveSession*> list;
+    {
+        std::lock_guard<std::mutex> lk(g_live_mu);
+        const long long t = tick_now();
+        for (auto it = g_live.begin(); it != g_live.end();) {
+            LiveSession& s = *it->second;
+            if (s.done && (s.decided || t - s.doneAt > 5ll * 3600 * 1000)) { it = g_live.erase(it); continue; }
+            if (!s.done) list.push_back(&s);
+            ++it;
+        }
+    }
+    const std::string auth = link::AuthHeader();
+    for (LiveSession* s : list) {
+        std::vector<std::string> in; bool closing = false;
+        bool overflow = false, gap = false;
+        { std::lock_guard<std::mutex> lk(g_live_mu); in.swap(s->inbox); s->inboxEvents = 0; closing = s->closing; overflow = s->overflow; gap = s->gap; }
+        LiveLog& L = s->L;
+        if (!L.stopped && !UploadLive()) L.stop("off");                // switched off: nothing more goes out
+        if (!L.stopped && gap) L.stop("gap");                           // lines were dropped: the final upload repairs the log
+        if (!L.stopped) L.feed(in);
+        if (!L.stopped && (overflow || L.pending.size() > kLivePending)) L.stop("live_too_long");
+        if (L.ended) closing = true;
+        const long long t = tick_now();
+        const bool fought = L.open || !L.closed.empty();               // nothing goes out before the first fight
+        if (closing && !fought && !L.haveInflight) { L.pending.clear(); L.headDirty = false; }
+        if (!L.stopped && !auth.empty() && fought && t >= L.nextTry && t - L.lastSend >= 11000) {
+            bool due;
+            if (L.haveInflight || L.resendPrev) due = true;
+            else if (L.idle()) due = false;
+            else if (closing) due = true;
+            else if (L.open) due = t - L.lastSend >= 15000;
+            else due = t - L.lastSend >= 60000 || (L.fightEndAt > 0 && t - L.fightEndAt >= 10000 && L.lastSend < L.fightEndAt + 10000);
+            if (due) {
+                int status = 0; Chunk sent;
+                const bool wasPrev = L.resendPrev;
+                const int acceptedBefore = L.acceptedCount;
+                if (L.send_one(http::Endpoint{ kUploadHost }, auth, KeepNames(), status, &sent))
+                    rtx::log::Launcher("combat: live " + s->logId + " chunk " + std::to_string(sent.seq) + ", " + std::to_string(sent.count) + " events, " +
+                                       std::to_string(status) + (wasPrev ? " (resent)" : "") + (L.stopped ? " stopped " + L.stopCode : ""));
+                if (acceptedBefore == 0 && L.acceptedCount > 0) live_mark(s->logId);
+                else if (closing) { L.pending.clear(); L.headDirty = false; }   // what is left waits for actor rows that never came
+                if (L.stopped && L.stopCode == "unlinked") link::Verify();
+            }
+        }
+        if (auth.empty() && closing) L.stop("unlinked");
+        const bool finished = L.stopped || (closing && !L.haveInflight && !L.resendPrev && L.idle());
+        bool decideNow = false; long long endedAt = 0; int acc = 0; bool gone = false;
+        {
+            std::lock_guard<std::mutex> lk(g_live_mu);
+            s->seqShown = L.seq; s->eventsShown = L.first; s->id = L.siteId; s->url = L.siteUrl;
+            s->stopped = L.stopped; s->code = L.stopCode;
+            if (L.stopped && L.stopCode == "deleted") g_live_gone.insert(s->logId);
+            if (finished) {
+                s->done = true; s->doneAt = t;
+                if (s->rowPending) { decideNow = true; s->decided = true; endedAt = s->rowEndedAt; acc = L.acceptedCount; gone = L.stopCode == "deleted"; }
+            }
+        }
+        if (decideNow) decide_after_close(s->logId, endedAt, acc, gone);
+    }
+}
+
+void upload_pass() {
+    const std::string auth = link::AuthHeader();
+    const long long now = wall_now();
+    IndexRow row; std::filesystem::path file; bool found = false;
+    // the flags lock g_mu themselves: read before taking it
+    const bool autoOn = UploadAuto(), liveOn = UploadLive();
+    {
+        std::lock_guard<std::mutex> lk(g_mu);
+        auto rows = index_read_locked();
+        bool changed = false;
+        const std::size_t h = std::hash<std::string>{}(auth);
+        for (auto& r : rows) {
+            const bool pending = r.state.state == "queued" || r.state.state == "sending" || r.state.state == "unlinked";
+            // only a log queued by hand outlives the upload settings: an automatic or final upload goes when they go
+            const bool wanted = r.state.manual || autoOn || (r.state.final && liveOn);
+            if (pending && !wanted) { r.state = UploadState{}; changed = true; continue; }
+            if (r.state.state == "unlinked" && !auth.empty() && h != g_unlinkedAuth) { r.state.state = "queued"; r.state.next = 0; r.state.error.clear(); r.state.code.clear(); changed = true; }
+        }
+        IndexRow* best = nullptr;
+        for (auto& r : rows) {
+            if (r.state.state != "queued" && r.state.state != "sending") continue;
+            if (r.state.next > now || (r.state.final && live_busy(r.id))) continue;
+            if (!best || r.startedAt < best->startedAt) best = &r;
+        }
+        if (best) {
+            if (auth.empty()) { best->state.state = "unlinked"; best->state.code = "unlinked"; best->state.error = error_text("unlinked"); changed = true; }
+            else if (tick_now() - g_lastFinalTick >= 21000) { best->state.state = "sending"; row = *best; file = root_locked(false) / to_wide(best->file); found = true; changed = true; }
+        }
+        if (changed) index_write_locked(rows);
+    }
+    if (!found) return;
+    std::string gz, body, err; combatprep::Stats st;
+    if (!read_file(file, gz) || !prepare_body(gz, KeepNames(), body, st, err) || body.size() > kMaxBody) {
+        const std::string code = body.size() > kMaxBody || err == "too_large" ? "too_large" : "bad_log";
+        update_row(row.id, [&](IndexRow& r) { r.state.state = "failed"; r.state.code = code; r.state.error = error_text(code); });
+        rtx::log::Launcher("combat: upload " + row.id + " failed, 0 " + code);
+        return;
+    }
+    const char* mode = row.state.final ? "final" : row.state.manual ? "manual" : "auto";
+    const http::Response r = http::Post(http::Endpoint{ kUploadHost }, kLogsPath, upload_headers(auth, row.id, mode), body);
+    g_lastFinalTick = tick_now();
+    const Answer a = to_answer(r);
+    UploadInfo info;
+    const Outcome o = classify(a, row.state.tries, info);
+    if (o.verify) g_unlinkedAuth = std::hash<std::string>{}(auth);
+    const bool kept = update_row(row.id, [&](IndexRow& x) {
+        if (o.sent) { x.upload = info; x.state = UploadState{}; return; }
+        const int tries = x.state.tries + (o.retry ? 1 : 0);
+        const bool manual = x.state.manual, final = x.state.final;
+        x.state = UploadState{};
+        x.state.state = o.state; x.state.code = o.code; x.state.tries = tries; x.state.manual = manual; x.state.final = final;
+        x.state.next = o.delayMs > 0 ? wall_now() + o.delayMs : 0;
+        if (o.state != "queued" || o.code == "daily_limit" || o.code == "disabled") x.state.error = error_text(o.code.empty() ? "unavailable" : o.code);
+    });
+    const std::string status = std::to_string(a.ok ? a.status : 0);
+    if (!kept) rtx::log::Launcher("combat: upload " + row.id + " answered " + status + " after the log was deleted");
+    else if (o.sent) rtx::log::Launcher("combat: upload " + row.id + " sent, " + status + ", " + std::to_string(body.size()) + " bytes");
+    else rtx::log::Launcher("combat: upload " + row.id + " failed, " + status + " " + (o.code.empty() ? std::string("retry") : o.code));
+    if (o.verify) link::Verify();
+}
+
+void upload_loop() {
+    for (;;) {
+        {
+            std::unique_lock<std::mutex> lk(g_up_mu);
+            g_up_cv.wait_for(lk, std::chrono::seconds(5), [] { return g_up_kick; });
+            g_up_kick = false;
+        }
+        try { live_pass(); } catch (...) { rtx::log::Launcher("combat: live pass failed"); }
+        try { upload_pass(); } catch (...) { rtx::log::Launcher("combat: upload pass failed"); }
+    }
+}
+
+std::string sha256_hex(const std::string& d) {
+    BCRYPT_ALG_HANDLE alg = nullptr; BCRYPT_HASH_HANDLE h = nullptr;
+    unsigned char out[32] = {};
+    std::string hex;
+    if (BCryptOpenAlgorithmProvider(&alg, BCRYPT_SHA256_ALGORITHM, nullptr, 0) != 0) return hex;
+    if (BCryptCreateHash(alg, &h, nullptr, 0, nullptr, 0, 0) == 0) {
+        if (BCryptHashData(h, reinterpret_cast<PUCHAR>(const_cast<char*>(d.data())), (ULONG)d.size(), 0) == 0 && BCryptFinishHash(h, out, 32, 0) == 0) {
+            static const char* k = "0123456789abcdef";
+            for (unsigned char b : out) { hex.push_back(k[b >> 4]); hex.push_back(k[b & 15]); }
+        }
+        BCryptDestroyHash(h);
+    }
+    BCryptCloseAlgorithmProvider(alg, 0);
+    return hex;
+}
+
+// http://127.0.0.1:<port> or http://localhost:<port>, nothing else.
+bool loopback_base(const std::wstring& base, http::Endpoint& ep) {
+    std::wstring b = base;
+    if (!b.empty() && b.back() == L'/') b.pop_back();
+    for (const wchar_t* host : { L"127.0.0.1", L"localhost" }) {
+        const std::wstring pre = std::wstring(L"http://") + host + L":";
+        if (b.compare(0, pre.size(), pre) != 0) continue;
+        const std::wstring port = b.substr(pre.size());
+        if (port.empty() || port.size() > 5 || !std::all_of(port.begin(), port.end(), [](wchar_t c) { return c >= L'0' && c <= L'9'; })) return false;
+        const long v = std::wcstol(port.c_str(), nullptr, 10);
+        if (v < 1 || v > 65535) return false;
+        ep = http::Endpoint{ host, (unsigned short)v, false };
+        return true;
+    }
+    return false;
+}
+bool dev_token(std::string& auth) {
+    wchar_t buf[256] = {};
+    const DWORD n = GetEnvironmentVariableW(L"RTX_DEV_TOKEN", buf, 256);
+    if (n == 0 || n >= 256) return false;
+    std::string t;
+    for (DWORD i = 0; i < n; ++i) { if (buf[i] > 0x7E || buf[i] < 0x21) return false; t.push_back((char)buf[i]); }
+    if (t.compare(0, 5, "rtxd_") != 0) return false;
+    auth = "Bearer " + t;
+    return true;
+}
+std::string stats_report(const combatprep::Stats& st) {
+    return "players=" + std::to_string(st.playersRenamed) + "\nnpcFixed=" + std::to_string(st.npcNamesFixed) + "\nseqDropped=" + std::to_string(st.seqNamesDropped) +
+           "\nhitmarkNamesDropped=" + std::to_string(st.hitmarkNamesDropped) + "\nseqinfo=" + std::to_string(st.seqinfo) + "\ndevNames=" + std::to_string(st.devNamesDropped) +
+           "\nnameStrings=" + std::to_string(st.nameStringsCleared) + "\nxpDropped=" + std::to_string(st.xpDropped) + "\n";
+}
+std::string outcome_text(const Outcome& o) {
+    if (o.sent) return "sent";
+    return o.state + (o.code.empty() ? std::string() : " " + o.code) + (o.delayMs > 0 ? " after " + std::to_string(o.delayMs / 1000) + " s" : std::string());
+}
+bool read_wfile(const std::wstring& p, std::string& out) { return read_file(std::filesystem::path(p), out); }
+// log.id of a log object, reading only the top level up to "log".
+std::string log_id_of(const std::string& json) {
+    combatprep::detail::Parser ps; ps.p = json.data(); ps.e = json.data() + json.size();
+    ps.ws();
+    if (ps.p >= ps.e || *ps.p != '{') return {};
+    ++ps.p;
+    for (;;) {
+        ps.ws();
+        std::string key;
+        if (!ps.str(&key)) return {};
+        ps.ws(); if (ps.p >= ps.e || *ps.p != ':') return {};
+        ++ps.p;
+        if (key == "log") { combatprep::detail::Node n; if (!ps.val(n) || n.k != combatprep::detail::Node::Obj) return {}; return n.str("id"); }
+        if (!ps.skip()) return {};
+        ps.ws();
+        if (ps.p < ps.e && *ps.p == ',') { ++ps.p; continue; }
+        return {};
+    }
+}
+
+}  // namespace
+
+void StartUploads() {
+    if (g_headless) return;
+    std::lock_guard<std::mutex> lk(g_up_mu);
+    if (g_up_started) return;
+    g_up_started = true;
+    std::thread([] { upload_loop(); }).detach();
+}
+void SetHeadless() { g_headless = true; }
+
+std::string UploadRequestJson(const std::string& logId) {
+    if (!id_chars(logId, 22)) return "{\"ok\":false,\"state\":\"missing\",\"error\":\"Log not found.\"}";
+    IndexRow r; std::filesystem::path file;
+    if (!find_row(logId, r, file)) return "{\"ok\":false,\"state\":\"missing\",\"error\":\"Log not found.\"}";
+    if (!r.upload.id.empty()) return "{\"ok\":true,\"state\":\"sent\",\"id\":" + jstr(r.upload.id) + ",\"url\":" + jstr(r.upload.url) + "}";
+    if (link::AuthHeader().empty()) return "{\"ok\":false,\"state\":\"unlinked\",\"error\":" + jstr(error_text("unlinked")) + "}";
+    const bool ok = update_row(logId, [&](IndexRow& x) { x.state = UploadState{}; x.state.state = "queued"; x.state.manual = true; });
+    if (!ok) return "{\"ok\":false,\"state\":\"missing\",\"error\":\"Log not found.\"}";
+    rtx::log::Launcher("combat: upload " + logId + " queued");
+    StartUploads();
+    kick();
+    return "{\"ok\":true,\"state\":\"queued\"}";
+}
+
+std::string UploadStatusJson(const std::string& logId) {
+    if (logId.empty()) return link::AuthHeader().empty() ? "{\"state\":\"unlinked\"}" : "{\"state\":\"ready\"}";
+    IndexRow r; std::filesystem::path file;
+    std::string state = "none", id, url, error;
+    if (id_chars(logId, 22) && find_row(logId, r, file)) {
+        if (!r.upload.id.empty()) { state = "sent"; id = r.upload.id; url = r.upload.url; }
+        else if (!r.state.state.empty()) { state = r.state.state; error = r.state.error; }
+    }
+    return "{\"state\":" + jstr(state) + ",\"id\":" + jstr(id) + ",\"url\":" + jstr(url) + ",\"error\":" + jstr(error) + "}";
+}
+
+void AfterCompact(const IndexRow& row) {
+    if (g_headless) return;
+    bool decide = true, gone = false; int acc = 0;
+    {
+        std::lock_guard<std::mutex> lk(g_live_mu);
+        gone = g_live_gone.count(row.id) > 0;
+        if (auto it = g_live.find(row.id); it != g_live.end()) {
+            LiveSession& s = *it->second;
+            if (s.done) { acc = s.L.acceptedCount; s.decided = true; }
+            else { s.rowPending = true; s.rowEndedAt = row.endedAt; decide = false; }
+        }
+    }
+    if (decide && acc == 0 && live_marked(row.id)) acc = 1;
+    if (decide) decide_after_close(row.id, row.endedAt, acc, gone);
+}
+
+bool LiveWanted() {
+    if (g_headless) return false;
+    const long long t = tick_now();
+    if (t - g_liveWantedAt.load() >= 2000) {
+        g_liveWanted = UploadLive() && !link::AuthHeader().empty();
+        g_liveWantedAt = t;
+    }
+    return g_liveWanted.load();
+}
+
+void LiveFeed(std::uint32_t pid, const std::string& logId, const std::vector<std::string>& lines) {
+    if (g_headless || lines.empty() || logId.empty()) return;
+    std::size_t evs = 0;
+    for (const auto& l : lines) if (event_line(l)) ++evs;
+    std::lock_guard<std::mutex> lk(g_live_mu);
+    auto it = g_live.find(logId);
+    if (it == g_live.end()) {
+        if (g_live_skip.count(logId)) return;
+        std::size_t at = 0;
+        while (at < lines.size() && (lines[at].empty() || lines[at][0] != '{')) ++at;
+        if (at == lines.size()) { g_live_skip.insert(logId); return; }   // live was turned on in the middle of this log
+        auto s = std::make_unique<LiveSession>();
+        s->pid = pid; s->logId = logId;
+        s->inbox.assign(lines.begin() + (std::ptrdiff_t)at, lines.end());
+        for (const auto& l : s->inbox) if (event_line(l)) ++s->inboxEvents;
+        g_live.emplace(logId, std::move(s));
+        return;
+    }
+    LiveSession& s = *it->second;
+    if (s.done || s.stopped || s.closing || s.overflow || s.gap) return;
+    // the upload thread drains the inbox; this only bounds what waits for it
+    if (s.inboxEvents + evs > kLivePending) { s.inbox.clear(); s.inboxEvents = 0; s.overflow = true; return; }
+    s.inbox.insert(s.inbox.end(), lines.begin(), lines.end());
+    s.inboxEvents += evs;
+}
+
+void LiveClose(std::uint32_t, const std::string& logId) {
+    {
+        std::lock_guard<std::mutex> lk(g_live_mu);
+        auto it = g_live.find(logId);
+        if (it == g_live.end()) return;
+        it->second->closing = true;
+    }
+    kick();
+}
+
+void LiveGap(const std::string& logId) {
+    if (g_headless || logId.empty()) return;
+    {
+        std::lock_guard<std::mutex> lk(g_live_mu);
+        auto it = g_live.find(logId);
+        if (it == g_live.end() || it->second->done || it->second->gap) return;
+        it->second->gap = true;
+        it->second->inbox.clear(); it->second->inboxEvents = 0;
+    }
+    kick();
+}
+
+std::string LiveStateJson() {
+    std::string o = std::string("{\"enabled\":") + (UploadLive() ? "true" : "false") + ",\"logs\":[";
+    std::lock_guard<std::mutex> lk(g_live_mu);
+    bool first = true;
+    for (const auto& kv : g_live) {
+        const LiveSession& s = *kv.second;
+        if (s.done && (!s.stopped || s.code == "off")) continue;      // turned off on purpose: not an error
+        o += first ? "" : ","; first = false;
+        o += "{\"pid\":" + std::to_string(s.pid) + ",\"logId\":" + jstr(s.logId) + ",\"id\":" + jstr(s.id) + ",\"url\":" + jstr(s.url) +
+             ",\"seq\":" + std::to_string(s.seqShown) + ",\"events\":" + std::to_string(s.eventsShown) +
+             ",\"state\":\"" + (s.stopped ? "stopped" : "live") + "\",\"error\":" + jstr(s.stopped ? error_text(s.code) : std::string()) + "}";
+    }
+    return o + "]}";
+}
+
+// ---- headless test paths ----
+int CliPrep(const std::wstring& in, const std::wstring& outPath, bool keep, std::string& report) {
+    std::string gz, body, err; combatprep::Stats st;
+    if (!read_wfile(in, gz)) { report = "error=cannot read the input\n"; return 1; }
+    if (!prepare_body(gz, keep, body, st, err)) { report = "error=" + err + "\n"; return 1; }
+    if (!write_file(std::filesystem::path(outPath), body)) { report = "error=cannot write the output\n"; return 1; }
+    report = "bytes=" + std::to_string(body.size()) + "\nsha256=" + sha256_hex(body) + "\n" + stats_report(st) + "events=" + std::to_string(st.events) + "\n";
+    return 0;
+}
+
+int CliUpload(const std::wstring& in, const std::wstring& base, bool keep, std::string& report) {
+    http::Endpoint ep; std::string auth;
+    if (!loopback_base(base, ep)) { report = "error=the base url must be http://127.0.0.1:<port> or http://localhost:<port>\n"; return 2; }
+    if (!dev_token(auth)) { report = "error=RTX_DEV_TOKEN must hold a device token\n"; return 2; }
+    std::string gz, body, err; combatprep::Stats st;
+    if (!read_wfile(in, gz)) { report = "error=cannot read the input\n"; return 1; }
+    if (!prepare_body(gz, keep, body, st, err)) { report = "error=" + err + "\n"; return 1; }
+    std::string json; Gunzip(gz, json, kMaxRaw);
+    const std::string logId = log_id_of(json);
+    report = "bytes=" + std::to_string(body.size()) + "\nsha256=" + sha256_hex(body) + "\n" + stats_report(st);
+    if (body.size() > kMaxBody) { report = "status=0\n" + report + "result=failed too_large\nbody=\n"; return 1; }
+    const http::Response r = http::Post(ep, kLogsPath, upload_headers(auth, logId, "manual"), body);
+    const Answer a = to_answer(r);
+    UploadInfo info;
+    const Outcome o = classify(a, 0, info);
+    std::string answerBody = a.body;
+    for (char& ch : answerBody) if (ch == '\r' || ch == '\n') ch = ' ';
+    report = "status=" + std::to_string(a.ok ? a.status : 0) + "\n" + report + "result=" + outcome_text(o) + "\nbody=" + answerBody + "\n";
+    return o.sent ? 0 : 1;
+}
+
+int CliLiveReplay(const std::wstring& in, const std::wstring& base, int chunkEvents, bool final, std::string& report) {
+    using combatprep::detail::Node;
+    http::Endpoint ep; std::string auth;
+    if (!loopback_base(base, ep)) { report = "error=the base url must be http://127.0.0.1:<port> or http://localhost:<port>\n"; return 2; }
+    if (!dev_token(auth)) { report = "error=RTX_DEV_TOKEN must hold a device token\n"; return 2; }
+    if (chunkEvents < 1) chunkEvents = 500;
+    std::string gz, json;
+    if (!read_wfile(in, gz) || !Gunzip(gz, json, kMaxRaw)) { report = "error=cannot read the input\n"; return 1; }
+    Node doc; combatprep::detail::Parser ps; ps.p = json.data(); ps.e = json.data() + json.size();
+    if (!ps.val(doc) || doc.k != Node::Obj) { report = "error=bad json\n"; return 1; }
+    const Node* log = doc.get("log"); const Node* clock = doc.get("clock"); const Node* actors = doc.get("actors");
+    const Node* dict = doc.get("dict"); const Node* fights = doc.get("fights"); const Node* events = doc.get("events");
+    if (!log || !clock || !actors || !dict || !fights || !events || actors->k != Node::Arr || events->k != Node::Arr || fights->k != Node::Arr) { report = "error=not a log\n"; return 1; }
+    auto w = [](const Node& n) { std::string o; combatprep::detail::write(n, o); return o; };
+    auto field = [&](const Node& obj, const char* k) { const Node* v = obj.get(k); return v ? w(*v) : std::string("null"); };
+    // the recorder's lines, in the order it writes them: actor and dict rows before the first event that needs them
+    std::vector<std::vector<std::string>> batches;     // lines per chunk, `chunkEvents` events each
+    std::vector<std::string> cur; int curEvents = 0;
+    cur.push_back("{\"format\":1,\"log\":{\"id\":" + field(*log, "id") + ",\"character\":" + field(*log, "character") + ",\"launcher\":" + field(*log, "launcher") +
+                  ",\"client\":" + field(*log, "client") + ",\"startedAt\":" + field(*log, "startedAt") + ",\"companion\":false},\"clock\":" + w(*clock) + "}");
+    std::size_t actorsOut = 0;
+    auto needActor = [&](long long i, std::vector<std::string>& o) {
+        while (i >= 0 && (long long)actorsOut <= i && actorsOut < actors->c.size()) {
+            const Node& a = actors->c[actorsOut++];
+            std::string t = "[\"actor\",{"; bool f1 = true;
+            for (const auto& m : a.c) { if (m.key == "last") continue; if (!f1) t += ","; f1 = false; t += m.keyRaw + ":" + w(m); }
+            o.push_back(t + "}]");
+        }
+    };
+    std::set<std::pair<std::string, std::string>> dictOut;
+    auto needDict = [&](const char* kind, const std::string& id, std::vector<std::string>& o) {
+        const Node* d = dict->get(kind);
+        if (!d || !dictOut.insert({ kind, id }).second) return;
+        const Node* v = d->get(id.c_str());
+        if (!v) return;
+        o.push_back("[\"dict\",\"" + std::string(kind) + "\"," + id + "," + w(*v) + "]");
+        if (std::strcmp(kind, "abilities") == 0) if (const Node* fam = v->get("family"); fam && fam->k == Node::Arr) for (const auto& m : fam->c) {
+            const Node* fv = d->get(m.raw.c_str());
+            if (fv && dictOut.insert({ kind, m.raw }).second) o.push_back("[\"dict\",\"abilities\"," + m.raw + "," + w(*fv) + "]");
+        }
+    };
+    std::size_t nextFight = 0;
+    auto fightLine = [&](const Node& f) {
+        std::string t = "[\"fight\",{"; bool f1 = true;
+        for (const auto& m : f.c) { if (m.key == "startMs" || m.key == "summary") continue; if (!f1) t += ","; f1 = false; t += m.keyRaw + ":" + w(m); }
+        return t + "}]";
+    };
+    combatprep::detail::EventView v;
+    for (const auto& e : events->c) {
+        const std::string line = w(e);
+        long long c = 0;
+        if (e.k == Node::Arr && e.c.size() >= 2) c = (long long)e.c[1].num;
+        while (nextFight < fights->c.size()) {
+            long long end = 0; fights->c[nextFight].num_of("end", end);
+            if (c <= end) break;
+            cur.push_back(fightLine(fights->c[nextFight++]));
+        }
+        if (combatprep::detail::view_event(line.data(), line.size(), v)) {
+            auto num = [&](std::size_t k) { return k < e.c.size() ? (long long)e.c[k].num : -1; };
+            auto key = [&](std::size_t k) { return k < e.c.size() ? e.c[k].raw : std::string(); };
+            needActor(max_ref(line, v), cur);
+            switch (v.type) {
+            case 0: needDict("hitmarks", key(3), cur); if (num(5) >= 0) needDict("hitmarks", key(5), cur); break;
+            case 1: needDict("abilities", key(2), cur); break;
+            case 2: if (num(3) >= 0) needDict("seqs", key(3), cur); break;
+            case 7: needDict("buffs", key(2), cur); break;
+            case 9: needDict("trackers", key(2), cur); break;
+            case 12: if (num(2) >= 0) needDict("encounters", key(2), cur); break;
+            case 1000: needDict("mechs", key(2), cur); break;
+            default: break;
+            }
+        }
+        cur.push_back(line);
+        if (++curEvents >= chunkEvents) { batches.push_back(std::move(cur)); cur.clear(); curEvents = 0; }
+    }
+    while (nextFight < fights->c.size()) cur.push_back(fightLine(fights->c[nextFight++]));
+    needActor((long long)actors->c.size() - 1, cur);
+    static const char* kinds[] = { "abilities", "buffs", "hitmarks", "seqs", "encounters", "trackers", "mechs" };
+    for (const char* k : kinds) if (const Node* d = dict->get(k)) for (const auto& m : d->c) needDict(k, m.key, cur);
+    cur.push_back("[\"end\",{\"endedAt\":" + field(*log, "endedAt") + ",\"endBy\":" + field(*log, "endBy") + ",\"readFails\":" + field(*log, "readFails") +
+                  (log->get("reads") ? ",\"reads\":" + field(*log, "reads") : std::string()) +
+                  ",\"gaps\":" + field(*log, "gaps") + ",\"phase\":" + field(*clock, "phase") + ",\"events\":" + std::to_string(events->c.size()) + "}]");
+    batches.push_back(std::move(cur));
+
+    LiveLog L;
+    bool ok = true; int sends = 0;
+    auto wait_ms = [](long long ms) { if (ms > 0) std::this_thread::sleep_for(std::chrono::milliseconds(ms)); };
+    for (std::size_t b = 0; b < batches.size() && ok; ++b) {
+        L.feed(batches[b]);
+        const bool last = b + 1 == batches.size();
+        for (int guard = 0; guard < 50 && ok; ++guard) {
+            if (!L.haveInflight && !L.resendPrev && L.idle()) break;
+            if (sends > 0) wait_ms(std::max<long long>(11000 - (tick_now() - L.lastSend), L.nextTry - tick_now()));
+            int status = 0; Chunk sent;
+            const bool prev = L.resendPrev;
+            if (!L.send_one(ep, auth, false, status, &sent)) {
+                if (last && !L.pending.empty()) { report += "held " + std::to_string(L.pending.size()) + " events waiting for actor rows\n"; ok = false; }
+                break;
+            }
+            ++sends;
+            report += "chunk " + std::to_string(sent.seq) + " first " + std::to_string(sent.first) + " events " + std::to_string(sent.count) +
+                      " status " + std::to_string(status) + (prev ? " resent" : "") + (L.stopped ? " stopped " + L.stopCode : "") + "\n";
+            if (L.stopped) ok = false;
+        }
+    }
+    report += "accepted " + std::to_string(L.acceptedCount) + " chunks, " + std::to_string(L.first) + " events, id " + L.siteId + "\n";
+    if (ok && final) {
+        wait_ms(11000);
+        std::string body, err; combatprep::Stats st;
+        if (!prepare_body(gz, false, body, st, err)) { report += "final error=" + err + "\n"; return 1; }
+        const http::Response r = http::Post(ep, kLogsPath, upload_headers(auth, log->str("id"), "final"), body);
+        const Answer a = to_answer(r);
+        UploadInfo info;
+        const Outcome o = classify(a, 0, info);
+        std::string answerBody = a.body;
+        for (char& ch : answerBody) if (ch == '\r' || ch == '\n') ch = ' ';
+        report += "final status=" + std::to_string(a.ok ? a.status : 0) + " result=" + outcome_text(o) + " body=" + answerBody + "\n";
+        ok = o.sent;
+    }
+    return ok ? 0 : 1;
 }
 
 }  // namespace rtx::launcher::fights

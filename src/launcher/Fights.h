@@ -14,7 +14,9 @@ std::filesystem::path Root();                           // the combat folder, cr
 void SetRoot(const std::filesystem::path& p);           // the headless recorder and the tests
 
 bool RecordEnabled(); void SetRecordEnabled(bool on);   // combat_record.txt, default off
-bool UploadAuto();    void SetUploadAuto(bool on);      // combat_upload.txt, default off
+bool UploadAuto();    void SetUploadAuto(bool on);      // combat_upload.txt "1 <since ms>", default off
+long long UploadAutoSince();                            // logs that ended from then on upload automatically
+bool UploadLive();    void SetUploadLive(bool on);      // combat_live.txt, default off
 bool KeepNames();     void SetKeepNames(bool on);       // combat_names.txt, default off
 
 std::string NewLogId();                                 // 16 random bytes, base64url
@@ -34,10 +36,16 @@ private:
 
 struct Summary { long long durMs = 0, dealt = 0, taken = 0, healed = 0, hits = 0, crits = 0, maxHit = 0, blocked = 0, deaths = 0, kills = 0; double dps = 0, dpm = 0; };
 struct IndexFight { int n = 0; long long start = 0, end = 0; std::string kind, boss; int kills = 0, deaths = 0; Summary summary; };
+// The log on runetools.io: set only from an accepted answer that passed the checks (empty id = none).
+struct UploadInfo { std::string id, url, visibility; long long at = 0; };
+// Where an upload stands: "" (nothing to do), queued, sending, failed, unlinked or skipped. `error` is the
+// launcher's own text for `code`, never the site's.
+struct UploadState { std::string state, error, code; int tries = 0; long long next = 0; bool manual = false, final = false; };
 struct IndexRow {
     std::string id, character, file;                    // file: "<character>/<name>.json.gz" under Root()
     long long startedAt = 0, endedAt = 0, bytes = 0, events = 0;
     std::vector<IndexFight> fights;
+    UploadInfo upload; UploadState state;
     int version = 1;
 };
 std::string RowJson(const IndexRow& r);
@@ -59,6 +67,25 @@ std::string Export(const std::string& logId, bool pick, void* ownerHwnd);
 void OpenFolder();
 
 bool Gzip(const std::string& in, std::string& out);
-bool Gunzip(const std::string& in, std::string& out, std::size_t cap);
+bool Gunzip(const std::string& in, std::string& out, std::size_t cap, bool* capped = nullptr);   // capped: the output passed `cap`
+
+// ---- uploads to the RuneTools account this PC is linked to (opt-in; nothing leaves the PC otherwise) ----
+void StartUploads();                                    // the upload thread; idempotent
+void SetHeadless();                                     // this process records without the user's settings: no auto or live uploads
+std::string UploadRequestJson(const std::string& logId);    // fightUpload: queue one log by hand
+std::string UploadStatusJson(const std::string& logId);     // fightUploadStatus; "" = can this PC upload at all
+void AfterCompact(const IndexRow& row);                 // a log just saved: the auto rule, or the final upload after live
+// Live upload: the lines of an open log as the recorder writes them, sent in chunks while it is open.
+bool LiveWanted();                                      // live on, linked, not headless (cached)
+void LiveFeed(std::uint32_t pid, const std::string& logId, const std::vector<std::string>& lines);
+void LiveClose(std::uint32_t pid, const std::string& logId);
+void LiveGap(const std::string& logId);                 // lines of a live log were written while live was not wanted
+std::string LiveStateJson();
+
+// Headless test paths against a local server (base url http://127.0.0.1:<port> or http://localhost:<port>);
+// they never touch the combat folder, the settings or the account link. Return the exit code.
+int CliUpload(const std::wstring& in, const std::wstring& base, bool keep, std::string& report);
+int CliPrep(const std::wstring& in, const std::wstring& out, bool keep, std::string& report);
+int CliLiveReplay(const std::wstring& in, const std::wstring& base, int chunkEvents, bool final, std::string& report);
 
 }  // namespace rtx::launcher::fights

@@ -38,6 +38,22 @@ HINTERNET shared_session() {
     WinHttpSetTimeouts(h, 10000, 10000, 30000, 120000);
     return h;
 }
+// The session for requests to this PC: no proxy, so a system proxy never sees or reroutes them.
+HINTERNET loopback_session() {
+    static std::mutex mu;
+    static HINTERNET h = nullptr;
+    std::lock_guard<std::mutex> lk(mu);
+    if (h) return h;
+    h = WinHttpOpen(L"RuneToolsX/0.1", WINHTTP_ACCESS_TYPE_NO_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+    if (!h) return nullptr;
+    DWORD secProtocols = WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_2;
+    WinHttpSetOption(h, WINHTTP_OPTION_SECURE_PROTOCOLS, &secProtocols, sizeof(secProtocols));
+    WinHttpSetTimeouts(h, 10000, 10000, 30000, 120000);
+    return h;
+}
+bool is_loopback(const std::wstring& host) {
+    return host == L"127.0.0.1" || host == L"localhost" || host == L"::1" || host == L"[::1]";
+}
 struct ConnectScope { HINTERNET h = nullptr; ~ConnectScope() { if (h) WinHttpCloseHandle(h); } };
 struct RequestScope { HINTERNET h = nullptr; ~RequestScope() { if (h) WinHttpCloseHandle(h); } };
 
@@ -82,7 +98,7 @@ std::string format_winhttp_error(DWORD err) {
 // Shared request engine. `sink` returns false to abort (set out.detail first); `on_status`
 // fires before the body, false aborts with .ok == false and the body undrained.
 void do_request(Response& out,
-                const std::wstring& host, const std::wstring& path,
+                const Endpoint& ep, const std::wstring& path,
                 const wchar_t* verb,
                 const std::vector<Header>& headers,
                 const std::string& body,
@@ -91,19 +107,22 @@ void do_request(Response& out,
                 const std::function<bool(int)>& on_status = nullptr,
                 bool decompress = false,
                 int receive_timeout_ms = 0) {
+    const bool loopback = is_loopback(ep.host);
+    if (!ep.secure && !loopback) { out.detail = "insecure endpoint refused"; return; }
     // One session for the whole launcher: WinHTTP keeps finished connections alive inside a session, so the
     // minute heartbeat, kill events and panel requests reuse an open TLS connection instead of a new handshake.
-    HINTERNET session = shared_session();
+    HINTERNET session = loopback ? loopback_session() : shared_session();
     if (!session) { out.detail = format_winhttp_error(GetLastError()); return; }
 
     ConnectScope conn;
-    conn.h = WinHttpConnect(session, host.c_str(), INTERNET_DEFAULT_HTTPS_PORT, 0);
+    const std::wstring host = ep.host == L"[::1]" ? std::wstring(L"::1") : ep.host;
+    conn.h = WinHttpConnect(session, host.c_str(), (INTERNET_PORT)ep.port, 0);
     if (!conn.h) { out.detail = format_winhttp_error(GetLastError()); return; }
 
     RequestScope req;
     req.h = WinHttpOpenRequest(conn.h, verb, path.c_str(), nullptr,
                                WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES,
-                               WINHTTP_FLAG_SECURE);
+                               ep.secure ? WINHTTP_FLAG_SECURE : 0);
     if (!req.h) { out.detail = format_winhttp_error(GetLastError()); return; }
     // A request that carries credentials never follows a redirect: the header would go to whatever host the
     // redirect names. A 3xx then simply comes back as the answer.
@@ -230,15 +249,23 @@ bool append_capped(Response& out, const char* d, DWORD n) {
 Response PostJson(const std::wstring& host, const std::wstring& path,
                   const std::vector<Header>& headers, const std::string& body) {
     Response out;
-    do_request(out, host, path, L"POST", headers, body,
+    do_request(out, Endpoint{ host }, path, L"POST", headers, body,
         [&out](const char* d, DWORD n) { return append_capped(out, d, n); }, nullptr, nullptr, true);
+    return out;
+}
+
+Response Post(const Endpoint& ep, const std::wstring& path,
+              const std::vector<Header>& headers, const std::string& body) {
+    Response out;
+    do_request(out, ep, path, L"POST", headers, body,
+        [&out](const char* d, DWORD n) { return append_capped(out, d, n); }, nullptr);
     return out;
 }
 
 Response Get(const std::wstring& host, const std::wstring& path,
              const std::vector<Header>& headers) {
     Response out;
-    do_request(out, host, path, L"GET", headers, std::string(),
+    do_request(out, Endpoint{ host }, path, L"GET", headers, std::string(),
         [&out](const char* d, DWORD n) { return append_capped(out, d, n); }, nullptr, nullptr, true);
     return out;
 }
@@ -252,7 +279,7 @@ std::string Response::header(const std::string& name) const {
 Response Fetch(const std::wstring& host, const std::wstring& path,
                const std::vector<Header>& headers, std::size_t max_bytes) {
     Response out;
-    do_request(out, host, path, L"GET", headers, std::string(),
+    do_request(out, Endpoint{ host }, path, L"GET", headers, std::string(),
         [&out, max_bytes](const char* d, DWORD n) {
             if (out.body.size() + (size_t)n > max_bytes) { out.detail = "response too large"; return false; }
             out.body.append(d, n);
@@ -268,7 +295,7 @@ Response Download(const std::wstring& host, const std::wstring& path,
     HANDLE f = CreateFileW(dest_path.c_str(), GENERIC_WRITE, 0, nullptr,
                            CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (f == INVALID_HANDLE_VALUE) { out.detail = "cannot open destination file"; return out; }
-    do_request(out, host, path, L"GET", headers, std::string(),
+    do_request(out, Endpoint{ host }, path, L"GET", headers, std::string(),
         [f, max_bytes, &out, written = 0ll](const char* d, DWORD n) mutable {
             if (max_bytes > 0 && written + (long long)n > max_bytes) { out.detail = "download larger than expected"; return false; }
             DWORD w = 0;
@@ -287,7 +314,7 @@ Response Stream(const std::wstring& host, const std::wstring& path,
                 const std::function<bool(const char*, std::size_t)>& on_data,
                 const std::function<bool(int)>& on_status) {
     Response out;
-    do_request(out, host, path, L"GET", headers, std::string(),
+    do_request(out, Endpoint{ host }, path, L"GET", headers, std::string(),
         [&on_data](const char* d, DWORD n) { return on_data ? on_data(d, (std::size_t)n) : true; }, nullptr,
         on_status, false, 180000);   // the server writes a comment every 25 s; a quiet stream is not a dead one
     return out;

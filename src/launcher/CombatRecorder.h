@@ -208,7 +208,7 @@ private:
     std::vector<FightRow> fights_;
     // log
     bool logOpen_ = false; std::string logId_; long long startedAt_ = 0, c0_ = 0, wall0_ = 0;
-    long long written_ = 0, logBytes_ = 0, gaps_ = 0, readFails_ = 0;
+    long long written_ = 0, logBytes_ = 0, gaps_ = 0, readFails_ = 0, reads_ = 0;
     std::deque<Ev> preroll_;
     std::unordered_map<std::uint64_t, Ev> baseline_;     // the last state row per key that left the pre-roll window
     std::vector<std::string> pending_;

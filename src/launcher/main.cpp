@@ -4,6 +4,7 @@
 #include "Companion.h"
 #include "Cs2Browser.h"
 #include "Dock.h"
+#include "Fights.h"
 #include "Http.h"
 #include "IconCache.h"
 #include "LuaHost.h"
@@ -560,6 +561,36 @@ int APIENTRY wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
             const std::string out = rtx::launcher::CombatRecordRun(pid, seconds, argv[4]);
             { std::ofstream f("combat-record.txt", std::ios::binary | std::ios::trunc); f << out; }
             return headless_exit(0);
+        }
+        // Combat log uploads against a local test server, never the live site, the account link, the combat
+        // folder or its settings. The device token comes from RTX_DEV_TOKEN and is never written anywhere.
+        // --combat-upload <in.json.gz> <base-url> [keep]: the upload body of a saved log, posted to
+        //   <base-url>/api/client/combat/logs; counts and the answer to combat-upload.txt.
+        // --combat-upload-prep <in.json.gz> <out.json.gz> [keep]: the upload body only, counts to combat-upload.txt.
+        // --combat-live-replay <in.json.gz> <base-url> [chunkEvents] [final]: a saved log sent as live chunks
+        //   11 s apart, then its final upload when `final` is given; report to combat-live.txt.
+        if (argv && argc >= 4 && std::wstring(argv[1]) == L"--combat-upload") {
+            std::string report;
+            const int code = rtx::launcher::fights::CliUpload(argv[2], argv[3], argc >= 5 && std::wstring(argv[4]) == L"keep", report);
+            { std::ofstream f("combat-upload.txt", std::ios::binary | std::ios::trunc); f << report; }
+            return headless_exit(code);
+        }
+        if (argv && argc >= 4 && std::wstring(argv[1]) == L"--combat-upload-prep") {
+            std::string report;
+            const int code = rtx::launcher::fights::CliPrep(argv[2], argv[3], argc >= 5 && std::wstring(argv[4]) == L"keep", report);
+            { std::ofstream f("combat-upload.txt", std::ios::binary | std::ios::trunc); f << report; }
+            return headless_exit(code);
+        }
+        if (argv && argc >= 4 && std::wstring(argv[1]) == L"--combat-live-replay") {
+            int chunk = 500; bool final = false;
+            for (int i = 4; i < argc; ++i) {
+                if (std::wstring(argv[i]) == L"final") final = true;
+                else if (_wtoi(argv[i]) > 0) chunk = _wtoi(argv[i]);
+            }
+            std::string report;
+            const int code = rtx::launcher::fights::CliLiveReplay(argv[2], argv[3], chunk, final, report);
+            { std::ofstream f("combat-live.txt", std::ios::binary | std::ios::trunc); f << report; }
+            return headless_exit(code);
         }
         // --scene-dump <pid> [range]: the scene as plugins receive it, to scene-dump.txt. For
         // checking what the objects around the player actually report before trusting a plugin rule.

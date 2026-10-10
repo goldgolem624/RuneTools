@@ -21,6 +21,20 @@ struct Response {
     std::string header(const std::string& name) const;    // case-insensitive lookup; "" if absent
 };
 
+// Where a request goes. Plain HTTP is refused unless the host is this PC (127.0.0.1, localhost, ::1);
+// requests to this PC use their own session without a proxy.
+struct Endpoint {
+    std::wstring   host;
+    unsigned short port   = 443;
+    bool           secure = true;
+};
+
+// A POST with the caller's headers and raw body (any content type); the answer body is capped at 1 MB.
+Response Post(const Endpoint& ep,
+              const std::wstring& path,
+              const std::vector<Header>& headers,
+              const std::string& body);
+
 Response PostJson(const std::wstring& host,
                   const std::wstring& path,
                   const std::vector<Header>& headers,

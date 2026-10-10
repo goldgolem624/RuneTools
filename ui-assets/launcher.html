@@ -2533,7 +2533,7 @@
           <b>Record combat</b>
           <span>Fight logs kept on this PC, under RuneToolsX\combat. Off by default.</span>
         </div>
-        <label class="acct-cap" title="Nothing leaves this PC. Logs open in the Fight Logs panel.">
+        <label class="acct-cap" title="Stays on this PC unless an upload setting is on. Logs open in the Fight Logs panel.">
           <input type="checkbox" id="combat-record">
           <span class="box"></span>
           <span class="lbl" id="combat-record-lbl">Off</span>
@@ -3479,9 +3479,35 @@
     const left = Math.max(0, Math.floor((Number(expiresAt) - Date.now()) / 1000));
     return Math.floor(left / 60) + ':' + String(left % 60).padStart(2, '0');
   }
+  // Fight log uploads: shown only by a launcher whose bridge has them (an older one answers "unavailable").
+  function combatUploadFlags() {
+    const b = bridge();
+    if (!b.combatUploadLive || !b.fightUploadStatus) return null;
+    try { const cap = JSON.parse(b.fightUploadStatus()); if (!cap || cap.state === 'unavailable') return null; } catch (e) { return null; }
+    const f = { auto: false, live: false, keep: false, error: '' };
+    try { f.auto = !!(b.combatUploadAuto && b.combatUploadAuto()); } catch (e) {}
+    try { f.live = !!b.combatUploadLive(); } catch (e) {}
+    try { f.keep = !!(b.combatKeepNames && b.combatKeepNames()); } catch (e) {}
+    try {
+      const ls = b.combatLiveState ? JSON.parse(b.combatLiveState()) : null;
+      const bad = ls && Array.isArray(ls.logs) ? ls.logs.find((x) => x && x.state === 'stopped' && x.error) : null;
+      if (bad) f.error = String(bad.error);
+    } catch (e) {}
+    return f;
+  }
+  function combatUploadRows(f) {
+    if (!f) return '';
+    const row = (id, title, text, on) => '<div class="link-opt"><div class="set-text"><b>' + title + '</b><span>' + text + '</span></div>'
+      + '<label class="acct-cap"><input type="checkbox" id="' + id + '"' + (on ? ' checked' : '') + '><span class="box"></span><span class="lbl">' + (on ? 'On' : 'Off') + '</span></label></div>';
+    return row('link-cup-auto', 'Upload fight logs automatically', 'Every finished log goes to your runetools.io account.', f.auto)
+         + row('link-cup-live', 'Live upload', 'The open log updates on runetools.io while you fight.', f.live)
+         + row('link-cup-keep', 'Keep other players&#39; names', 'Off: other players show as Player 1, Player 2. On: names stay on your private logs.', f.keep)
+         + '<div class="link-note err" id="link-cup-err" hidden></div>';
+  }
   function linkRender(st) {
     const body = $('link-body');
     if (!body) return;
+    const cup = st && st.state === 'linked' ? combatUploadFlags() : null;
     let lootOn = false, alerts = { message: true, sound: true };
     try { lootOn = !!(bridge().lootEnabled && bridge().lootEnabled()); } catch (e) {}
     try { if (bridge().lootAlerts) alerts = JSON.parse(bridge().lootAlerts()) || alerts; } catch (e) {}
@@ -3524,6 +3550,7 @@
                 + '<div class="link-opt link-sub"><div class="set-text"><b>In-game sound</b><span>A chime when a cache drops.</span></div>'
                 + '<label class="acct-cap"><input type="checkbox" id="link-loot-snd"' + (alerts.sound ? ' checked' : '') + '><span class="box"></span><span class="lbl">' + (alerts.sound ? 'On' : 'Off') + '</span></label></div>'
               : '')
+           + combatUploadRows(cup)
            + note;
     } else {
       html = '<div class="link-note err">' + linkEsc(st.error || 'Linking failed.') + '</div>'
@@ -3558,6 +3585,20 @@
       s.parentNode.querySelector('.lbl').textContent = cur.sound ? 'On' : 'Off';
     };
     ['link-loot-msg', 'link-loot-snd'].forEach(id => { const el = $(id); if (el) el.addEventListener('change', setAlerts); });
+    const cupErr = $('link-cup-err');
+    if (cupErr && cup && cup.error) { cupErr.textContent = 'Live upload stopped: ' + cup.error; cupErr.hidden = false; }
+    [['link-cup-auto', 'combatUploadAuto'], ['link-cup-live', 'combatUploadLive'], ['link-cup-keep', 'combatKeepNames']].forEach(([id, fn]) => {
+      const el = $(id);
+      if (!el) return;
+      el.addEventListener('change', () => {
+        let v = false;
+        try { v = !!(bridge()[fn] && bridge()[fn](el.checked)); } catch (e) {}
+        el.checked = v;
+        const lbl = el.parentNode.querySelector('.lbl');
+        if (lbl) lbl.textContent = v ? 'On' : 'Off';
+        linkLast = ''; linkTick();
+      });
+    });
   }
   function linkTick() {
     const st = linkCall('linkStatus');
@@ -3565,7 +3606,9 @@
     try { lootOn = !!(bridge().lootEnabled && bridge().lootEnabled()); } catch (e) {}
     let alertsKey = '';
     try { alertsKey = bridge().lootAlerts ? bridge().lootAlerts() : ''; } catch (e) {}
-    const key = JSON.stringify(st) + (lootOn ? '|loot' : '') + alertsKey;
+    let cupKey = '';
+    try { cupKey = JSON.stringify(st && st.state === 'linked' ? combatUploadFlags() : null); } catch (e) {}
+    const key = JSON.stringify(st) + (lootOn ? '|loot' : '') + alertsKey + cupKey;
     if (key !== linkLast) { linkLast = key; linkRender(st); }
     else if (st && st.state === 'pending' && $('link-ttl')) $('link-ttl').textContent = linkTtl(st.expiresAt);
   }

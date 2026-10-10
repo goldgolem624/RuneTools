@@ -3263,6 +3263,10 @@ std::filesystem::path flush(std::uint32_t pid, Client& c) {
         else rtx::log::Launcher("combat: cannot open the log file for " + c.character);
     }
     if (!lines.empty() && c.file.IsOpen()) c.file.Append(lines);
+    if (!lines.empty()) {
+        if (fights::LiveWanted()) fights::LiveFeed(pid, c.rec.LogId(), lines);
+        else fights::LiveGap(c.rec.LogId());                         // a live log missing these lines stops; the final upload repairs it
+    }
     std::filesystem::path closed;
     if (!c.rec.LogOpen() && c.file.IsOpen()) { closed = c.file.Path(); c.file.Close(); }
     return closed;
@@ -3278,6 +3282,7 @@ void compact_closed(const Closed& closed) {
         if (fights::Compact(x.first, "logout", &row)) {
             { std::lock_guard<std::mutex> lk(g_mu); g_saved.push_back(row); }
             rtx::log::Launcher("combat: log " + row.id + " saved, " + std::to_string(row.fights.size()) + " fight(s), " + std::to_string(row.events) + " events, " + std::to_string(row.bytes) + " bytes");
+            fights::AfterCompact(row);
         } else rtx::log::Launcher("combat: log " + x.second + " had no fight, dropped");
     }
 }
@@ -3287,6 +3292,7 @@ void finish(std::uint32_t pid, Client& c, const char* why, Closed& closed) {
     c.rec.Close(why);
     const std::filesystem::path p = flush(pid, c);
     if (!p.empty()) closed.push_back({ p, id });
+    fights::LiveClose(pid, id);
     c.ring.close();
     rtx::reader::CombatForget(pid);
 }
@@ -3343,7 +3349,7 @@ void step(const std::vector<std::uint32_t>& pids, const std::map<std::uint32_t, 
             else ++it;
         }
         if (on && !pids.empty() && (g_cfgOk || build_config())) {
-            if (!g_recovered) { g_recovered = true; fights::Recover(); fights::Retention(); }
+            if (!g_recovered) { g_recovered = true; fights::Recover(); fights::Retention(); fights::StartUploads(); }
             for (std::uint32_t pid : pids) {
                 Client& c = g_clients[pid];
                 if (!c.configured) {
@@ -3373,7 +3379,11 @@ void step(const std::vector<std::uint32_t>& pids, const std::map<std::uint32_t, 
                     if (rtx::reader::CombatReadLocal(pid, clk, anim, tgt)) c.rec.FeedLocal(clk, anim, tgt, wall_ms());
                 }
                 const std::filesystem::path p = flush(pid, c);
-                if (!p.empty()) closed.push_back({ p, c.rec.LogId() });
+                if (!p.empty()) {                                // closed in this pass (rotation or logout): its live session closes too
+                    const std::string id = c.rec.LogId();
+                    closed.push_back({ p, id });
+                    fights::LiveClose(pid, id);
+                }
             }
         }
     }
@@ -3408,8 +3418,16 @@ JSValueRef CombatRecordEnabled(JSContextRef ctx, JSObjectRef, JSObjectRef, size_
     return JSValueMakeBoolean(ctx, fights::RecordEnabled());
 }
 JSValueRef CombatUploadAuto(JSContextRef ctx, JSObjectRef, JSObjectRef, size_t argc, const JSValueRef argv[], JSValueRef*) {
-    if (argc >= 1) fights::SetUploadAuto(JSValueToBoolean(ctx, argv[0]));
+    if (argc >= 1) { const bool on = JSValueToBoolean(ctx, argv[0]); fights::SetUploadAuto(on); rtx::log::Launcher(std::string("combat: automatic upload ") + (on ? "on" : "off")); }
     return JSValueMakeBoolean(ctx, fights::UploadAuto());
+}
+// combatUploadLive([bool]): the open log goes up in chunks while it records.
+JSValueRef CombatUploadLive(JSContextRef ctx, JSObjectRef, JSObjectRef, size_t argc, const JSValueRef argv[], JSValueRef*) {
+    if (argc >= 1) { const bool on = JSValueToBoolean(ctx, argv[0]); fights::SetUploadLive(on); rtx::log::Launcher(std::string("combat: live upload ") + (on ? "on" : "off")); }
+    return JSValueMakeBoolean(ctx, fights::UploadLive());
+}
+JSValueRef CombatLiveState(JSContextRef ctx, JSObjectRef, JSObjectRef, size_t, const JSValueRef[], JSValueRef*) {
+    return utf8_to_js(ctx, fights::LiveStateJson());
 }
 JSValueRef CombatKeepNames(JSContextRef ctx, JSObjectRef, JSObjectRef, size_t argc, const JSValueRef argv[], JSValueRef*) {
     if (argc >= 1) fights::SetKeepNames(JSValueToBoolean(ctx, argv[0]));
@@ -3450,12 +3468,16 @@ JSValueRef FightOpenFolder(JSContextRef ctx, JSObjectRef, JSObjectRef, size_t, c
     fights::OpenFolder();
     return JSValueMakeBoolean(ctx, true);
 }
-// Uploads come with the website part; the contract answers "unavailable" until then.
-JSValueRef FightUpload(JSContextRef ctx, JSObjectRef, JSObjectRef, size_t, const JSValueRef[], JSValueRef*) {
-    return utf8_to_js(ctx, "{\"ok\":false,\"state\":\"unavailable\",\"error\":\"uploads are not available yet\"}");
+// fightUpload(id): queue one saved log for the linked account (the file is found through its index row).
+JSValueRef FightUpload(JSContextRef ctx, JSObjectRef, JSObjectRef, size_t argc, const JSValueRef argv[], JSValueRef*) {
+    const std::string id = argc >= 1 && JSValueIsString(ctx, argv[0]) ? js_to_utf8(ctx, argv[0]) : std::string();
+    return utf8_to_js(ctx, fights::UploadRequestJson(id));
 }
-JSValueRef FightUploadStatus(JSContextRef ctx, JSObjectRef, JSObjectRef, size_t, const JSValueRef[], JSValueRef*) {
-    return utf8_to_js(ctx, "{\"state\":\"unavailable\"}");
+// fightUploadStatus(id): where that log's upload stands; with no argument, whether this PC can upload.
+JSValueRef FightUploadStatus(JSContextRef ctx, JSObjectRef, JSObjectRef, size_t argc, const JSValueRef argv[], JSValueRef*) {
+    if (argc < 1 || !JSValueIsString(ctx, argv[0])) return utf8_to_js(ctx, fights::UploadStatusJson(std::string()));
+    const std::string id = js_to_utf8(ctx, argv[0]);
+    return utf8_to_js(ctx, fights::UploadStatusJson(id.empty() ? std::string("-") : id));
 }
 
 // Feeds the combat log: every logged-in client's actor rings, five times a second. The client
@@ -3706,6 +3728,7 @@ long long ItemGePrice(int item_id) {
 // is what the switch writes to combat-record.txt.
 std::string CombatRecordRun(std::uint32_t pid, int seconds, const std::wstring& outdir) {
     fights::SetRoot(outdir);
+    fights::SetHeadless();                      // and never upload from here
     combatrec::g_recovered = true;              // never touch the user's own folder from here
     std::string report;
     std::vector<std::uint32_t> pids;
@@ -6647,6 +6670,8 @@ void AttachBridge(ultralight::View* view) {
     install_fn(ctx, ns, "combatLog",         CombatLogFn);
     install_fn(ctx, ns, "combatRecordEnabled", CombatRecordEnabled);
     install_fn(ctx, ns, "combatUploadAuto",  CombatUploadAuto);
+    install_fn(ctx, ns, "combatUploadLive",  CombatUploadLive);
+    install_fn(ctx, ns, "combatLiveState",   CombatLiveState);
     install_fn(ctx, ns, "combatKeepNames",   CombatKeepNames);
     install_fn(ctx, ns, "combatRecordActive", CombatRecordActive);
     install_fn(ctx, ns, "combatRecordState", CombatRecordState);

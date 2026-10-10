@@ -679,7 +679,7 @@ void Recorder::writeEvent(const Ev& e) {
 void Recorder::openLog(long long c, long long wallMs, const std::vector<Ev>& pending) {
     logId_ = cfg_.newLogId ? cfg_.newLogId() : std::to_string(wallMs);
     startedAt_ = wallMs; c0_ = c; wall0_ = wallMs;
-    written_ = 0; logBytes_ = 0; gaps_ = 0; readFails_ = 0; seq_ = 0;
+    written_ = 0; logBytes_ = 0; gaps_ = 0; readFails_ = 0; reads_ = 0; seq_ = 0;
     tail_.clear(); dict_.clear(); dictJson_.clear(); mechDict_.clear(); fights_.clear();
     for (auto& a : actors_) a.row.written = false;
     logOpen_ = true;
@@ -764,7 +764,7 @@ void Recorder::Close(const char* why) {
         Ev m; m.type = 16; m.c = lastC_; m.f = { std::strcmp(why, "rotation") == 0 ? 3 : 4 }; m.text = why;
         writeEvent(m);
         emitLine("[\"end\",{\"endedAt\":" + std::to_string(lastWallMs_) + ",\"endBy\":\"" + std::string(why) + "\",\"readFails\":" + std::to_string(readFails_) +
-                 ",\"gaps\":" + std::to_string(gaps_) + ",\"phase\":" + std::to_string(phase_) + ",\"events\":" + std::to_string(written_) + "}]");
+                 ",\"reads\":" + std::to_string(reads_) + ",\"gaps\":" + std::to_string(gaps_) + ",\"phase\":" + std::to_string(phase_) + ",\"events\":" + std::to_string(written_) + "}]");
         logOpen_ = false;
     }
     resetScene();
@@ -948,6 +948,7 @@ void Recorder::flushCasts(std::vector<Ev>& evs) {
 }
 
 void Recorder::Feed(const Tick& t) {
+    ++reads_;
     if (!t.ok) { ++readFails_; return; }
     if (t.status != 30) { if (logOpen_ || inFight_) Close("logout"); lastWallMs_ = t.wallMs; return; }
     const long long c = (long long)t.clock;
