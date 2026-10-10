@@ -10578,7 +10578,10 @@ void health_calibration(HCtx& c, rtx::health::Run& run) {
         const std::string what = f.what ? std::string(" (") + f.what + ")" : std::string();
         switch (f.status) {
             case O::Found:   d = hx(f.found) + " from " + f.op + what; break;
-            case O::Moved:   ok = kWarn; d = "MOVED: compiled " + hx(f.compiled) + ", client " + hx(f.found) + " (from " + f.op + "), the client's in use" + what; break;
+            // read from the client and in use: where the compiled value differs (another client of the
+            // build, or an update) nothing is wrong here; a compiled copy still in use elsewhere is the
+            // Compiled copies row's to name
+            case O::Moved:   d = hx(f.found) + " from " + f.op + " (compiled " + hx(f.compiled) + ", the client's in use)" + what; break;
             case O::NotFound: ok = kFail; kind = "fallback"; d = "GONE: no read of the expected shape in " + std::string(f.op) + "; compiled " + hx(f.compiled) + " in use" + what; break;
             case O::Ambiguous: ok = kFail; kind = "fallback"; d = "NEW: " + std::string(f.op) + " reads more than one candidate; compiled " + hx(f.compiled) + " in use" + what; break;
             case O::NoOp:    ok = kFail; kind = "fallback"; d = "GONE: " + std::string(f.op) + " is not recognised in this exe; compiled " + hx(f.compiled) + " in use"; break;
@@ -11885,6 +11888,46 @@ std::uint32_t handler_fingerprint(HANDLE h, std::uint64_t fn) {
     return hsh;
 }
 
+// The zone sub-packet table, found in the running image so no exe needs it recorded. The client
+// keeps several tables of pointers to descriptors {id, wire length} whose ids count up from 0 (the
+// server packets and three more); the zone one is the table whose lengths agree with the most
+// sub-packets this reader knows, and it has to stand alone at that. 0 when none does. `runOut`
+// takes how many descriptors the table holds.
+std::uint32_t find_zone_sub_table(HCtx& c, int* runOut) {
+    if (runOut) *runOut = 0;
+    const std::size_t size = c.imageSize;
+    if (!c.base || size < 0x10000 || size > (256u << 20)) return 0;
+    std::vector<std::uint8_t> img(size, 0);
+    for (std::size_t off = 0; off < size; off += 0x10000) {
+        const std::size_t n = size - off < 0x10000 ? size - off : 0x10000;
+        if (rpm_bytes(c.h, c.base + off, img.data() + off, n)) continue;
+        for (std::size_t pg = 0; pg < n; pg += 0x1000) rpm_bytes(c.h, c.base + off + pg, img.data() + off + pg, n - pg < 0x1000 ? n - pg : 0x1000);
+    }
+    auto desc = [&](std::size_t slot, std::int32_t& id, std::int32_t& len) {
+        std::uint64_t ptr; std::memcpy(&ptr, img.data() + slot, 8);
+        if (ptr < c.base || ptr - c.base + 8 > size) return false;
+        std::memcpy(&id, img.data() + (ptr - c.base), 4); std::memcpy(&len, img.data() + (ptr - c.base) + 4, 4);
+        return true;
+    };
+    std::uint32_t best = 0; int bestAgree = 0, bestRun = 0, ties = 0;
+    for (std::size_t i = 0; i + 8 <= size; ) {
+        int run = 0, agree = 0;
+        for (std::size_t j = i; j + 8 <= size; j += 8, ++run) {
+            std::int32_t id, len;
+            if (!desc(j, id, len) || id != run) break;
+            if (run < rtx::evzone::kSubCount && len == rtx::evzone::subLen(run)) ++agree;
+        }
+        if (run >= 8) {
+            if (agree > bestAgree) { best = (std::uint32_t)i; bestAgree = agree; bestRun = run; ties = 0; }
+            else if (agree == bestAgree) ++ties;
+        }
+        i += run >= 8 ? (std::size_t)run * 8 : 8;
+    }
+    if (!best || ties || bestAgree * 3 < rtx::evzone::kSubCount * 2) return 0;
+    if (runOut) *runOut = bestRun;
+    return best;
+}
+
 // ---- Packets: live layouts ----
 // One row per expected opcode seen at least 20 times in the event ring: records the decoder read,
 // and records whose decoded values the game state and the cache do not allow. A layout that kept
@@ -12186,6 +12229,23 @@ void health_packets(HCtx& c, rtx::health::Run& run) {
             if (fp) fpOp[fp] = op;
         }
         int okc = 0, total = 0, pinned = 0; std::string bad; bool moved = false;
+        char stampHex[16]; std::snprintf(stampHex, sizeof(stampHex), "%08x", c.stamp);
+        // The other clients of one game version (OpenGL, Vulkan) are built from the same source: where
+        // this exe has no handlers recorded, a recorded one of its version stands in. A handler there
+        // that now sits under another opcode here is a renumbering; one found nowhere here was only
+        // compiled differently.
+        std::uint32_t sibling = 0; int same = 0, differ = 0;
+        {
+            const rtx::pins::Line mine = rtx::pins::Find("build", stampHex);
+            const std::string ver = mine.kind.empty() ? std::string() : rtx::pins::Field(mine.expect, "version");
+            const rtx::pins::Line first = rtx::pins::Find("op", std::string(rtx::sops::kExpected[0].name) + "." + hx((std::uint32_t)rtx::sops::kExpected[0].op));
+            if (!ver.empty() && !first.kind.empty() && rtx::pins::StampValue(first.expect, c.stamp).empty())
+                for (const auto& l : *rtx::pins::Lines()) {
+                    if (l.kind != "build" || l.key == stampHex || rtx::pins::Field(l.expect, "version") != ver) continue;
+                    const std::uint32_t st = (std::uint32_t)std::strtoul(l.key.c_str(), nullptr, 16);
+                    if (st && !rtx::pins::StampValue(first.expect, st).empty()) { sibling = st; break; }
+                }
+        }
         for (const auto& e : rtx::sops::kExpected) {
             ++total;
             const int len = lens[(std::size_t)e.op];
@@ -12207,12 +12267,29 @@ void health_packets(HCtx& c, rtx::health::Run& run) {
                     why += std::string(why.empty() ? "" : ", ") + "handler changed" + (it != fpOp.end() ? " (the recorded handler is now op " + hx((std::uint32_t)it->second) + ")" : "");
                 }
             }
+            if (want.empty() && sibling && !pin.kind.empty()) {
+                const std::string sv = rtx::pins::StampValue(pin.expect, sibling);
+                const std::size_t hp = sv.find("h=");
+                const std::uint32_t sibFp = hp == std::string::npos ? 0 : (std::uint32_t)std::strtoul(sv.c_str() + hp + 2, nullptr, 16);
+                if (sibFp && sibFp == fps[(std::size_t)e.op]) ++same;
+                else if (sibFp) {
+                    auto it = fpOp.find(sibFp);
+                    if (it != fpOp.end() && it->second != e.op) { good = false; moved = true; why += std::string(why.empty() ? "" : ", ") + "its handler is now op " + hx((std::uint32_t)it->second); }
+                    else ++differ;
+                }
+            }
             if (good) ++okc;
             else bad += std::string(bad.empty() ? "" : "; ") + e.name + " " + hx((std::uint32_t)e.op) + ": " + why;
         }
-        char stampHex[16]; std::snprintf(stampHex, sizeof(stampHex), "%08x", c.stamp);
         run.Fact("packets.pinnedOps", std::to_string(pinned) + "/" + std::to_string(total));
-        if (okc == total && pinned == 0) {
+        if (okc == total && pinned == 0 && sibling && same * 2 >= total) {
+            char sib[16]; std::snprintf(sib, sizeof(sib), "%08x", sibling);
+            run.Fact("packets.siblingOps", std::to_string(same) + "/" + std::to_string(total) + " as " + sib);
+            run.Add(G, "pkt.opcodes", "Server opcodes", kPass,
+                    std::to_string(total) + " opcodes carry their wire length; " + std::to_string(same) + " handlers are the ones recorded for the " + sib + " client of this game version, " +
+                    std::to_string(differ) + " compiled differently, none under another opcode",
+                    "Chat capture|Events channel|Zone events|Var updates|GE offers", std::to_string(total) + " lengths and handlers", std::to_string(okc) + " match, " + std::to_string(same) + " as " + sib, "pkt.table");
+        } else if (okc == total && pinned == 0) {
             // lengths alone pass a renumbering that keeps a length: without the handler fingerprints
             // of this exe the compare says nothing
             run.Add(G, "pkt.opcodes", "Server opcodes", kFail,
@@ -12238,9 +12315,12 @@ void health_packets(HCtx& c, rtx::health::Run& run) {
     }
     // zone sub-packets: the table the zone update dispatches through
     {
-        const std::uint32_t pinned = rtx::pins::PinnedRva("zoneSub", c.stamp);
-        char stampHex[16]; std::snprintf(stampHex, sizeof(stampHex), "%08x", c.stamp);
-        int ok = kFail; std::string d = std::string("UNVERIFIED: no zone sub table pinned for this exe (") + stampHex + "): pin rva zoneSub for it", word;
+        int tableRun = 0;
+        const std::uint32_t found = find_zone_sub_table(c, &tableRun);
+        const std::uint32_t recorded = rtx::pins::PinnedRva("zoneSub", c.stamp);
+        const std::uint32_t pinned = found ? found : recorded;
+        if (found) run.Fact("packets.zoneSubRva", hx(found));
+        int ok = kFail; std::string d = "GONE: no table of zone sub-packet descriptors found in the client", word;
         if (pinned) {
             int agree = 0, n = 0; std::string bad;
             for (int sub = 0; sub <= rtx::evzone::kSubCount; ++sub) {
@@ -12254,9 +12334,10 @@ void health_packets(HCtx& c, rtx::health::Run& run) {
             }
             ok = n && agree == n ? kPass : kFail;
             d = std::to_string(agree) + "/" + std::to_string(n) + " zone sub-packet lengths agree" + (bad.empty() ? "" : ";" + bad);
+            if (found && recorded && found != recorded) d += "; table at " + hx(found) + ", recorded " + hx(recorded);
             if (ok != kPass) d = (word.empty() ? std::string("GONE") : word) + ": " + d;
         }
-        run.Add(G, "pkt.zone", "Zone sub-packets", ok, d, "Ground items|Loc changes|Spot animations|Projectiles|Sounds", std::to_string(rtx::evzone::kSubCount) + " subs with their lengths", pinned ? d.substr(d.find_first_of("0123456789")) : std::string("no table"), "pkt.table").kind = pinned ? std::string() : "unrecorded";
+        run.Add(G, "pkt.zone", "Zone sub-packets", ok, d, "Ground items|Loc changes|Spot animations|Projectiles|Sounds", std::to_string(rtx::evzone::kSubCount) + " subs with their lengths", pinned ? d.substr(d.find_first_of("0123456789")) : std::string("no table"), "pkt.table");
     }
     // the event ring the launcher reads: mask as asked, message_game left to the chat ring
     if (c.cli) {

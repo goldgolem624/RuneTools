@@ -1,6 +1,7 @@
 #include "SoundFilter.h"
 #include "../../companion/SoundShare.h"   // per-pid section name + layout
 #include "../../companion/Signatures.h"
+#include "../reader/CodeScan.h"
 
 #include <Windows.h>
 
@@ -36,6 +37,23 @@ struct View {
     View& operator=(const View&) = delete;
     explicit operator bool() const { return sh != nullptr; }
 };
+
+// The calls of the play routine in this client's exe, read once per client. Empty when the exe
+// cannot be read or does not hold as many calls as there are labels.
+const std::vector<std::uint32_t>& CallSites(std::uint32_t pid, std::uint32_t playRva) {
+    static std::uint32_t s_pid = 0, s_play = 0;
+    static std::vector<std::uint32_t> s_sites;
+    if (pid == s_pid && playRva == s_play) return s_sites;
+    s_pid = pid; s_play = playRva; s_sites.clear();
+    wchar_t path[MAX_PATH] = {}; DWORD n = MAX_PATH;
+    HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+    if (h) {
+        if (QueryFullProcessImageNameW(h, 0, path, &n)) s_sites = rtx::codescan::SoundCallSites(path, playRva);
+        CloseHandle(h);
+    }
+    if (s_sites.size() != sizeof(rtx::sig::kSoundSites) / sizeof(rtx::sig::kSoundSites[0])) s_sites.clear();
+    return s_sites;
+}
 
 }  // namespace
 
@@ -86,12 +104,13 @@ std::string StatusJson(std::uint32_t pid) {
         const std::uint32_t abs = seq - valid + i;          // oldest-first
         const auto& e = sh->recent[abs % rtx::sound::kMaxRecent];
         if (i) out += ',';
-        // Origin from the return address (950-1: the instruction after each call of the play routine exe+0x3E8C50):
-        // 0x949CC/0x94AEE/0x9515E script ops, 0xF0718 server sound (0x2C), 0xF0B71 server world-tile
-        // sound (0x5F), 0x115478/0x115750 zone sounds (0xA4 and the zone-update sub-packets),
-        // 0x3E70F0 actor animation slots, 0x3E89EB engine. Unknown call sites are reported by RVA.
+        // Origin from the return address, by its place among the calls of the play routine in this
+        // client's exe: three script ops, the server sound (0x2C), the server world-tile sound (0x5F),
+        // two zone sounds (0xA4 and the zone-update sub-packets), the actor animation slots, the
+        // engine. A call that is not one of them is reported by RVA.
         const char* origin = "other";
-        for (const auto& s : rtx::sig::kSoundSites) if (s.ret == e.caller) { origin = s.origin; break; }
+        const auto& sites = CallSites(pid, sh->playRva);
+        for (std::size_t k = 0; k < sites.size(); ++k) if (sites[k] == e.caller) { origin = rtx::sig::kSoundSites[k].origin; break; }
         out += "{\"n\":" + std::to_string(abs) +
                ",\"id\":" + std::to_string(e.id) +
                ",\"idx\":" + std::to_string(e.idx) +

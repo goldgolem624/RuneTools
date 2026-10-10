@@ -546,8 +546,9 @@ inline constexpr CcOp kCcOps[] = {
 };
 inline constexpr const char* kCcFeatures = "In-game panels drawn by the engine";
 
-// Sound play call sites the launcher labels by origin: the return address of each call to the play
-// routine (the call after kSoundSynth) in the Vulkan 950-1 client. Other exes report the raw RVA.
+// Sound play call sites the launcher labels by origin, in address order: the calls of the play
+// routine (the call after kSoundSynth). The labels go by place, the first call to the first label:
+// the addresses are the Vulkan 950-1 client's and differ in every other exe, the order does not.
 struct SoundSite { std::uint32_t ret; const char* origin; };
 inline constexpr SoundSite kSoundSites[] = {
     { 0x949CC, "script" }, { 0x94AEE, "script" }, { 0x9515E, "script" }, { 0xF0718, "server" }, { 0xF0B71, "server_tile" },

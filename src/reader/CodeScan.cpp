@@ -505,6 +505,14 @@ std::map<int, int> StaticPacketLengths(const Image& im, std::uint32_t tblRva, st
 
 }  // namespace
 
+std::vector<std::uint32_t> SoundCallSites(const std::wstring& exePath, std::uint32_t playRva) {
+    auto im = Load(exePath);
+    if (!im->ok || !playRva) return {};
+    std::vector<std::uint32_t> sites = CallSitesTo(*im, playRva);
+    std::sort(sites.begin(), sites.end());
+    return sites;
+}
+
 ExeFacts Facts(const std::wstring& exePath) {
     ExeFacts f;
     auto im = Load(exePath);
@@ -974,16 +982,18 @@ void Check(const std::wstring& exePath, rtx::health::Run& run) {
 
     // sound origin labels: the return addresses of every call to the play routine
     if (synthRva) {
+        // The origins are told by the order of the calls: the routine is called from the same places in
+        // the same order in every client of a build, at addresses that differ. So the labels hold when
+        // the exe has as many calls as there are labels.
         const auto sites = CallSitesTo(I, synthRva);
-        int matched = 0;
-        for (const auto& s : kSoundSites) if (std::find(sites.begin(), sites.end(), s.ret) != sites.end()) ++matched;
         const int total = (int)(sizeof(kSoundSites) / sizeof(kSoundSites[0]));
+        const int matched = (int)sites.size() == total ? total : 0;
         std::string list;
         for (std::size_t k = 0; k < sites.size() && k < 12; ++k) list += (k ? "," : "") + Hex(sites[k]);
         run.Fact("sound.callers", list);
         run.Add(G, "code.soundsites", "Sound origin labels", matched == total ? kPass : kWarn,
-                std::string(matched == total ? "" : "MOVED: ") + std::to_string(matched) + "/" + std::to_string(total) + " labelled call sites are calls to the play routine" +
-                (matched == total ? "" : " (origins show as \"other\" on this exe)"),
+                matched == total ? std::to_string(total) + " calls of the play routine, each labelled by its place among them"
+                                 : "NEW: " + std::to_string(sites.size()) + " calls of the play routine, " + std::to_string(total) + " labelled (origins show as \"other\" on this exe)",
                 "Sounds panel: origin column", std::to_string(total), std::to_string(matched), "code.sig.sound-synth");
     }
 
