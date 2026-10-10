@@ -10507,8 +10507,10 @@ void health_build(HCtx& c, rtx::health::Run& run) {
                 }
             }
         }
-        if (k != kPass) det = "NEW: " + det;   // newer content or another build than the export: its tables lag
-        run.Add(G, "build.cs2", "Script export", k, det, "CS2 Scripts panel", "", "", "build.game").kind = k == kPass ? std::string() : "stale";
+        // An export older than the cache is the CS2 Scripts panel showing older scripts, nothing more:
+        // said in the row, never a warning on a PC that only plays.
+        if (k != kPass) { det += "; the CS2 Scripts panel shows the scripts as exported"; k = kPass; }
+        run.Add(G, "build.cs2", "Script export", k, det, "CS2 Scripts panel", "", "", "build.game");
     }
 }
 
@@ -11815,7 +11817,7 @@ void health_interfaces(HCtx& c, rtx::health::Run& run) {
         run.Add(G, "iface.chatstore", "Chat records (store)", store > 0 ? kPass : (c.inWorld ? kWarn : kUnchecked),
                 std::string(store > 0 || !c.inWorld ? "" : "GONE: ") + std::to_string(store) + " recent records", "Chat log|Chat alerts", "> 0 records", std::to_string(store), "data.chat").need = store > 0 || c.inWorld ? "" : "log in";
         if (c.cli) run.Add(G, "iface.chatpackets", "Chat lines (packets)", kUnchecked, "launcher only", "Chat log (packet lines)", "hook feeding, packets seen", "not read from the command line", "comp.boot").need = "a launcher run";
-        else run.Add(G, "iface.chatpackets", "Chat lines (packets)", ph && ph->s == "true" ? (cj.num("pseen") > 0 ? kPass : c.inWorld ? kWarn : kUnchecked) : kFail,
+        else run.Add(G, "iface.chatpackets", "Chat lines (packets)", ph && ph->s == "true" ? (cj.num("pseen") > 0 ? kPass : kUnchecked) : kFail,   // no chat message yet is nothing to warn about
                      ph && ph->s == "true" ? std::string(cj.num("pseen") > 0 ? "" : "UNVERIFIED: ") + std::to_string(cj.num("pseen")) + " message_game packets seen" : "GONE: framer not feeding chat (hook or opcode moved)",
                      "Chat log (packet lines)", "hook feeding, packets seen", ph ? ph->s + ", " + std::to_string(cj.num("pseen")) : std::string("no hook state"), "comp.boot").need = ph && ph->s == "true" && cj.num("pseen") == 0 ? "a chat message" : "";
     }
