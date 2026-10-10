@@ -653,23 +653,32 @@ void Recorder::ensureDict(const Ev& e) {
         const int type = cfg_.names.structInt ? cfg_.names.structInt(st, 8109, -1) : -1;
         const int icon = cfg_.names.structInt ? cfg_.names.structInt(st, 2802, 0) : 0;
         const int item = !icon && cfg_.names.structInt ? cfg_.names.structInt(st, 4677, 0) : 0;   // no sprite: the item it comes from
-        // a buff whose only name is its effect ("Melee basic abilities generate 1.5x adrenaline") goes by the ability
-        // that draws the same icon (Meteor Strike); the effect is kept as its description
+        // a buff whose only name is its effect goes by what gives it, the effect kept as its description: "Your
+        // Crackling perk will activate on your next hit." is the Crackling perk, "Gloves of Passage - Your next
+        // melee attack ..." the gloves, "Melee basic abilities generate 1.5x adrenaline" the ability drawing the
+        // same icon (Meteor Strike)
         std::string desc;
         int words = 0; bool inWord = false;
         for (char ch : name) { const bool sp = ch == ' '; if (!sp && !inWord) ++words; inWord = !sp; }
         const bool sentence = cut != std::string::npos || (!name.empty() && name.back() == '.') || words > 5;
-        if (icon > 0 && sentence)
-            for (const auto& a : cfg_.abilities)
-                if (a.icon == icon && !a.name.empty()) {
-                    for (std::size_t i = 0; i < raw.size(); ++i) {   // the full text, a line break read as a sentence break
-                        if (raw.compare(i, 4, "<br>") == 0) { if (!desc.empty() && desc.back() != '.') desc += '.'; desc += ' '; i += 3; continue; }
-                        if (raw[i] == '<') { const std::size_t e = raw.find('>', i); if (e == std::string::npos) break; i = e; continue; }
-                        desc += raw[i];
-                    }
-                    name = a.name;
-                    break;
+        if (sentence) {
+            std::string by;
+            const std::size_t perk = name.rfind("Your ", 0) == 0 ? name.find(" perk") : std::string::npos;
+            const std::size_t dash = name.find(" - ");
+            if (perk != std::string::npos && perk > 5 && perk < 45) by = name.substr(5, perk - 5) + " perk";
+            else if (dash != std::string::npos && dash >= 2 && dash <= 40 && name.size() - dash - 3 >= 12) by = name.substr(0, dash);
+            else if (icon > 0)
+                for (const auto& a : cfg_.abilities) if (a.icon == icon && !a.name.empty()) { by = a.name; break; }
+            if (!by.empty()) {
+                for (std::size_t i = 0; i < raw.size(); ++i) {   // the full text, a line break read as a sentence break
+                    if (raw.compare(i, 4, "<br>") == 0) { if (!desc.empty() && desc.back() != '.') desc += '.'; desc += ' '; i += 3; continue; }
+                    if (raw[i] == '<') { const std::size_t e = raw.find('>', i); if (e == std::string::npos) break; i = e; continue; }
+                    desc += raw[i];
                 }
+                if (desc.rfind(by + " - ", 0) == 0) desc = desc.substr(by.size() + 3);
+                name = by;
+            }
+        }
         dictLine("buffs", st, "{\"name\":" + jstr(name) + ",\"type\":" + std::to_string(type) + ",\"icon\":" + std::to_string(icon) +
                  (item > 0 ? ",\"item\":" + std::to_string(item) : std::string()) + (desc.empty() ? std::string() : ",\"desc\":" + jstr(desc)) + "}");
         break;
@@ -1034,6 +1043,7 @@ void Recorder::pushBuff(std::vector<Ev>& evs, BuffVar& b, const QueuedBuff& q) {
             if (it->buff == q.buff) { waiting = true; it = buffQ_.erase(it); } else ++it;
         }
         if (waiting && !b.cur) return;
+        if (b.group.size() > 1 && !b.cur && !b.owner) return;   // its on row was never written
     }
     const int st = q.on ? (b.owner ? b.owner : b.structId) : (b.cur ? b.cur : (b.owner ? b.owner : b.structId));
     if (q.on) b.cur = st;
@@ -1045,11 +1055,14 @@ void Recorder::flushBuffs(std::vector<Ev>& evs, bool all) {
     std::vector<QueuedBuff> keep;
     for (const auto& q : buffQ_) {
         BuffVar& b = buffs_[(std::size_t)q.buff];
-        // a shared timer already running when recording began was named before it: wait for the server to name
-        // it again (it repeats every few seconds) rather than guess, up to a minute, then the table's first
-        const bool unnamed = q.start < 0 && !b.cur && !b.owner;
-        if (unnamed && passes_ - q.pass < kBuffNameWaitPasses) { keep.push_back(q); continue; }
+        // a shared timer nothing named is never guessed: the var also serves channels and abilities of other
+        // styles (varc 3746 is Snipe's, Assault's and more), so the table's first struct would be wrong as often
+        // as right. One already running when recording began gets up to a minute for the server to name it again
+        // (it repeats every few seconds); a fresh one is named in its own packet pass or not at all.
+        const bool unnamed = !b.cur && !b.owner;
+        if (unnamed && q.start < 0 && passes_ - q.pass < kBuffNameWaitPasses) { keep.push_back(q); continue; }
         if (!all && q.pass >= passes_) { keep.push_back(q); continue; }
+        if (unnamed) continue;
         const int st = b.owner ? b.owner : b.structId;
         if (b.cur && b.cur != st && q.start < 0) push(evs, 7, q.c, { b.cur, 0, -1, q.c, -1 });   // the var changed hands while on
         b.cur = st;
