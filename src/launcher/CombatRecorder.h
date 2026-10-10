@@ -144,7 +144,11 @@ private:
     };
     struct RingMemo { std::vector<std::uint64_t> keys; bool seen = false; long long at = 0; };
     struct CastVar { int structId = 0, endVarc = 0; bool known = false; int last = 0; };
-    struct BuffVar { int structId = 0, kind = 0, var = 0, countKind = 0, countVar = 0; bool known = false, on = false; int last = 0; };
+    // One timer var; several buff structs can share it (anti-poison and poisoned, the overload kinds), so the
+    // struct of a row is the one the server named for the var last (script 4252), else the table's first.
+    struct BuffVar { int structId = 0, kind = 0, var = 0, countKind = 0, countVar = 0; bool known = false, on = false; int last = 0;
+                     std::vector<int> group; int owner = 0, cur = 0; };
+    struct QueuedBuff { int buff = 0; long long c = 0; int on = 0; long long start = -1; int end = 0, stacks = -1; long long pass = 0; };
 
     static std::uint64_t ringKey(int slot, const rtx::reader::CombatHitRec& r);
     int actorIndex(const rtx::reader::CombatActorSample& a, long long c);
@@ -156,6 +160,8 @@ private:
     struct NetRow { int startTick, endTick; std::size_t ev; int head; long long c; std::string name; int style0; };   // style0: the last cast's style before this row
     void netCast(std::vector<Ev>& evs, const NetEv& n, long long c, std::vector<NetRow>& rows);
     void flushCasts(std::vector<Ev>& evs);
+    void flushBuffs(std::vector<Ev>& evs, bool all);
+    void pushBuff(std::vector<Ev>& evs, BuffVar& b, const QueuedBuff& q);
     void preroll(Ev&& e);
     int actorOfRef(int ref, int index) const;
     int actorOnTile(int x, int y, int plane) const;
@@ -190,6 +196,8 @@ private:
     struct QueuedCast { int structId = 0; long long c = 0; int ready = -1; int startVarc = 0; int src = 1; long long pass = 0; };
     struct NetCast { long long c = 0; int structId = 0, startVarc = 0; int startTick = 0, endTick = 0; };
     std::vector<QueuedCast> castQ_;
+    std::vector<QueuedBuff> buffQ_;                      // shared-var buff rows waiting for the struct the server names
+    std::unordered_map<int, int> buffOfStruct_;          // buff struct -> index in buffs_
     std::deque<NetCast> netCasts_;
     std::deque<std::pair<long long, long long>> tickOffs_;   // (cycle, cycle - tick * 30) of recent 6570 records
     long long tickOff_ = 0; bool haveTickOff_ = false;

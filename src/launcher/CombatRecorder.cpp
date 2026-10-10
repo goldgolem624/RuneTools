@@ -17,7 +17,7 @@ namespace {
 constexpr int kUnknown = -0x7fffffff;
 constexpr int kVarpLp = 13537, kVarpLpMax = 13538, kVarpAdren = 679, kVarpPrayer = 3274, kVarpEncounter = 10946;
 constexpr int kGcdStart = 2091, kGcdEnd = 2092, kGcdStruct = 14881;   // the global cooldown's dummy struct
-constexpr int kScriptCooldown = 6570, kScriptChannel = 18766;   // (struct, start tick, end tick, 1, 1); (side, ticks, id, name)
+constexpr int kScriptCooldown = 6570, kScriptChannel = 18766, kScriptBuffTimer = 4252;   // 4252: (struct, ticks left)   // (struct, start tick, end tick, 1, 1); (side, ticks, id, name)
 constexpr long long kCastMatch = 15;                 // a cooldown varc and script 6570 this many cycles apart are one cast
 constexpr long long kRestoreSlack = 45;              // a 6570 record this much older than the tick offset is a cooldown restore
 bool isGcdStruct(int st) { return st == 14881 || st == 14882 || st == 29145; }
@@ -181,7 +181,8 @@ void NetDecoder::Decode(int op, const std::uint8_t* b, std::uint32_t n, long lon
         if (p >= n) return;
         ++p;
         const bool cd = ns == 5 && std::memcmp(sig, "iiiii", 5) == 0, ch = ns == 4 && std::memcmp(sig, "iiis", 4) == 0;
-        if (!cd && !ch) return;
+        const bool bt = ns == 2 && sig[0] == 'i' && sig[1] == 'i';
+        if (!cd && !ch && !bt) return;
         NetEv e; e.kind = NetEv::Script; e.wallMs = wallMs;
         for (int i = ns - 1; i >= 0; --i) {
             if (sig[i] == 's') {
@@ -197,7 +198,7 @@ void NetDecoder::Decode(int op, const std::uint8_t* b, std::uint32_t n, long lon
         }
         if (p + 4 > n) return;
         e.id = (int)nu32(b + p);
-        if ((cd && e.id == kScriptCooldown) || (ch && e.id == kScriptChannel)) out.push_back(std::move(e));
+        if ((cd && e.id == kScriptCooldown) || (ch && e.id == kScriptChannel) || (bt && e.id == kScriptBuffTimer)) out.push_back(std::move(e));
         return;
     }
     case s::kSpotAnim:      item(0x0B, b, n, wallMs, out); return;
@@ -318,11 +319,20 @@ void Recorder::Configure(const Config& cfg) {
         if (it == casts_.end()) casts_[a.startVarc] = CastVar{ a.structId, a.endVarc };
         else if (a.structId < it->second.structId) it->second.structId = a.structId;   // the family head
     }
-    std::unordered_set<long long> seenVar;
+    std::unordered_map<long long, int> buffOfVar;
+    buffOfStruct_.clear(); buffQ_.clear();
     for (const auto& e : rtx::buffvars::kTimer) {
-        if (!seenVar.insert(((long long)e.kind << 32) | (std::uint32_t)e.var).second) continue;   // one row per shared var
-        BuffVar b; b.structId = e.structId; b.kind = e.kind; b.var = e.var;
+        const long long vk = ((long long)e.kind << 32) | (std::uint32_t)e.var;
+        auto seen = buffOfVar.find(vk);
+        if (seen != buffOfVar.end()) {                                    // one row per shared var; the struct joins its group
+            BuffVar& g = buffs_[(std::size_t)seen->second];
+            if (std::find(g.group.begin(), g.group.end(), e.structId) == g.group.end()) g.group.push_back(e.structId);
+            buffOfStruct_[e.structId] = seen->second;
+            continue;
+        }
+        BuffVar b; b.structId = e.structId; b.kind = e.kind; b.var = e.var; b.group = { e.structId };
         if (const auto* ce = rtx::buffvars::FindCount(e.structId)) { b.countKind = ce->kind; b.countVar = ce->var; }
+        buffOfVar[vk] = (int)buffs_.size(); buffOfStruct_[e.structId] = (int)buffs_.size();
         buffs_.push_back(b);
     }
     mechIdx_.clear(); bossOfNpc_.clear(); bossOfEnc_.clear(); active_.clear(); mechLast_.clear(); varLast_.clear();
@@ -868,10 +878,20 @@ void Recorder::FeedNet(const std::vector<NetEv>& in, std::uint32_t clock, long l
         haveTickOff_ = true;
     }
     std::vector<NetRow> rows;                        // the ability rows this call made, for co-sent records and channels
+    bool namedBuff = false;
+    for (const NetEv& n : in) if (n.kind == NetEv::Script && n.id == kScriptBuffTimer) { namedBuff = true; break; }
     for (const NetEv& n : in) {
         ++netSeen_;
         const long long c = cycleOf(n);
         if (n.kind == NetEv::Script && n.id == kScriptCooldown) { netCast(evs, n, c, rows); continue; }
+        if (n.kind == NetEv::Script && n.id == kScriptBuffTimer) {   // which struct a shared timer var now belongs to
+            auto bs = buffOfStruct_.find(n.a[0]);
+            if (bs != buffOfStruct_.end()) {
+                BuffVar& b = buffs_[(std::size_t)bs->second];
+                if (b.group.size() > 1) b.owner = n.a[0];
+            }
+            continue;
+        }
         if (n.kind == NetEv::Script && n.id == kScriptChannel) {
             const std::string name = plainText(n.text);
             long long at = c;
@@ -926,7 +946,31 @@ void Recorder::FeedNet(const std::vector<NetEv>& in, std::uint32_t clock, long l
         default: break;
         }
     }
+    if (namedBuff) flushBuffs(evs, true);          // shared-var rows of this pass now carry the named struct
     routeLate(evs);
+}
+
+// A buff row. A var one struct owns is written now; a shared var's on row waits for the struct the server names
+// (4252 lands in the same packet pass, drained after this one) and is written by FeedNet or the next pass.
+void Recorder::pushBuff(std::vector<Ev>& evs, BuffVar& b, const QueuedBuff& q) {
+    if (b.group.size() > 1 && q.on) { buffQ_.push_back(q); return; }
+    const int st = q.on ? (b.owner ? b.owner : b.structId) : (b.cur ? b.cur : (b.owner ? b.owner : b.structId));
+    if (q.on) b.cur = st;
+    push(evs, 7, q.c, { st, q.on, q.start, q.end, q.stacks });
+}
+
+// Queued shared-var rows: every one when `all`, else the ones from an earlier pass, under the named struct or the default.
+void Recorder::flushBuffs(std::vector<Ev>& evs, bool all) {
+    std::vector<QueuedBuff> keep;
+    for (const auto& q : buffQ_) {
+        if (!all && q.pass >= passes_) { keep.push_back(q); continue; }
+        BuffVar& b = buffs_[(std::size_t)q.buff];
+        const int st = b.owner ? b.owner : b.structId;
+        if (b.cur && b.cur != st && q.start < 0) push(evs, 7, q.c, { b.cur, 0, -1, q.c, -1 });   // the var changed hands while on
+        b.cur = st;
+        push(evs, 7, q.c, { st, 1, q.start, q.end, q.stacks });
+    }
+    buffQ_ = std::move(keep);
 }
 
 // Varc changes from an earlier pass that no 6570 row took: the ability's family head (src 1); the global
@@ -957,6 +1001,7 @@ void Recorder::Feed(const Tick& t) {
     lastWallMs_ = t.wallMs; lastC_ = c;
     ++passes_;
     flushCasts(evs);
+    flushBuffs(evs, false);
     std::unordered_map<int, int> vp, vc;
     for (const auto& kv : t.varps) vp[kv.first] = kv.second;
     for (const auto& kv : t.varcs) vc[kv.first] = kv.second;
@@ -1163,15 +1208,16 @@ void Recorder::Feed(const Tick& t) {
         const int v = varValue(vp, vc, b.kind, b.var, ok);
         if (!ok) continue;
         bool cok = false; const int stacks = b.countVar ? varValue(vp, vc, b.countKind, b.countVar, cok) : 0;
+        const int bi = (int)(&b - &buffs_[0]);
         if (!b.known) {                                   // first sight: a running timer is an on row with its start unknown
             b.known = true; b.last = v; b.on = v > c;
-            if (b.on) push(evs, 7, c, { b.structId, 1, -1, v, cok ? stacks : -1 });
+            if (b.on) pushBuff(evs, b, { bi, c, 1, -1, v, cok ? stacks : -1, passes_ });
             continue;
         }
         if (v == b.last) { if (b.on && v <= c) b.on = false; continue; }
         b.last = v;
         const bool on = v > c;
-        push(evs, 7, c, { b.structId, on ? 1 : 0, (on && !b.on) ? c : -1, v, cok ? stacks : -1 });
+        pushBuff(evs, b, { bi, c, on ? 1 : 0, (on && !b.on) ? c : -1, v, cok ? stacks : -1, passes_ });
         b.on = on;
     }
 

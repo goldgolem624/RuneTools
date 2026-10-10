@@ -732,6 +732,8 @@
 
   // Buff and debuff spans within the fight. An on row with end e covers [c, e]; a later on row for the
   // same struct extends it; an off row closes it at its c.
+  // A timer struct the game never draws on its buff bar: the dictionary row has neither a name nor an icon.
+  function hiddenBuff(b) { return !!b && b.name === '' && !b.icon; }
   function uptimes(log, n) {
     const r = range(log, n), c = ctx(log), open = {}, spans = {};
     function close(s, at) {
@@ -762,6 +764,7 @@
       if (!merged.length) continue;
       const total = merged.reduce((t, sp) => t + sp[1] - sp[0], 0);
       const b = c.buffs[s] || {};
+      if (hiddenBuff(c.buffs[s])) continue;
       rows.push({ struct: Number(s), name: shortName(b.name || 'Buff ' + s), fullName: b.name || '', type: b.type || 0, icon: b.icon || 0, spans: merged, uptime: total / dur });
     }
     rows.sort((a, b) => b.uptime - a.uptime || a.name.localeCompare(b.name));
@@ -1465,6 +1468,7 @@
     for (const [s, o] of open) {
       if (o.end < c) continue;
       const b = own(cx.buffs, s) && isObj(cx.buffs[s]) ? cx.buffs[s] : {};
+      if (hiddenBuff(own(cx.buffs, s) ? cx.buffs[s] : null)) continue;
       out.buffs.push({ struct: Number(s), name: shortName(b.name || 'Buff ' + s), type: isNum(b.type) ? b.type : 0, since: o.start });
     }
     for (const k of at.casts) if (k.c >= from && k.c <= c && (k.src !== 3 || k.resolved)) out.casts.push({ c: k.c, struct: k.struct, name: ability(log, k.struct).name });
