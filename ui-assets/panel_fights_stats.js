@@ -172,11 +172,11 @@
   function followers(log) {
     const c = ctx(log);
     if (c.follow) return c.follow;
-    const ev = log.events, mine = new Set(), hitOn = new Set(), tgtTime = {}, open = {};
+    const ev = log.events, mine = new Set(), mineItem = {}, hitOn = new Set(), tgtTime = {}, open = {};
     const endC = ev.length ? ev[ev.length - 1][1] : 0;
     const isNpc = a => actorOf(log, a).type === 'npc';
     for (const e of ev) {
-      if (e[0] === 23 && e[2] >= 0) mine.add(e[2]);
+      if (e[0] === 23 && e[2] >= 0) { mine.add(e[2]); if (e[3] > 0) mineItem[e[2]] = e[3]; }
       else if (e[0] === 0) hitOn.add(e[2]);
       else if (e[0] === 3 && e[2] !== c.self && isNpc(e[2])) {
         const o = open[e[2]];
@@ -225,7 +225,7 @@
         for (let k = firstAfter(list, sc + delay[a] - FOLLOW_SLACK); k < list.length && ev[list[k]][1] <= sc + delay[a] + FOLLOW_SLACK; k++) if (!hitBy.has(list[k])) hitBy.set(list[k], Number(a));
       }
     }
-    c.follow = { owner, mine, hitBy, delay };
+    c.follow = { owner, mine, mineItem, hitBy, delay };
     return c.follow;
   }
   // "your Ripper Demon", "Marshal Mudd's Kal'gerion demon"
@@ -420,9 +420,9 @@
     const a = ctx(log).abilities[struct];
     if (a) return a;
     if (struct === -3) {   // your familiar's hits, as one row named after it
-      const f = followers(log), names = [];
-      for (const m of f.mine) { const nm = actorName(log, m); if (names.indexOf(nm) < 0) names.push(nm); }
-      return { name: (names.join(', ') || 'Familiar') + ' (familiar)', icon: 0, style: '', kind: 1 };
+      const f = followers(log), names = []; let item = 0;
+      for (const m of f.mine) { const nm = actorName(log, m); if (names.indexOf(nm) < 0) names.push(nm); if (!item && f.mineItem[m]) item = f.mineItem[m]; }
+      return { name: (names.join(', ') || 'Familiar') + ' (familiar)', icon: 0, item, style: '', kind: 1 };
     }
     // a Putrid Zombie in the log: its attacks are what poisons the target (34179 = its buff icon)
     if (struct === -2 && ctx(log).actors.some(x => x && x.type === 'npc' && x.id === 30266)) return { name: 'Poison (Putrid Zombie)', icon: 34179, style: '', kind: 1 };
@@ -769,7 +769,7 @@
       if (e[0] !== 0 || !inR(e[1], r) || hitRole(log, e) !== 'dealt') continue;
       const s = at.struct[i], v = e[4] > 0 ? e[4] : 0;
       if (!passDealt(r, e, s)) continue;
-      const row = rows[s] || (rows[s] = { struct: s, name: s ? ability(log, s).name : 'Unattributed', icon: s ? ability(log, s).icon : 0, hits: 0, crits: 0, max: 0, total: 0, casts: 0 });
+      const row = rows[s] || (rows[s] = { struct: s, name: s ? ability(log, s).name : 'Unattributed', icon: s ? ability(log, s).icon : 0, item: s ? ability(log, s).item || 0 : 0, hits: 0, crits: 0, max: 0, total: 0, casts: 0 });
       row.hits++; row.total += v; if (v > row.max) row.max = v; if (hmInfo(log, e[3]).crit) row.crits++;
       total += v;
     }

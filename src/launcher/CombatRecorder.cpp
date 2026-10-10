@@ -26,7 +26,7 @@ constexpr long long kCastMatch = 15;
 constexpr long long kBuffNameWaitPasses = 600;       // about a minute of 100 ms passes                 // a cooldown varc and script 6570 this many cycles apart are one cast
 constexpr long long kRestoreSlack = 45;              // a 6570 record this much older than the tick offset is a cooldown restore
 bool isGcdStruct(int st) { return st == 14881 || st == 14882 || st == 29145; }
-constexpr int kTypeSound = 19, kTypeItem = 20, kTypePerks = 21, kTypeEof = 22, kTypeFamiliar = 23, kTypeMech = 100;   // kTypeFamiliar: [23, c, actor] your familiar (-1 none)   // kTypeItem: [20, c, container, slot, item, count]
+constexpr int kTypeSound = 19, kTypeItem = 20, kTypePerks = 21, kTypeEof = 22, kTypeFamiliar = 23, kTypeMech = 100;   // kTypeFamiliar: [23, c, actor, pouch item] your familiar (-1 none)   // kTypeItem: [20, c, container, slot, item, count]
                                                     // kTypeEof: [22, c, container, slot, weapon] the special attack an Essence of Finality stores (-1 none)
                                                     // kTypePerks: [21, c, slot, perk, rank x 4] for a worn item      // kTypeMech is written as ["mech", c, boss, key, kind, id, actor]
 constexpr long long kResendMs = 1200;                // tile items this soon after their zone was cleared are the zone sent again
@@ -697,6 +697,12 @@ void Recorder::ensureDict(const Ev& e) {
         dictLine("encounters", st, jstr(cfg_.names.structStr ? cfg_.names.structStr(st, 8849) : std::string()));
         break;
     }
+    case kTypeFamiliar: {
+        const int item = (int)e.f[1];
+        if (item <= 0 || !once(kTypeItem, item)) return;
+        dictLine("items", item, "{\"name\":" + jstr(plainText(cfg_.names.itemName ? cfg_.names.itemName(item) : std::string())) + "}");
+        break;
+    }
     case kTypeItem: case kTypeEof: {
         const int item = (int)e.f[2];
         if (item < 0 || !once(kTypeItem, item)) return;
@@ -772,7 +778,7 @@ void Recorder::openLog(long long c, long long wallMs, const std::vector<Ev>& pen
     if (adren_ >= 0) add(5, sc, { adren_ });
     if (prayer_ != kUnknown) add(6, sc, { prayer_ & 0xFFFF, (prayer_ >> 16) & 0x7FFF });
     if (enc_ != kUnknown) add(12, sc, { enc_ });
-    if (famIdx_ >= 0) add(kTypeFamiliar, sc, { famIdx_ });
+    if (famIdx_ >= 0) add(kTypeFamiliar, sc, { famIdx_, famPouch_ });
     for (const auto& b : buffs_) {
         if (!b.known || !b.on) continue;
         // the buff the server named for the var; a shared var nothing named yet waits for its queued row
@@ -1290,7 +1296,7 @@ void Recorder::Feed(const Tick& t) {
             }
         }
         const int idx = famUid_ >= 0 ? indexOfUid(famUid_) : -1;
-        if (idx != famIdx_ && (idx < 0 || actors_[(std::size_t)idx].row.type == "npc")) { famIdx_ = idx; push(evs, kTypeFamiliar, c, { idx }); }
+        if (idx != famIdx_ && (idx < 0 || actors_[(std::size_t)idx].row.type == "npc")) { famIdx_ = idx; push(evs, kTypeFamiliar, c, { idx, idx >= 0 ? famPouch_ : 0 }); }
     }
 
     // encounter

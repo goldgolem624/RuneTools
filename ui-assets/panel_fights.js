@@ -517,6 +517,7 @@
     for (const r of ab.rows) {
       const tr = el('div', 'fl-tr click' + (r.struct ? '' : ' dim') + (fl.hl && fl.hl === r.struct ? ' on' : ''));
       const nm = flName('n', r.name, r.icon, true); nm.dataset.tip = flRowTip(r); tr.appendChild(nm);
+      if (!r.icon && r.item > 0 && nm.firstChild) flItemIcon(nm.firstChild, r.item);
       flCells(tr, [[String(r.hits), 'num'], [String(r.crits), 'num opt'], [st.fmtNum(r.avg), 'num opt', Math.round(r.avg).toLocaleString()], [st.fmtNum(r.max), 'num opt', r.max.toLocaleString()], [st.fmtNum(r.total), 'num tot', r.total.toLocaleString()]]);
       tr.appendChild(flShare(r.share));
       tr.addEventListener('click', () => { fl.hl = fl.hl === r.struct ? 0 : r.struct; fl.tab = 'health'; flPaint(); });
