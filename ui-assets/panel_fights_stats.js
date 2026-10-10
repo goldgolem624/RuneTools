@@ -566,8 +566,11 @@
       let struct = ev[i][2], resolved = false;
       const a = c.abilities[struct];
       const seqId = animAt(ev[i][1]), seq = c.seqs[seqId] || '';
+      // a cooldown family (Concentrated Blast and Greater Concentrated Blast share a cooldown): the cast animation names
+      // the member only when it fits exactly one of them; the recorder's own struct (script 6570, varc 4098) stands otherwise
       if (a && a.family && seqId >= 0) {
-        for (const m of a.family) { const ma = c.abilities[m]; if (ma && seqIs(log, seqId, m)) { struct = m; break; } }
+        const fits = a.family.filter(m => c.abilities[m] && seqIs(log, seqId, m));
+        if (fits.length === 1) struct = fits[0];
       }
       if ((struct === 14881 || struct === 14882) && !nearAb(ev[i][1])) {
         const s = fromStamp(ev[i][1], seqId);
