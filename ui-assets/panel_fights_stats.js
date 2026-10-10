@@ -1077,7 +1077,8 @@
       if (e[4] === 22) { if (e[1] < r.start || first === null) first = e[5]; last = e[5]; cells++; }
       if (e[4] === 11 && e[1] >= r.start && e[5] > max && e[5] < 2147483647) max = e[5];
     }
-    return { dealt: s.dealt, maxHit: s.maxHit, trackerDealt: (first !== null && last !== null) ? last - first : null, trackerMax: max || null, cells };
+    const fam = familiar(log, n), famTotal = fam ? fam.total : 0;   // the game's tracker leaves the familiar out: `own` compares like with like
+    return { dealt: s.dealt, own: s.dealt - famTotal, familiar: famTotal, maxHit: s.maxHit, trackerDealt: (first !== null && last !== null) ? last - first : null, trackerMax: max || null, cells };
   }
 
   // Style split of the damage dealt.

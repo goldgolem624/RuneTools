@@ -488,14 +488,14 @@
     body.appendChild(g);
     body.appendChild(flH('Top abilities'));
     const g2 = el('div', 'fl-bars');
-    for (const row of ab.rows.filter(r => r.struct).slice(0, 5)) g2.appendChild(flBar(row.name, row.total, ab.total, '', row.icon || 0, row.item || 0));
+    for (const row of ab.rows.filter(r => r.struct)) g2.appendChild(flBar(row.name, row.total, ab.total, '', row.icon || 0, row.item || 0));
     if (sm.unattributed) g2.appendChild(flBar('Unattributed', sm.unattributed, ab.total, 'dim', 0));
     body.appendChild(g2);
     body.appendChild(flH('Game tracker'));
     const t = el('div', 'fl-strip');
     const kv = (k, v, tip) => { const d = el('div', 'fl-kv'); d.appendChild(el('div', 'k', k)); d.appendChild(el('div', 'v', v)); if (tip) d.dataset.tip = tip; t.appendChild(d); };
     kv('Tracker damage', tc.trackerDealt == null ? '-' : st.fmtNum(tc.trackerDealt), tc.trackerDealt == null ? 'No tracker cells in this fight' : tc.trackerDealt.toLocaleString() + ' (column 22, unit open)');
-    kv('Recorded', st.fmtNum(tc.dealt), tc.dealt.toLocaleString());
+    kv('Recorded', st.fmtNum(tc.own), tc.own.toLocaleString() + ' from your own hits' + (tc.familiar ? '; the game tracker leaves your familiar out (' + tc.familiar.toLocaleString() + ' more, counted in Dealt)' : ''));
     kv('Tracker max', tc.trackerMax == null ? '-' : st.fmtNum(tc.trackerMax), tc.trackerMax == null ? '' : tc.trackerMax.toLocaleString());
     kv('Recorded max', st.fmtNum(tc.maxHit), tc.maxHit.toLocaleString());
     kv('Casts', String(sm.casts), '');
