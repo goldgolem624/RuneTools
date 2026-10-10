@@ -92,3 +92,6 @@ ZygomitesPluginX/
 # Live dumps written next to the repo by the reader switches
 /iface-dump.txt
 /pkttable_live.json
+
+# Standalone developer tests: kept on disk, not in the repo.
+/tests/
