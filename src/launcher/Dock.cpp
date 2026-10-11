@@ -894,6 +894,7 @@ void Detach(Dock* d, bool closeGame) {
     rtx::launcher::lua::UnloadClient(d->pid);   // its page is gone: free the Lua plugin states it ran (Lua runs on this thread only)
     rtx::overlay::QuiesceMarkers(d->pid);
     SetEmbeddedGame(d->pid, nullptr);
+    rtx::reader::RenderRulesSet(d->pid, {});
     for (int which = 0; which <= 4; ++which) rtx::reader::RenderToggle(d->pid, which, false);
     rtx::reader::VarsWatch(d->pid, false);
     rtx::launcher::HudClose(d->pid);   // release the HUD section mapping (else one handle + view leaks per client pid)
@@ -1039,6 +1040,7 @@ void RemoveClient(std::uint32_t pid) {
     Dock* d = it->second;
     g_docks.erase(it);
     Detach(d);   // panel closed, game restored to a normal window (left running)
+    rtx::reader::RenderRulesSet(pid, {});
     for (int which = 0; which <= 4; ++which) rtx::reader::RenderToggle(pid, which, false);
     rtx::reader::VarsWatch(pid, false);
     rtx::launcher::companion::Forget(pid);   // release this client's session slot

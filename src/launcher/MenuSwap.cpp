@@ -86,6 +86,23 @@ bool SetEnabled(std::uint32_t pid, std::uint32_t mode) {
     return true;
 }
 
+bool SetHideRows(std::uint32_t pid, bool on) {
+    View v(pid);
+    if (!v) return false;
+    v.sh->hideRows = on ? 1u : 0u;
+    return v.sh->hideReady != 0;
+}
+
+bool HideClick(std::uint32_t pid, std::uint32_t& seq, int& kind, std::uint64_t& actor) {
+    View v(pid);
+    if (!v) return false;
+    for (int i = 0; i < 4; ++i) {
+        seq = v.sh->hideClickSeq; kind = v.sh->hideClickKind; actor = v.sh->hideClickActor;
+        if (v.sh->hideClickSeq == seq) return true;
+    }
+    return false;
+}
+
 // Rules: one per line as "verb<TAB>target" (empty target = any object); line i draws above i+1.
 bool SetPins(std::uint32_t pid, const std::string& rules) {
     View v(pid);

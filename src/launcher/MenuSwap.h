@@ -19,4 +19,10 @@ bool SetPins(std::uint32_t pid, const std::string& rulesNewlineSeparated);
 // `entries` is in display order; `slot` is the game's array index, which runs the other way.
 std::string StatusJson(std::uint32_t pid);
 
+// A "Hide" row under the rows of each NPC and player. False when the companion cannot add rows.
+bool SetHideRows(std::uint32_t pid, bool on);
+// The last click on one: its count since the client started, the row kind (4 NPC, 7 player) and
+// the actor it was added for. False when there is no channel.
+bool HideClick(std::uint32_t pid, std::uint32_t& seq, int& kind, std::uint64_t& actor);
+
 }  // namespace rtx::launcher::menuswap

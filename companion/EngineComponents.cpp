@@ -297,6 +297,28 @@ void Shape(void* root, const Rect& r) {
     ResetStacks(); Push((std::int32_t)(255 - ((r.argb >> 24) & 0xFF))); Call(kSetTrans, root);
     ResetStacks(); Push(r.w > 0 && r.h > 0 ? 0 : 1); Call(kSetHide, root);
 }
+// Ours under `parent`, made again when the game has just dropped them. Called from inside the game's
+// own create, on the first child its script makes after clearing the parent, so the rebuilt panel is
+// never drawn without them: waiting for the next frame left one frame of every XP drop bare.
+std::uint32_t g_remade = 0;
+void RemakeUnder(void* root, std::int32_t parent) {
+    const Rect* first = nullptr;
+    for (const Rect& h : g_have) if (h.parent == parent) { first = &h; break; }
+    if (!first) return;
+    if (Find(root, parent, first->slot)) { ClearActive(); return; }
+    for (const Rect& h : g_have) {
+        if (h.parent != parent || h.slot < 0xE00 || h.slot >= 0xFB00) continue;
+        if (Find(root, h.parent, h.slot)) continue;
+        ResetStacks(); ClearActive();
+        Push(h.parent); Push(h.text[0] ? 4 : 3); Push(h.slot);
+        Call(kCreate, root);
+        void* comp = nullptr; std::memcpy(&comp, g_state + kActive + 8, 8);
+        if (!comp) break;
+        Shape(root, h);
+    }
+    ClearActive();
+    ++g_remade;
+}
 bool Same(const Rect& a, const Rect& b) { return a.x == b.x && a.y == b.y && a.w == b.w && a.h == b.h && a.argb == b.argb && a.font == b.font && std::strncmp(a.text, b.text, sizeof(a.text)) == 0; }
 }  // namespace
 
@@ -311,10 +333,13 @@ void Want(const void* rects, std::uint32_t count) {
 
 bool Usable() { return g_usable; }
 
+namespace { void HookSetText(); }
+
 void Apply(std::uint8_t* root) {
     if (!root) return;
     if (!g_resolved) Resolve();
     if (!g_usable) return;
+    HookSetText();   // the create hook is what puts ours back inside the game's own rebuild
     bool steady;
     { std::lock_guard<std::mutex> lk(g_wantMu); steady = g_wantGen == g_haveGen; }
     if (steady) {
@@ -490,10 +515,13 @@ bool ReadCreateArgs(std::uint8_t* state, std::int32_t* parent, std::int32_t* slo
 }
 void* Detour_Create(void* root, std::uint8_t* state) {
     std::int32_t parent = 0, slot = -1;
-    const bool args = !g_textOff && state && !g_textUse.empty() && ReadCreateArgs(state, &parent, &slot) && TextGroupAllowed(parent, slot);
+    const bool read = state && state != g_state && ReadCreateArgs(state, &parent, &slot);
+    const bool args = read && !g_textOff && !g_textUse.empty() && TextGroupAllowed(parent, slot);
     void* beforeA = args ? ActiveComp(state, kActive) : nullptr;
     void* beforeB = args ? ActiveComp(state, kActiveAlt) : nullptr;
     void* r = g_createOrig(root, state);
+    // the game making one of its own children under a parent that holds ours: it may just have cleared it
+    if (read && slot >= 0 && slot < 0xE00 && !g_have.empty()) RemakeUnder(root, parent);
     if (args) {
         void* a = ActiveComp(state, kActive), * b = ActiveComp(state, kActiveAlt);
         void* made = (a && a != beforeA) ? a : (b && b != beforeB) ? b : a;

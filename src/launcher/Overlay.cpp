@@ -1815,7 +1815,7 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
         bool onscr = false;
         for (int i = 0; i < nq; ++i)
             if (qx[i] > -2.f * W && qx[i] < 3.f * W && qy[i] > -2.f * H && qy[i] < 3.f * H) onscr = true;
-        if (drawShape && nq >= 3 && onscr) {
+        if (drawShape && nq >= 3 && onscr && !p.outline_only) {
             const int sr = MixSurf(mr, kSurfR), sg = MixSurf(mg, kSurfG), sb = MixSurf(mb, kSurfB);
             auto gfan = [&](const float* fx, const float* fy, int n, int r3, int g3, int b3) {
                 for (int i = 1; i + 1 < n; i += 2) {

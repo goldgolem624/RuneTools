@@ -994,6 +994,15 @@
   .al-cust .row2 { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
   .al-input { flex: 1 1 140px; min-width: 120px; background: var(--bg-elev-2); border: 1px solid var(--border-hi); border-radius: 6px; color: var(--text); font: inherit; font-size: 12px; padding: 5px 8px; }
   .al-input:focus { outline: none; border-color: var(--accent-hi); }
+  /* Rendering panel: which NPCs and players are drawn */
+  .rh-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 0 12px 10px; }
+  .rh-col { min-width: 0; display: flex; flex-direction: column; gap: 6px; padding: 8px; border: 1px solid var(--border-hi); border-radius: 6px; }
+  .rh-h { color: var(--text-mute); font-size: 11px; }
+  .rh-col .al-input { flex: none; width: 100%; min-width: 0; box-sizing: border-box; }
+  .rh-chips { display: flex; flex-wrap: wrap; gap: 4px; min-height: 22px; align-items: center; }
+  .rh-none { color: var(--text-mute); font-size: 11px; }
+  .rh-num { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; color: var(--text); font-size: 12px; }
+  .rh-num .al-input { flex: none; width: 52px; min-width: 0; text-align: center; padding: 4px 4px; }
   .al-input::placeholder { color: var(--text-mute); }
   .al-del { appearance: none; border: none; background: transparent; color: var(--text-mute); font-size: 17px; line-height: 1; cursor: pointer; padding: 0 4px; }
   .al-del:hover { color: #ef4444; }

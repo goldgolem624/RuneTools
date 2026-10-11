@@ -152,6 +152,7 @@
   function hcAdviceLine(im, level, s) {
     const total = (s.pass | 0) + (s.fail | 0) + (s.warn | 0) + (s.unchecked | 0), done = total - (s.unchecked | 0);
     const pre = (im && im.complete === false) ? 'Log in so RuneTools can finish checking (' + done + ' of ' + total + ' done). ' : '';
+    if (level === 'red' && im && (im.broken || []).some(e => e.feature === 'Everything')) return pre + 'RuneTools cannot read the game until it is updated.';
     if (level === 'red') return pre + 'Those panels show stale or empty data until a RuneTools update; everything else works.';
     if (level === 'amber') return pre + 'Everything works. Moved values are in use; rows not verified need the game state named below.';
     return pre + 'Everything RuneTools reads still works.';

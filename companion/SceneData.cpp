@@ -1195,22 +1195,80 @@ typedef void  (*NpcDis_t)(std::uint64_t a1, std::uint64_t a2, std::uint64_t a3, 
 PlDis_t  g_origPlDis  = nullptr;
 NpcDis_t g_origNpcDis = nullptr;
 
+// The launcher's exception list, copied off the share by the companion's own loop into the buffer the
+// display detours are not reading, then switched in: the detours never see a list half written.
+struct ExceptList { std::uint32_t count = 0; std::uint64_t at[rtx::render::kMaxExcept] = {}; };
+ExceptList g_except[2];
+std::atomic<int> g_exceptUse{ 0 };
+std::uint32_t g_exceptSeq = ~0u;
+void TakeExceptions() {
+    rtx::render::Share* sh = g_renderShare;
+    if (!sh) return;
+    const std::uint32_t s = sh->exceptSeq;
+    if (s == g_exceptSeq || (s & 1u)) return;
+    ExceptList& to = g_except[1 - g_exceptUse.load(std::memory_order_relaxed)];
+    std::uint32_t n = sh->exceptCount;
+    if (n > (std::uint32_t)rtx::render::kMaxExcept) n = rtx::render::kMaxExcept;
+    std::memcpy(to.at, sh->except, (std::size_t)n * sizeof(std::uint64_t));
+    if (sh->exceptSeq != s) return;                   // changed underneath: the next pass takes it
+    to.count = n;
+    g_exceptSeq = s;
+    g_exceptUse.store(1 - g_exceptUse.load(std::memory_order_relaxed), std::memory_order_release);
+}
+bool Excepted(std::uint64_t actor) {
+    const ExceptList& l = g_except[g_exceptUse.load(std::memory_order_acquire)];
+    std::uint32_t lo = 0, hi = l.count;
+    if (hi > (std::uint32_t)rtx::render::kMaxExcept) return false;
+    while (lo < hi) {
+        const std::uint32_t mid = (lo + hi) / 2;
+        if (l.at[mid] == actor) return true;
+        if (l.at[mid] < actor) lo = mid + 1; else hi = mid;
+    }
+    return false;
+}
+
 // NPC actor display vtable method, once per NPC per frame; a1 = actor sub. Visual only.
 void Detour_NpcDis(std::uint64_t a1, std::uint64_t a2, std::uint64_t a3, std::uint64_t a4, std::uint64_t a5, std::uint64_t a6) {
     __try {
-        if (g_renderShare && g_renderShare->hideNpcs && IsHeap(a1) && R8(a1 + kType) == 1) return;
+        if (g_renderShare && IsHeap(a1) && R8(a1 + kType) == 1 && ((g_renderShare->hideNpcs != 0) != Excepted(a1))) return;
     } __except (EXCEPTION_EXECUTE_HANDLER) {}
     g_origNpcDis(a1, a2, a3, a4, a5, a6);
 }
 void* Detour_PlDis(std::uint64_t a1, void* a2, void* a3, void* a4, void* a5, void* a6) {
     __try {
         // a1 = player sub; keep the local player.
-        if (g_renderShare && g_renderShare->hidePlayers && IsHeap(a1)) {
+        if (g_renderShare && IsHeap(a1)) {
             std::uint64_t self = g_localPlayerSub.load(std::memory_order_relaxed);
-            if (R8(a1 + kType) == 2 && a1 != self) return nullptr;
+            if (a1 != self && R8(a1 + kType) == 2 && ((g_renderShare->hidePlayers != 0) != Excepted(a1))) return nullptr;
         }
     } __except (EXCEPTION_EXECUTE_HANDLER) {}
     return g_origPlDis(a1, a2, a3, a4, a5, a6);
+}
+
+// Of the actors standing still on one tile the game draws one. An actor we leave out must not be
+// the one it picks, or the whole tile goes empty: it is kept out of both of the game's passes, so
+// the pick is made among the ones that are drawn.
+typedef void (*StackPass_t)(std::uint64_t ctx, std::uint64_t ref, std::uint64_t level, std::uint64_t origin);
+StackPass_t g_origStackCount = nullptr, g_origStackMark = nullptr;
+bool StackLeftOut(std::uint64_t ref) {
+    __try {
+        rtx::render::Share* sh = g_renderShare;
+        if (!sh || !IsHeap(ref)) return false;
+        const std::uint64_t a = *reinterpret_cast<const std::uint64_t*>(ref + 8);
+        if (!IsHeap(a)) return false;
+        const std::uint8_t t = R8(a + kType);
+        if (t == 2) return a != g_localPlayerSub.load(std::memory_order_relaxed) && ((sh->hidePlayers != 0) != Excepted(a));
+        if (t == 1) return (sh->hideNpcs != 0) != Excepted(a);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {}
+    return false;
+}
+void Detour_StackCount(std::uint64_t ctx, std::uint64_t ref, std::uint64_t level, std::uint64_t origin) {
+    if (StackLeftOut(ref)) return;
+    g_origStackCount(ctx, ref, level, origin);
+}
+void Detour_StackMark(std::uint64_t ctx, std::uint64_t ref, std::uint64_t level, std::uint64_t origin) {
+    if (StackLeftOut(ref)) return;
+    g_origStackMark(ctx, ref, level, origin);
 }
 
 std::uint64_t g_sceneBlankAddr = 0;     // address of the Jcc byte (0 = unavailable)
@@ -1240,6 +1298,7 @@ void ResolveRenderHooks() {
         g_renderShare->magic = rtx::render::kMagic; g_renderShare->version = rtx::render::kVersion;
         g_renderShare->pid = GetCurrentProcessId();
         g_renderShare->hideNpcs = 0; g_renderShare->hidePlayers = 0; g_renderShare->hideAll = 0;
+        g_renderShare->exceptCount = 0; g_renderShare->exceptSeq = 0;
         g_renderShare->keepFocused = 0;
         g_renderShare->installed = 0;
     }
@@ -1254,12 +1313,20 @@ void ResolveRenderHooks() {
     const Located lNpc = Locate("npc-display", FindVarOp(kNpcDisBody, sizeof(kNpcDisBody)));
     const Located lDis = Locate("player-display", FindVarOpWild(kPlDisBody, kPlDisMask, sizeof(kPlDisBody)));
     const std::uint64_t pNpc = lNpc.use, pDis = lDis.use;
+    // both passes or neither: one alone would leave the game's count and its marks disagreeing
+    std::uint64_t pCount = FindVarOpWild(rtx::sig::kStackCount, rtx::sig::kStackCountMask, sizeof(rtx::sig::kStackCount));
+    std::uint64_t pMark  = FindVarOpWild(rtx::sig::kStackMark, rtx::sig::kStackMarkMask, sizeof(rtx::sig::kStackMark));
+    if (!pCount || !pMark || pCount == pMark) { pCount = 0; pMark = 0; }
     bool renderCommitted = false;
     if (pNpc || pDis) {
         DetourTransactionBegin();
         DetourUpdateThread(GetCurrentThread());
         if (pNpc) { g_origNpcDis = (NpcDis_t)pNpc; DetourAttach(&(PVOID&)g_origNpcDis, (PVOID)Detour_NpcDis); }
         if (pDis) { g_origPlDis  = (PlDis_t)pDis;  DetourAttach(&(PVOID&)g_origPlDis,  (PVOID)Detour_PlDis); }
+        if (pCount) {
+            g_origStackCount = (StackPass_t)pCount; DetourAttach(&(PVOID&)g_origStackCount, (PVOID)Detour_StackCount);
+            g_origStackMark  = (StackPass_t)pMark;  DetourAttach(&(PVOID&)g_origStackMark,  (PVOID)Detour_StackMark);
+        }
         renderCommitted = DetourTransactionCommit() == NO_ERROR;
         if (renderCommitted && g_renderShare) {
             if (pNpc) g_renderShare->installed |= 1;   // bit0: hide NPCs
@@ -1268,6 +1335,8 @@ void ResolveRenderHooks() {
     }
     HookLineL("npc-display", lNpc, renderCommitted);
     HookLineL("player-display", lDis, renderCommitted);
+    HookLine("stack-count", pCount, renderCommitted && pCount != 0);
+    HookLine("stack-mark", pMark, renderCommitted && pMark != 0);
     const bool knownBuild = rtx::scn::KnownBuild(g_base);
     std::uint64_t pRender = knownBuild ? FindVarOp(kRenderBody, sizeof(kRenderBody)) : 0;
     if (pRender) {
@@ -2492,6 +2561,7 @@ DWORD WINAPI Worker(LPVOID) {
         {
             std::uint64_t lps = FindLocalPlayerSub();
             if (lps) g_localPlayerSub.store(lps, std::memory_order_relaxed);
+            TakeExceptions();
             if (g_renderShare) {
                 bool wantBlank = g_renderShare->hideAll != 0;
                 if (wantBlank != g_sceneBlankPatched) SceneBlankSet(wantBlank);
@@ -2506,6 +2576,16 @@ DWORD WINAPI Worker(LPVOID) {
 }
 
 }  // namespace
+
+// Whether the display detours are leaving this NPC or player out right now, for the menu row that
+// offers the opposite.
+namespace rtx::renderhide {
+bool Hidden(std::uint64_t actor, bool player) {
+    rtx::render::Share* sh = g_renderShare;
+    if (!sh || !actor) return false;
+    return ((player ? sh->hidePlayers : sh->hideNpcs) != 0) != Excepted(actor);
+}
+}  // namespace rtx::renderhide
 
 bool rtx::sceneplayer::Tile(int& x, int& y) {
     const ULONGLONG at = g_tileAtMs.load();

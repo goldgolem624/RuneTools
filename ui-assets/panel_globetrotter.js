@@ -219,6 +219,7 @@
     }
     clueVarcRoute();   // varc 1323 decides whether the compass clue or the tetracompass is showing
     clueRenderFocus();
+    if (typeof scanTick === 'function') scanTick();   // scan rings, the game's marker, the zone box
     compassTick();   // poll the compass needle while this page is open; drives the banner + dig tile
     tetraTick();     // powered tetracompass: shares the compass varc, marks its own dig tile
     fpTick();        // Forgotten painting: the Inspect view names the painting, marks its dig tile

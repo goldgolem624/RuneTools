@@ -5540,6 +5540,239 @@ std::string OverheadClassJson(std::uint32_t pid) {
     return out;
 }
 
+// ---- which NPCs and players are drawn ----
+namespace {
+struct RenderRulesUse {
+    RenderRules rules;
+    std::unordered_set<std::string> npcHide, npcKeep, playerHide, playerKeep;
+    bool lists = false;          // any list has an entry: the scene is walked for it
+    std::uint64_t sentSig = ~0ull;
+};
+std::mutex g_rrMu;
+std::map<std::uint32_t, RenderRulesUse> g_rr;
+bool g_rrThread = false;
+
+// A name as the lists hold it: lower case, the game's non-breaking space and underscores as spaces.
+std::string rr_key(const std::string& in) {
+    std::string o;
+    for (unsigned char c : in) {
+        if (c == 0xA0 || c == '_') c = ' ';
+        if (c < 0x20 || c > 0x7e) continue;
+        o.push_back((char)std::tolower(c));
+    }
+    while (!o.empty() && o.back() == ' ') o.pop_back();
+    std::size_t b = 0; while (b < o.size() && o[b] == ' ') ++b;
+    return o.substr(b);
+}
+
+// The class switches and the exception list, written for the companion. False when it is not there.
+bool rr_write(std::uint32_t pid, bool npcAll, bool playerAll, const std::vector<std::uint64_t>& except) {
+    wchar_t name[rtx::ipc::kNameChars];
+    rtx::render::MakeSectionName(pid, name);
+    HANDLE h = OpenFileMappingW(FILE_MAP_WRITE | FILE_MAP_READ, FALSE, name);
+    if (!h) return false;
+    auto* sh = reinterpret_cast<rtx::render::Share*>(MapViewOfFile(h, FILE_MAP_WRITE | FILE_MAP_READ, 0, 0, sizeof(rtx::render::Share)));
+    if (!sh) { CloseHandle(h); return false; }
+    const bool ok = sh->magic == rtx::render::kMagic && sh->version == rtx::render::kVersion;
+    if (ok) {
+        const std::uint32_t n = (std::uint32_t)std::min<std::size_t>(except.size(), rtx::render::kMaxExcept);
+        sh->exceptSeq = sh->exceptSeq | 1u;           // odd: mid-update
+        MemoryBarrier();
+        std::memcpy(sh->except, except.data(), (std::size_t)n * sizeof(std::uint64_t));
+        sh->exceptCount = n;
+        MemoryBarrier();
+        sh->exceptSeq = sh->exceptSeq + 1;            // even: complete
+        sh->hideNpcs = npcAll ? 1u : 0u;
+        sh->hidePlayers = playerAll ? 1u : 0u;
+    }
+    UnmapViewOfFile(reinterpret_cast<LPCVOID>(sh));
+    CloseHandle(h);
+    return ok;
+}
+
+// The actors in the scene that the lists turn against their class switch, sorted.
+bool rr_exceptions(std::uint32_t pid, const RenderRulesUse& use, std::vector<std::uint64_t>& out) {
+    HANDLE h = nullptr; std::uint64_t mgva = 0;
+    {
+        std::lock_guard<std::mutex> lk(g_mu);
+        auto it = g_states.find((DWORD)pid);
+        if (it != g_states.end() && it->second.proc && it->second.main_global_va &&
+            DuplicateHandle(GetCurrentProcess(), it->second.proc, GetCurrentProcess(), &h, 0, FALSE, DUPLICATE_SAME_ACCESS))
+            mgva = it->second.main_global_va;
+    }
+    struct DupGuard { HANDLE h; ~DupGuard() { if (h) CloseHandle(h); } } _dup{ h };
+    if (!h || !mgva) return false;
+    const std::uint64_t root = rpm<std::uint64_t>(h, mgva).value_or(0);
+    if (root <= 0x10000) return false;
+    const std::uint64_t cont = rpm<std::uint64_t>(h, root + rtx::scn::kContainer).value_or(0);
+    if (cont <= 0x10000) return false;
+    const int idx = rpm<std::int32_t>(h, cont + rtx::scn::kActiveIdx).value_or(-1);
+    const std::uint64_t arr = rpm<std::uint64_t>(h, cont + rtx::scn::kEntryArr).value_or(0);
+    if (idx < 0 || arr <= 0x10000) return false;
+    const std::uint64_t wv = rpm<std::uint64_t>(h, arr + (std::uint64_t)idx * 0x10 + rtx::scn::kEntryWv).value_or(0);
+    if (wv <= 0x10000) return false;
+    const auto worker = scene_worker(h, pid, wv, nullptr);
+    if (!worker || *worker <= 0x10000) return false;
+    const std::uint64_t vb = rpm<std::uint64_t>(h, *worker + rtx::scn::kVecBegin).value_or(0);
+    const std::uint64_t ve = rpm<std::uint64_t>(h, *worker + rtx::scn::kVecEnd).value_or(0);
+    if (vb <= 0x10000 || ve < vb) return false;
+    std::uint64_t n = (ve - vb) / 8;
+    if (n > 20000) n = 20000;
+    const bool npcLists = !use.npcHide.empty() || !use.npcKeep.empty();
+    const bool crowdRule = use.rules.crowdCount > 0 && use.rules.crowdRange > 0;
+    const bool playerLists = !use.playerHide.empty() || !use.playerKeep.empty() || use.rules.playerMaxDist > 0 || crowdRule;
+    std::unordered_map<int, std::pair<std::string, int>> npcSeen;   // config -> name key, shown id
+    const std::uint64_t pdata = rpm<std::uint64_t>(h, root + rtx::scn::kPlayerData).value_or(0);
+    const int localUid = pdata > 0x10000 ? rpm<std::int32_t>(h, pdata + rtx::scn::kLocalUid).value_or(-1) : -1;
+    struct Pl { std::uint64_t sec; bool inHide, inKeep; int tx, ty; };
+    std::vector<Pl> pls;                          // the other players, judged once the local one is placed
+    int myX = -1, myY = -1;
+    for (std::uint64_t i = 0; i < n; ++i) {
+        const std::uint64_t ep = rpm<std::uint64_t>(h, vb + i * 8).value_or(0);
+        if (ep <= 0x10000) continue;
+        const std::uint64_t sec = rpm<std::uint64_t>(h, ep + rtx::scn::kSecPtr).value_or(0);
+        if (sec <= 0x10000) continue;
+        const int type = rpm<std::uint8_t>(h, sec + rtx::scn::kType).value_or(0xff);
+        bool inHide = false, inKeep = false, all = false;
+        if (type == 2 && playerLists) {
+            char nm[40] = {};
+            rpm_bytes(h, sec + rtx::scn::kName, nm, sizeof(nm) - 1);
+            const std::string key = rr_key(nm);
+            if (key.empty()) continue;
+            const float fx = rpm<float>(h, sec + rtx::scn::kPosX).value_or(0.f), fy = rpm<float>(h, sec + rtx::scn::kPosY).value_or(0.f);
+            const int tx = (int)(fx / 512.f), ty = (int)(fy / 512.f);
+            if (rpm<std::int32_t>(h, sec + rtx::scn::kUid).value_or(-2) == localUid) { myX = tx; myY = ty; continue; }
+            pls.push_back({ sec, use.playerHide.count(key) != 0, use.playerKeep.count(key) != 0, tx, ty });
+            continue;
+        } else if (type == 1 && npcLists) {
+            const int cfg = rpm<std::int32_t>(h, sec + rtx::scn::kConfig).value_or(-1);
+            if (cfg < 0) continue;
+            auto it = npcSeen.find(cfg);
+            if (it == npcSeen.end()) {
+                bool morphHidden = false;
+                const auto meta = resolve_npc(h, root, cfg, &morphHidden);
+                std::string nmKey = rr_key(meta.name);
+                if (nmKey.empty() && !morphHidden) { char nm[40] = {}; rpm_bytes(h, sec + rtx::scn::kName, nm, sizeof(nm) - 1); nmKey = rr_key(nm); }
+                it = npcSeen.emplace(cfg, std::make_pair(nmKey, meta.id >= 0 ? meta.id : cfg)).first;
+            }
+            const std::string ids[2] = { std::to_string(cfg), std::to_string(it->second.second) };
+            auto in = [&](const std::unordered_set<std::string>& set) {
+                return (!it->second.first.empty() && set.count(it->second.first)) || set.count(ids[0]) || set.count(ids[1]);
+            };
+            inHide = in(use.npcHide); inKeep = in(use.npcKeep); all = use.rules.npcAll;
+        } else continue;
+        const bool hidden = inHide || (all && !inKeep);
+        if (hidden != all) out.push_back(sec);
+    }
+    {
+        auto dist = [&](const Pl& p) { return std::max(std::abs(p.tx - myX), std::abs(p.ty - myY)); };
+        const bool placed = myX > 0 && myY > 0;
+        bool crowded = false;
+        if (crowdRule && placed) {
+            int nearN = 0;
+            for (const Pl& p : pls) if (p.tx > 0 && dist(p) <= use.rules.crowdRange) ++nearN;
+            crowded = nearN > use.rules.crowdCount;
+        }
+        const bool all = use.rules.playerAll;
+        for (const Pl& p : pls) {
+            const bool tooFar = placed && use.rules.playerMaxDist > 0 && p.tx > 0 && dist(p) > use.rules.playerMaxDist;
+            const bool hidden = p.inHide || ((all || tooFar || crowded) && !p.inKeep);
+            if (hidden != all) out.push_back(p.sec);
+        }
+    }
+    std::sort(out.begin(), out.end());
+    out.erase(std::unique(out.begin(), out.end()), out.end());
+    return true;
+}
+
+void rr_loop() {
+    for (;;) {
+        Sleep(150);
+        std::vector<std::pair<std::uint32_t, RenderRulesUse>> work;
+        {
+            std::lock_guard<std::mutex> lk(g_rrMu);
+            for (const auto& kv : g_rr) if (kv.second.lists) work.push_back(kv);
+        }
+        for (auto& w : work) {
+            std::vector<std::uint64_t> except;
+            // the scene not readable (lobby, loading): the class switches alone stand
+            rr_exceptions(w.first, w.second, except);
+            std::uint64_t sig = 1469598103934665603ull ^ (w.second.rules.npcAll ? 1 : 0) ^ (w.second.rules.playerAll ? 2 : 0);
+            for (std::uint64_t a : except) { sig ^= a; sig *= 1099511628211ull; }
+            if (sig == w.second.sentSig) continue;
+            if (!rr_write(w.first, w.second.rules.npcAll, w.second.rules.playerAll, except)) sig = ~0ull;
+            std::lock_guard<std::mutex> lk(g_rrMu);
+            auto it = g_rr.find(w.first);
+            if (it != g_rr.end()) it->second.sentSig = sig;
+        }
+    }
+}
+}  // namespace
+
+bool RenderActorName(std::uint32_t pid, std::uint64_t actor, int& kind, std::string& name) {
+    HANDLE h = nullptr; std::uint64_t mgva = 0;
+    {
+        std::lock_guard<std::mutex> lk(g_mu);
+        auto it = g_states.find((DWORD)pid);
+        if (it != g_states.end() && it->second.proc && it->second.main_global_va &&
+            DuplicateHandle(GetCurrentProcess(), it->second.proc, GetCurrentProcess(), &h, 0, FALSE, DUPLICATE_SAME_ACCESS))
+            mgva = it->second.main_global_va;
+    }
+    struct DupGuard { HANDLE h; ~DupGuard() { if (h) CloseHandle(h); } } _dup{ h };
+    if (!h || !mgva || actor <= 0x10000) return false;
+    const std::uint64_t root = rpm<std::uint64_t>(h, mgva).value_or(0);
+    if (root <= 0x10000) return false;
+    const std::uint64_t cont = rpm<std::uint64_t>(h, root + rtx::scn::kContainer).value_or(0);
+    if (cont <= 0x10000) return false;
+    const int idx = rpm<std::int32_t>(h, cont + rtx::scn::kActiveIdx).value_or(-1);
+    const std::uint64_t arr = rpm<std::uint64_t>(h, cont + rtx::scn::kEntryArr).value_or(0);
+    if (idx < 0 || arr <= 0x10000) return false;
+    const std::uint64_t wv = rpm<std::uint64_t>(h, arr + (std::uint64_t)idx * 0x10 + rtx::scn::kEntryWv).value_or(0);
+    if (wv <= 0x10000) return false;
+    const auto worker = scene_worker(h, pid, wv, nullptr);
+    if (!worker || *worker <= 0x10000) return false;
+    const std::uint64_t vb = rpm<std::uint64_t>(h, *worker + rtx::scn::kVecBegin).value_or(0);
+    const std::uint64_t ve = rpm<std::uint64_t>(h, *worker + rtx::scn::kVecEnd).value_or(0);
+    if (vb <= 0x10000 || ve < vb) return false;
+    std::uint64_t n = (ve - vb) / 8;
+    if (n > 20000) n = 20000;
+    for (std::uint64_t i = 0; i < n; ++i) {
+        const std::uint64_t ep = rpm<std::uint64_t>(h, vb + i * 8).value_or(0);
+        if (ep <= 0x10000 || rpm<std::uint64_t>(h, ep + rtx::scn::kSecPtr).value_or(0) != actor) continue;
+        kind = rpm<std::uint8_t>(h, actor + rtx::scn::kType).value_or(0xff);
+        char nm[40] = {};
+        if (kind == 2) {
+            rpm_bytes(h, actor + rtx::scn::kName, nm, sizeof(nm) - 1);
+            name = rr_key(nm);
+        } else if (kind == 1) {
+            bool morphHidden = false;
+            const auto meta = resolve_npc(h, root, rpm<std::int32_t>(h, actor + rtx::scn::kConfig).value_or(-1), &morphHidden);
+            name = rr_key(meta.name);
+            if (name.empty() && !morphHidden) { rpm_bytes(h, actor + rtx::scn::kName, nm, sizeof(nm) - 1); name = rr_key(nm); }
+        } else return false;
+        return !name.empty();
+    }
+    return false;
+}
+
+void RenderRulesSet(std::uint32_t pid, const RenderRules& rules) {
+    RenderRulesUse use;
+    use.rules = rules;
+    auto fill = [](const std::vector<std::string>& from, std::unordered_set<std::string>& to) {
+        for (const auto& n : from) { const std::string k = rr_key(n); if (!k.empty()) to.insert(k); }
+    };
+    fill(rules.npcHide, use.npcHide); fill(rules.npcKeep, use.npcKeep);
+    fill(rules.playerHide, use.playerHide); fill(rules.playerKeep, use.playerKeep);
+    use.lists = !use.npcHide.empty() || !use.npcKeep.empty() || !use.playerHide.empty() || !use.playerKeep.empty() ||
+                rules.playerMaxDist > 0 || (rules.crowdCount > 0 && rules.crowdRange > 0);
+    // no lists: the switches at once. With lists the loop writes both on its next pass, so a rule set
+    // sent again unchanged never empties the list in between
+    if (!use.lists) rr_write(pid, rules.npcAll, rules.playerAll, {});
+    std::lock_guard<std::mutex> lk(g_rrMu);
+    if (use.lists) g_rr[pid] = std::move(use); else g_rr.erase(pid);
+    if (!g_rrThread && !g_rr.empty()) { g_rrThread = true; std::thread(rr_loop).detach(); }
+}
+
 std::string SceneJson(std::uint32_t pid, int obj_range) {
     constexpr std::uint64_t kContainer = rtx::scn::kContainer;   // all from SceneOffsets.h --
     constexpr std::uint64_t kActiveIdx = rtx::scn::kActiveIdx;   // shared with the companion
@@ -6665,7 +6898,10 @@ static bool read_panel_pos_var(HANDLE h, std::uint64_t main_data, std::uint32_t 
         if (pv != 0) { vv = pv; vok = true; }
         else vok = read_varc_found(h, main_data, id, vv);
     }
-    if (vok && vv != 0) { out = vv; return true; }
+    // A client var the game's own store holds is that value, zero included: a window at the left or top
+    // edge is at 0. The companion's copy is read from an address learned earlier, which the game may
+    // have freed and reused since, so it only stands in when the store has no such var.
+    if (vok && (is_varc || vv != 0)) { out = vv; return true; }
     if (cok && cv != 0) { out = cv; return true; }
     if (vok) { out = vv; return true; }
     if (cok) { out = cv; return true; }
@@ -9318,6 +9554,78 @@ bool BuildOverlayFrame(std::uint32_t pid, bool want_players, bool want_npcs,
                 float lz;
                 if (liveZ(gs.gx, gs.gy, gs.plane, lz)) op.wz = lz;
                 else { std::int16_t hh = rtx::cache::TileHeight(gs.gx, gs.gy, gs.plane); op.wz = (hh == kNoH) ? out.player_z : kHScale * (float)hh; }
+            }
+            if (gs.gx2 >= gs.gx && gs.gy2 >= gs.gy && gs.gx2 > 0 && gs.gy2 > 0 &&
+                (gs.gx2 - gs.gx >= 8 || gs.gy2 - gs.gy >= 8)) {
+                // A wide area: one flat rectangle would sit at a single height, far above or below most
+                // of the ground it spans. Its border is drawn tile by tile instead, every corner at the
+                // ground's own height there, and only the stretch near the player (the rest is out of view).
+                // The heights are looked up once and kept: this runs every frame, and a few hundred border
+                // tiles at four corner reads each made the whole overlay crawl. Built again when the
+                // area changes, the player has moved some tiles, or after a moment (terrain loading in).
+                constexpr int kNear = 40, kMoved = 6;
+                constexpr ULONGLONG kKeepMs = 1500;
+                struct EdgeKeep { std::uint32_t pid = 0; int gx = 0, gy = 0, gx2 = 0, gy2 = 0, plane = 0, rgb = 0, ptx = 0, pty = 0; ULONGLONG at = 0; std::vector<OverlayPoint> pts; };
+                static std::mutex s_edgeMu;
+                static EdgeKeep s_edge[4];
+                static int s_edgeNext = 0;
+                const ULONGLONG nowMs = GetTickCount64();
+                {
+                    std::lock_guard<std::mutex> lk(s_edgeMu);
+                    const EdgeKeep* hit = nullptr;
+                    for (const EdgeKeep& k : s_edge)
+                        if (k.pid == pid && k.gx == gs.gx && k.gy == gs.gy && k.gx2 == gs.gx2 && k.gy2 == gs.gy2 && k.plane == gs.plane && k.rgb == gs.rgb &&
+                            std::abs(k.ptx - out.player_tx) <= kMoved && std::abs(k.pty - out.player_ty) <= kMoved && nowMs - k.at < kKeepMs) { hit = &k; break; }
+                    if (hit) { out.guides.insert(out.guides.end(), hit->pts.begin(), hit->pts.end()); continue; }
+                }
+                std::vector<OverlayPoint> built;
+                // One piece of border: `w` x `h` tiles with the marked side drawn, a straight line between
+                // the ground heights at its two ends. Pieces are kStep tiles long, so the line follows the
+                // ground closely with a fraction of the pieces a tile-by-tile border takes, and it carries
+                // no fill: a filled band of tiles cost a depth lookup per corner and flickered against the
+                // ground.
+                constexpr int kStep = 2;
+                auto edgePiece = [&](int tx, int ty, int w, int h, int mask) {
+                    OverlayPoint e;
+                    e.kind = 4; e.rgb = gs.rgb; e.rgb2 = 0;
+                    e.wx = (tx + w * 0.5f) * 512.f; e.wy = (ty + h * 0.5f) * 512.f;
+                    e.wz = cornerZ(tx, ty);
+                    const int ep = liveTerrain ? LiveTileEffPlane(pid, tx, ty, gs.plane) : rtx::cache::TileEffPlane(tx, ty, gs.plane);
+                    const int cx[4] = { tx, tx + w, tx + w, tx }, cy[4] = { ty, ty, ty + h, ty + h };
+                    for (int i = 0; i < 4; ++i) {
+                        float z;
+                        if (!liveRawZ(cx[i], cy[i], ep, tx, ty, z)) {
+                            const std::int16_t hh = rtx::cache::TileHeightAtPlane(cx[i], cy[i], ep);
+                            z = hh == kNoH ? e.wz : kHScale * (float)hh;
+                        }
+                        e.box[i * 3 + 0] = cx[i] * 512.f; e.box[i * 3 + 1] = cy[i] * 512.f; e.box[i * 3 + 2] = z;
+                    }
+                    e.has_box = true; e.box_h = 0.f; e.edge_mask = mask; e.outline_only = true;
+                    built.push_back(std::move(e));
+                };
+                // only the stretch of each side within reach of the player
+                const int x0 = std::max(gs.gx, out.player_tx - kNear), x1 = std::min(gs.gx2, out.player_tx + kNear);
+                const int y0 = std::max(gs.gy, out.player_ty - kNear), y1 = std::min(gs.gy2, out.player_ty + kNear);
+                const bool south = std::abs(gs.gy - out.player_ty) <= kNear, north = std::abs(gs.gy2 - out.player_ty) <= kNear;
+                const bool west = std::abs(gs.gx - out.player_tx) <= kNear, east = std::abs(gs.gx2 - out.player_tx) <= kNear;
+                for (int x = x0; x <= x1; x += kStep) {
+                    const int w = std::min(kStep, x1 - x + 1);
+                    if (south) edgePiece(x, gs.gy, w, 1, 1);
+                    if (north) edgePiece(x, gs.gy2, w, 1, 4);
+                }
+                for (int y = y0; y <= y1; y += kStep) {
+                    const int h = std::min(kStep, y1 - y + 1);
+                    if (west) edgePiece(gs.gx, y, 1, h, 8);
+                    if (east) edgePiece(gs.gx2, y, 1, h, 2);
+                }
+                out.guides.insert(out.guides.end(), built.begin(), built.end());
+                {
+                    std::lock_guard<std::mutex> lk(s_edgeMu);
+                    EdgeKeep& k = s_edge[s_edgeNext++ & 3];
+                    k.pid = pid; k.gx = gs.gx; k.gy = gs.gy; k.gx2 = gs.gx2; k.gy2 = gs.gy2; k.plane = gs.plane; k.rgb = gs.rgb;
+                    k.ptx = out.player_tx; k.pty = out.player_ty; k.at = nowMs; k.pts = std::move(built);
+                }
+                continue;
             }
             if (gs.gx2 >= gs.gx && gs.gy2 >= gs.gy && gs.gx2 > 0 && gs.gy2 > 0) {
                 fillBox(op, gs.gx, gs.gy, gs.gx2 - gs.gx + 1, gs.gy2 - gs.gy + 1, gs.plane, true);
@@ -12801,10 +13109,11 @@ std::string ReaderHealthJson(std::uint32_t pid, const std::string& runtimePinsJs
     }
     auto ps = snap_proc(pid);
     if (!ps) {
-        run.Add("Context", "context.client", "Game client", kFail, "GONE: not connected (no rs2client.exe with this pid, or MainData not resolved)", "Everything");
+        // No game to check is not a finding about the game: nothing is judged, and the run stays out of
+        // the history, where it would stand as the last run and as the one later runs are compared with.
+        run.Add("Context", "context.client", "Game client", kUnchecked, "no game client attached (closed, or still starting)", "Everything").need = "the game open";
         run.Section("context", context_json(c));
         const std::string json = run.Json(c.version, (long long)(GetTickCount64() - t0));
-        if (!rtx::pins::Overridden()) rtx::health::SaveHistory(json, "");
         rtx::log::Launcher("health: " + c.trigger + " run without a client (pid " + std::to_string(pid) + ")");
         return json;
     }

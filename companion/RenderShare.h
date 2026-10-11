@@ -7,7 +7,8 @@ namespace rtx::render {
 
 inline constexpr wchar_t kSectionPrefix[] = L"Local\\RuneToolsXRender_v1_";
 inline constexpr std::uint32_t kMagic   = 0x52545852;   // 'RTXR'
-inline constexpr std::uint32_t kVersion = 1;
+inline constexpr std::uint32_t kVersion = 2;            // the exception list
+inline constexpr int kMaxExcept = 1024;
 
 inline constexpr std::uint32_t kMsgGameClicked = 0x8000 + 0x52;   // WM_APP + 'R'
 
@@ -27,6 +28,11 @@ struct Share {
     volatile std::uint32_t installed;   // module -> launcher: bit0 npc-skip, bit1 player-skip, bit2 scene-blank
     volatile std::uint32_t embedded;
     volatile std::uint64_t inputWindow;
+    // Actors drawn the other way round from their class switch: shown while hideNpcs / hidePlayers is
+    // on, hidden while it is off. Launcher-written, sorted ascending, under an odd/even seqlock.
+    volatile std::uint32_t exceptSeq;
+    std::uint32_t          exceptCount;
+    std::uint64_t          except[kMaxExcept];
 };
 
 }  // namespace rtx::render

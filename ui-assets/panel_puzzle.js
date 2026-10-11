@@ -595,7 +595,11 @@ function solveWAStarMax(src, dl, W) {
 
   // Puzzle-box live guide. Board from interface 1931 / comp 18 (bridge puzzleState -> 25 raw cell sprites); tables lazy-loaded via puzzleWdTable / puzzlePdbTable. Re-solve only when the live board diverges from the plan.
   const PUZZLE_OPT_MS = 2000;       // publish a fallback past this; the proof continues in the background
-  const PUZZLE_PROOF_MAX_MS = 90000; // total background-proof budget per board before giving up
+  const PUZZLE_PROOF_MAX_MS = 20000; // total background-proof budget per board before giving up
+  // The searches share the page's one thread with every panel and with the input the launcher passes
+  // on to the game, so they work in short slices with room between them.
+  const PUZZLE_SLICE_MS = 16, PUZZLE_GAP_MS = 4;            // looking for the first plan
+  const PUZZLE_PROOF_SLICE_MS = 8, PUZZLE_PROOF_GAP_MS = 70;   // proving a shown plan optimal: about a tenth of the thread
   let puzzleFailedSig = null;       // board that beat both searches; retried when it moves
   let puzzleProofSpentSig = null;   // board whose optimal-proof budget expired (fallback shown; no proof restarts)
   let puzzleSolver = null;
@@ -686,7 +690,7 @@ function solveWAStarMax(src, dl, W) {
   function puzzlePump() {
     puzzlePumping = false;
     if (puzzleImp && puzzleSolver) {
-      const imp = puzzleImp, better = puzzleWeighted(imp.board, [imp.ws[imp.i++]], 250);
+      const imp = puzzleImp, better = puzzleWeighted(imp.board, [imp.ws[imp.i++]], 120);
       if (puzzleImp !== imp) {                       // rebased mid-rung: this result is stale
         if (!puzzlePumping) { puzzlePumping = true; setTimeout(puzzlePump, 0); }
         return;
@@ -714,7 +718,8 @@ function solveWAStarMax(src, dl, W) {
     if (!puzzleSess || !puzzleSolver) return;
     const t0 = Date.now();
     let r;
-    do { r = puzzleSess.stepper.step(20000); puzzleSess.nodes = r.nodes; } while (!r.done && (Date.now() - t0) < 30);
+    const sliceMs = puzzleSess.fallback ? PUZZLE_PROOF_SLICE_MS : PUZZLE_SLICE_MS;
+    do { r = puzzleSess.stepper.step(puzzleSess.fallback ? 4000 : 20000); puzzleSess.nodes = r.nodes; } while (!r.done && (Date.now() - t0) < sliceMs);
     if (!r.done && !puzzleSess.fallback && (Date.now() - puzzleSess.startedAt) >= PUZZLE_OPT_MS) {
       const liveSig = puzzleLastBoard ? puzzleLastBoard.join(',') : puzzleSess.sig;
       if (liveSig === puzzleSess.sig) {
@@ -746,7 +751,7 @@ function solveWAStarMax(src, dl, W) {
       if (puzzleLastBoard) puzzleHighlight(puzzlePlan);
       return;
     }
-    if (!puzzlePumping) { puzzlePumping = true; setTimeout(puzzlePump, puzzleSess && puzzleSess.fallback ? 45 : 0); }   // background proof runs at ~40% duty
+    if (!puzzlePumping) { puzzlePumping = true; setTimeout(puzzlePump, puzzleSess && puzzleSess.fallback ? PUZZLE_PROOF_GAP_MS : PUZZLE_GAP_MS); }
     if (Date.now() - (puzzleSess.paintedAt || 0) >= 250) {
       puzzleSess.paintedAt = Date.now(); puzzleDrawSig = null; puzzlePaint();
     }
@@ -755,6 +760,8 @@ function solveWAStarMax(src, dl, W) {
     const board = puzzleLastBoard; if (board) puzzleDraw(board, puzzlePlan);
   }
   let puzzleLastBoard = null, puzzleHl = false;
+  let puzzleMissAt = 0;                 // when the open board first failed to read, 0 while it reads
+  const PUZZLE_MISS_HOLD_MS = 900;
   // In-game highlight of the next tile: puzzleCellRects gives absolute rects of interface 1931 / comp 18.
   function puzzleClearHl() {
     if (!puzzleHl) return;
@@ -801,6 +808,13 @@ function solveWAStarMax(src, dl, W) {
       let sprites = null;
       try { sprites = JSON.parse(rtxData.sync('solver.puzzleState') || '[]'); } catch (e) {}
       const board = puzzleBoardFromSprites(sprites);
+      // A tile in mid-slide reads as no board for a moment. Taking that as the puzzle closing dropped
+      // the plan and the highlight, showed the placeholder and started the solve again, on every
+      // move. The board counts as gone only once it has stayed unreadable.
+      if (!board && puzzleLastBoard) {
+        if (!puzzleMissAt) puzzleMissAt = Date.now();
+        if (Date.now() - puzzleMissAt < PUZZLE_MISS_HOLD_MS) return;
+      } else puzzleMissAt = 0;
       cluePuzzleOpen = !!board;                        // tracked so the carousel can auto-focus the puzzle slot
       const el = $('cluePuzzle');
       const onSlot = cluePuzzleHeld.length === 0 || cluePuzzleHeld.some(z => z.i === activeClueId);
@@ -822,7 +836,12 @@ function solveWAStarMax(src, dl, W) {
       if (puzzlePlan) {
         if (puzzlePlan.states[puzzlePlan.idx] !== sig) {
           const k = puzzlePlan.states.indexOf(sig);
-          if (k >= 0 && k < puzzlePlan.states.length - 1) puzzlePlan.idx = k;
+          if (k >= 0 && k < puzzlePlan.states.length - 1) {
+            puzzlePlan.idx = k;
+            // The plan is being played: proving its first position optimal no longer changes anything,
+            // and that proof was what kept the thread busy for the rest of the puzzle.
+            if (puzzleSess && puzzleSess.fallback) { puzzleProofSpentSig = puzzleSess.sig; puzzleSess = null; puzzleDrawSig = null; }
+          }
           else {
             puzzlePlan = null;                        // reached goal, or diverged
             puzzleSess = null;                        // a proof of the abandoned plan's root is moot

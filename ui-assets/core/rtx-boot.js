@@ -156,6 +156,7 @@
     if (typeof scNotifyPoll === 'function') scNotifyPoll();
     if (typeof lgPinsPoll === 'function') lgPinsPoll();
     skBarsTick();
+    if (typeof hideRulesTick === 'function') hideRulesTick();
     if (alertsNeedGoals() && !paneVisible('player')) fetchGameGoals();
     if (alertsNeedPerks() && !paneVisible('perks')) fetchPerks();
     if (alertsNeedInv() && !paneVisible('inventory')) fetchInv();

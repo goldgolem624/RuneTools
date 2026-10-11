@@ -1183,6 +1183,74 @@ void __fastcall Detour_Clear(std::uint64_t mgr, char flag) {
 }
 
 }  // namespace
+}  // namespace rtx::menuprobe
+namespace rtx::renderhide { bool Hidden(std::uint64_t actor, bool player); }
+namespace rtx::menuprobe {
+namespace {
+// ---- rows of our own ----
+// Every builder adds its rows through one routine: verb, target, the row's class and the actor it
+// acts on. A class is a callable (the action a click runs) followed by its action and entry type.
+// A row of ours goes in through that same routine with a class of ours, so the game builds, sorts,
+// draws and frees it like any other row, and a click on it runs our callable and sends nothing.
+struct RowCall { void* const* vtbl; std::int32_t kind; };
+struct RowClass { std::uint8_t fn[0x38]; RowCall* call; std::int32_t action; std::int32_t entry; std::uint64_t tail; };
+constexpr std::int32_t kRowAction = 3000;       // sorts with the low-priority rows, never a left-click default
+constexpr std::uint64_t kRowActorLo = 0x44, kRowActorHi = 0x48;   // two of the row's four ints, ours to use on a row of our class
+constexpr std::uint64_t kClassEntry = 0x44;
+void* __fastcall RowNoop(void*) { return nullptr; }
+void __fastcall RowClicked(RowCall* self, std::uint64_t rec) {
+    rtx::menu::Share* sh = g_share;
+    std::uint64_t obj = 0; std::uint32_t lo = 0, hi = 0;
+    if (!sh || !self || !Rd(rec + 8, &obj, 8) || !obj || !Rd(obj + kRowActorLo, &lo, 4) || !Rd(obj + kRowActorHi, &hi, 4)) return;
+    sh->hideClickKind = self->kind;
+    sh->hideClickActor = ((std::uint64_t)hi << 32) | lo;
+    MemoryBarrier();
+    sh->hideClickSeq = sh->hideClickSeq + 1;
+}
+void* const g_rowVtbl[6] = { (void*)&RowNoop, (void*)&RowNoop, (void*)&RowClicked, (void*)&RowNoop, (void*)&RowNoop, (void*)&RowNoop };
+// NPC, player, then the same two for an actor that is hidden now: its row reads "Show".
+RowCall g_rowCall[4] = { { g_rowVtbl, rtx::menu::kTypeNpc }, { g_rowVtbl, rtx::menu::kTypePlayer },
+                         { g_rowVtbl, rtx::menu::kTypeNpc | rtx::menu::kHideClickShow }, { g_rowVtbl, rtx::menu::kTypePlayer | rtx::menu::kHideClickShow } };
+RowClass g_rowClass[4] = { { {}, &g_rowCall[0], kRowAction, rtx::menu::kTypeGround, 0 }, { {}, &g_rowCall[1], kRowAction, rtx::menu::kTypeGround, 0 },
+                           { {}, &g_rowCall[2], kRowAction, rtx::menu::kTypeGround, 0 }, { {}, &g_rowCall[3], kRowAction, rtx::menu::kTypeGround, 0 } };
+
+typedef void(__fastcall* AddRow_t)(std::uint64_t mgr, const char* verb, const char* target, std::uint64_t cursor, std::uint64_t cls, std::uint64_t actorRef,
+                                   std::uint64_t a7, std::uint64_t a8, std::uint64_t a9, std::uint64_t a10, std::uint64_t a11, std::uint64_t a12,
+                                   std::uint64_t a13, std::uint64_t a14, std::uint64_t a15, std::uint64_t a16, std::uint64_t a17, std::uint64_t a18);
+AddRow_t g_origAddRow = nullptr;
+
+// Our row for this actor already in the list being built.
+bool RowPresent(std::uint64_t mgr, std::uint64_t actor) {
+    std::uint64_t b = 0, e = 0;
+    if (!Rd(mgr + kEntriesBegin, &b, 8) || !Rd(mgr + kEntriesEnd, &e, 8) || !b || e < b || (e - b) % kRecSize || (e - b) > kRecSize * 700) return true;   // not readable: add nothing
+    for (std::uint64_t r = b; r < e; r += kRecSize) {
+        std::uint64_t obj = 0, c = 0; std::uint32_t lo = 0, hi = 0;
+        if (!Rd(r + 8, &obj, 8) || !obj || !Rd(obj + kDispTag, &c, 8) || c < (std::uint64_t)&g_rowClass[0] || c > (std::uint64_t)&g_rowClass[3]) continue;
+        if (Rd(obj + kRowActorLo, &lo, 4) && Rd(obj + kRowActorHi, &hi, 4) && (((std::uint64_t)hi << 32) | lo) == actor) return true;
+    }
+    return false;
+}
+void __fastcall Detour_AddRow(std::uint64_t mgr, const char* verb, const char* target, std::uint64_t cursor, std::uint64_t cls, std::uint64_t actorRef,
+                              std::uint64_t a7, std::uint64_t a8, std::uint64_t a9, std::uint64_t a10, std::uint64_t a11, std::uint64_t a12,
+                              std::uint64_t a13, std::uint64_t a14, std::uint64_t a15, std::uint64_t a16, std::uint64_t a17, std::uint64_t a18) {
+    g_origAddRow(mgr, verb, target, cursor, cls, actorRef, a7, a8, a9, a10, a11, a12, a13, a14, a15, a16, a17, a18);
+    rtx::menu::Share* sh = g_share;
+    if (!sh || !sh->hideRows || !mgr || !cls || !actorRef || !target) return;
+    std::int32_t entry = -1;
+    if (!Rd(cls + kClassEntry, &entry, 4)) return;
+    const int k = entry == rtx::menu::kTypeNpc ? 0 : entry == rtx::menu::kTypePlayer ? 1 : -1;
+    if (k < 0) return;
+    std::uint64_t actor = 0;
+    if (!Rd(actorRef + 8, &actor, 8) || !actor || RowPresent(mgr, actor)) return;
+    const bool hidden = rtx::renderhide::Hidden(actor, k == 1);
+    // Under the same subject as the row just added (its target text and the three placement
+    // arguments), with no actor of its own: the actor rides in two of the row's ints.
+    static std::uint64_t s_none[2] = { 0, 0 };
+    g_origAddRow(mgr, hidden ? "Show" : "Hide", target, ~0ull, (std::uint64_t)&g_rowClass[k + (hidden ? 2 : 0)], (std::uint64_t)s_none,
+                 (std::uint32_t)actor, (std::uint32_t)(actor >> 32), 0, 0, a11, a12, a13, a14, a15, 0, a17, 2);
+}
+
+}  // namespace
 
 bool Install() {
     if (g_installed) return true;
@@ -1204,6 +1272,10 @@ bool Install() {
     const std::uint64_t build = Scan(kBuild, kBuildMask, sizeof(kBuild));
     const std::uint64_t snap  = rtx::codefind::FunctionStart(g_base, snapHit);
     const std::uint64_t exec  = rtx::codefind::FunctionStart(g_base, execHit);
+    // the add-row routine, only where it has the shape the hook was written against
+    const std::uint64_t addHit = Scan(rtx::sig::kMenuAddRow, rtx::sig::kMenuAddRowMask, sizeof(rtx::sig::kMenuAddRow));
+    std::uint64_t addRow = rtx::codefind::FunctionStart(g_base, addHit);
+    if (addRow && addHit - addRow != rtx::sig::kMenuAddRowAt) addRow = 0;
     Log("=== RuneToolsX menu probe ===");
     Log("string-init: %s", init  ? "found" : "NOT FOUND");
     Log("clear()    : %s", clear ? "found" : "NOT FOUND");
@@ -1247,8 +1319,10 @@ bool Install() {
     if (snap)  { g_origSnap  = (Snap_t)snap;   DetourAttach(&(PVOID&)g_origSnap,  (PVOID)Detour_Snap); }
     Log("executor   : %s", exec ? "found" : "NOT FOUND");
     if (exec)  { g_origExec  = (Exec_t)exec;   DetourAttach(&(PVOID&)g_origExec,  (PVOID)Detour_Exec); }
+    Log("add row    : %s", addRow ? "found" : "NOT FOUND  (no rows of our own)");
+    if (addRow && exec) { g_origAddRow = (AddRow_t)addRow; DetourAttach(&(PVOID&)g_origAddRow, (PVOID)Detour_AddRow); }
     if (DetourTransactionCommit() != NO_ERROR) {
-        g_origInit = nullptr; g_origClear = nullptr;
+        g_origInit = nullptr; g_origClear = nullptr; g_origAddRow = nullptr;
         Log("Detour commit failed - nothing hooked.");
         SayCheck("FAIL", "gone", "hooks", "0", "", "GONE: the menu hooks did not attach; menu swaps and the menu panel off");
         return false;
@@ -1280,6 +1354,8 @@ bool Install() {
         g_share->promoState = rtx::menu::kPromoIdle;
         g_share->promoPrio = 0; g_share->promoPartnerPrio = 0; g_share->promoVerb[0] = 0;
         g_share->promoSource = rtx::menu::kPromoSrcNone;
+        g_share->hideRows = 0; g_share->hideClickSeq = 0; g_share->hideClickKind = 0; g_share->hideClickActor = 0;
+        g_share->hideReady = g_origAddRow ? 1u : 0u;
     }
     Log("Hooked. Hover something in game; the next %d menus are recorded here.", kMaxDumps);
     ScanHoverSlotRefs();
@@ -1309,6 +1385,8 @@ void Rebind() {
     fresh->promoState = rtx::menu::kPromoIdle;
     fresh->promoPrio = 0; fresh->promoPartnerPrio = 0; fresh->promoVerb[0] = 0;
     fresh->promoSource = rtx::menu::kPromoSrcNone;
+    fresh->hideRows = 0; fresh->hideClickSeq = 0; fresh->hideClickKind = 0; fresh->hideClickActor = 0;
+    fresh->hideReady = g_origAddRow ? 1u : 0u;
 
     g_share = fresh;                       // publish last, fully built
     Log("session: menu share rebound");
@@ -1447,6 +1525,7 @@ void Uninstall() {
     if (g_origBuild) DetourDetach(&(PVOID&)g_origBuild, (PVOID)Detour_Build);
     if (g_origSnap)  DetourDetach(&(PVOID&)g_origSnap,  (PVOID)Detour_Snap);
     if (g_origExec)  DetourDetach(&(PVOID&)g_origExec,  (PVOID)Detour_Exec);
+    if (g_origAddRow) DetourDetach(&(PVOID&)g_origAddRow, (PVOID)Detour_AddRow);
     UnpatchAssignSite();
     DetourTransactionCommit();
     g_installed = false;

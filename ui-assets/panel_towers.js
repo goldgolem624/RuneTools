@@ -140,14 +140,63 @@
   }
   // The scan ring is a type-4 scene "special": gfx 6841 = blue (d > 2R), 6842 = orange (R < d <=
   // 2R), 6843 = red (d <= R), giving the exact band for per-band elimination.
+  // The scene as one read, shared by everything a scan pass looks at (the game's marker, the rings,
+  // the player's true tile). Asked for often enough that the launcher keeps it fresh in the background:
+  // a read left alone for 2 s is dropped and the next one is built while the panel waits.
+  let scanSceneAt = 0, scanSceneVal = null;
+  async function scanScene() {
+    const now = Date.now();
+    if (scanSceneVal && now - scanSceneAt < 150) return scanSceneVal;
+    let d = {};
+    try { d = JSON.parse((await bridge().sceneEntities(myPid(), 64)) || '{}'); } catch (e) {}
+    scanSceneAt = now; scanSceneVal = d;
+    return d;
+  }
   async function scanRingBand() {
     if (!bridge() || !bridge().sceneEntities) return null;
     try {
-      const d = JSON.parse((await bridge().sceneEntities(myPid(), 16)) || '{}');
+      const d = await scanScene();
       const sp = (d.specials || []).find(s => s.gfx >= 6841 && s.gfx <= 6843);
       if (sp) return sp.gfx === 6841 ? 'blue' : sp.gfx === 6842 ? 'orange' : 'red';
     } catch (e) {}
     return null;
+  }
+  // Every scan ring in the scene with the tile its pulse was judged from. The server colours the ring
+  // by where it holds the player, the true tile, which runs ahead of where the player is drawn. So a
+  // ring takes the true tile of the moment it is first seen, when that is within a few tiles of where
+  // the ring sits. A ring first seen later than that (it stays readable for seconds, past a surge or a
+  // teleport) speaks for the tile it was drawn on, never for where the player is by then.
+  const scanRingAt = new Map();   // ring -> { x, y, seen }
+  // What the scan solver saw and did, in the client log, so a wrong narrowing or a reset can be read back.
+  function scanLog(msg) { try { console.log('[scan] ' + msg); } catch (e) {} }
+  const scanOffRings = {};        // area -> Set(ring keys whose reading ruled out every spot left)
+  const SCAN_OFF_RESET = 3;       // that many different readings against what is left: what is left is wrong
+  const SCAN_RING_NEAR = 3;
+  async function scanRings() {
+    if (!bridge() || !bridge().sceneEntities) return [];
+    try {
+      const d = await scanScene();
+      const me = (d.players || []).find(q => q && q.self);
+      const tt = me && me.trueTile && me.trueTile.x > 0 && me.trueTile.y > 0 ? me.trueTile : null;
+      const now = Date.now(), out = [];
+      for (const s of (d.specials || [])) {
+        if (!s || !(s.gfx >= 6841 && s.gfx <= 6843) || !(s.x > 0 && s.y > 0)) continue;
+        const key = (s.uid | 0) + ':' + s.gfx + ':' + s.x + ':' + s.y;   // one pulse on one tile
+        let at = scanRingAt.get(key);
+        if (!at) {
+          const near = tt && Math.max(Math.abs(tt.x - s.x), Math.abs(tt.y - s.y)) <= SCAN_RING_NEAR;
+          at = { x: near ? tt.x | 0 : s.x | 0, y: near ? tt.y | 0 : s.y | 0, p: (s.p | 0), seen: now, first: now };
+          scanRingAt.set(key, at);
+          scanLog('ring ' + (s.gfx === 6841 ? 'blue' : s.gfx === 6842 ? 'orange' : 'red') + ' drawn ' + s.x + ',' + s.y + ' uid ' + (s.uid | 0) + ' kind ' + (s.t | 0) +
+                  ' true tile ' + (tt ? tt.x + ',' + tt.y : 'none') + ' judged from ' + at.x + ',' + at.y);
+        }
+        at.seen = now;
+        out.push({ key: key, band: s.gfx === 6841 ? 'blue' : s.gfx === 6842 ? 'orange' : 'red', x: at.x, y: at.y, p: at.p | 0, first: at.first });
+      }
+      scanRingAt.forEach((v, k) => { if (now - v.seen > 30000) scanRingAt.delete(k); });
+      return out;
+    } catch (e) {}
+    return [];
   }
   let scanBandNote = '';
   const scanOrbClaim = {};   // orb claim per area, so a later contradiction can undo it
@@ -156,30 +205,26 @@
     const base = cap.textContent.replace(/\s*·\s*(ring:|exact dig tile).*$/, '');
     cap.textContent = base + (scanBandNote ? '  ·  ' + scanBandNote : '');
   }
+  // A scan pass, at its own pace: it used to ride on the held-clue poll, once every 2 s, so the
+  // marks trailed the player by seconds and every read had gone cold by the next pass.
+  let scanTickBusy = false, scanTickAt = 0;
   async function scanTick() {
+    const now = Date.now();
+    if (scanTickBusy || now - scanTickAt < 250) return;
+    scanTickBusy = true; scanTickAt = now;
+    try { await scanTickRun(); } catch (e) {} finally { scanTickBusy = false; }
+  }
+  async function scanTickRun() {
     if (activeClueId < 0 || !bridge()) return;
     const c = CLUE_DATA.find(z => z.i === activeClueId);
     if (!c || c.a !== 'scan') return;
     const rec = scanSpotsFor(c); if (!rec || !rec.spots || !rec.spots.length) return;
     if (rec.spots.length > COMPASS_FIELD_MIN || (typeof isCompassClue === 'function' && isCompassClue(c))) return;
-    const ORB_CLAIM_DROP = 50;
-    try {
-      const key0 = rec.key || ('en' + c.en);
-      const claim = scanOrbClaim[key0];
-      if (claim) {
-        const P0 = await scanPlayerTile();
-        if (P0 && Math.max(Math.abs(P0.x - claim[0]), Math.abs(P0.y - claim[1])) > ORB_CLAIM_DROP) {
-          delete scanOrbClaim[key0];
-          scanElimByArea[key0] = new Set();
-          scanBandNote = '';
-          selectClue();
-          return;
-        }
-      }
-    } catch (e) {}
+    // A spot named by the orb stays named however far the player then goes: the way to a spot often
+    // leads away from it first. Only a ring that rules it out takes it back (the reset further down).
     // PRIMARY: type-13 "scan coordinate" ground marker (specials t=13, k='scan', fine position at sub+0x74/0x7C).
     try {
-      const sc13 = JSON.parse((await bridge().sceneEntities(myPid(), 64)) || '{}');
+      const sc13 = await scanScene();
       const mk = ((sc13 && sc13.specials) || []).find(s => s && s.t === 13 && s.k === 'scan' && s.w);
       if (mk && mk.x > 0 && mk.y > 0) {
         let bi = -1, bd = 1e9;
@@ -254,29 +299,66 @@
         }
       }
     } catch (e) {}
-    const band = await scanRingBand();
-    scanBandNote = band ? 'ring: ' + band : '';
+    const rings = await scanRings();
+    rings.sort((a, b) => a.first - b.first);               // the last pulse last
+    scanBandNote = rings.length ? 'ring: ' + rings[rings.length - 1].band : '';
     scanBandSetCap();
-    if (!band) return;
-    const R = rec.r || scanLiveRange(); if (!R) return;
-    const P = await scanPlayerTile(); if (!P) return;
+    if (!rings.length) return;
+    const R0 = rec.r || scanLiveRange(); if (!R0) return;
+    const R = R0 + scanRangeBonus();
+    // In the game, the next zone in: on a blue pulse the square the spot would have to be in for an
+    // orange one (it is not inside it), on an orange pulse the square for a red one. A red pulse has
+    // the game's own marker.
+    if (typeof scanZoneSet === 'function') {
+      const lastRing = rings[rings.length - 1];
+      if (lastRing.band === 'blue') scanZoneSet(lastRing.x, lastRing.y, lastRing.p, 2 * R - 2, 0xFF8C1A);
+      else if (lastRing.band === 'orange') scanZoneSet(lastRing.x, lastRing.y, lastRing.p, R - 2, 0xFF3030);
+      else scanZoneSet(0, 0, 0, 0, 0);
+    }
     const elim = scanElimGet(rec.key || ('en' + c.en));
     let changed = false; const added = [];
     const TOL = 2;
-    rec.spots.forEach((s, i) => {
-      if (elim.has(i)) return;
-      const d = Math.max(Math.abs(s[0] - P.x), Math.abs(s[1] - P.y));   // horizontal paces (any floor)
-      let drop = false;
-      if (band === 'blue')        drop = d <= 2 * R - TOL;
-      else if (band === 'orange') drop = d <= R - TOL || d > 2 * R + TOL;
-      else if (band === 'red')    drop = d > R + TOL;
-      if (drop) { elim.add(i); added.push(i); changed = true; }
-    });
-    if (elim.size >= rec.spots.length) {
+    // Each ring rules spots in or out from its own tile. Judged from the player's tile, a ring read a
+    // moment after a run, a surge or a teleport ruled out the spots around the new position, the true
+    // one among them.
+    const areaKey = rec.key || ('en' + c.en);
+    for (const ring of rings) {
+      const drops = [];
+      rec.spots.forEach((s, i) => {
+        if (elim.has(i)) return;
+        const d = Math.max(Math.abs(s[0] - ring.x), Math.abs(s[1] - ring.y));   // horizontal paces (any floor)
+        let drop = false;
+        if (ring.band === 'blue')        drop = d <= 2 * R - TOL;
+        else if (ring.band === 'orange') drop = d <= R - TOL || d > 2 * R + TOL;
+        else if (ring.band === 'red')    drop = d > R + TOL;
+        if (drop) drops.push(i);
+      });
+      if (!drops.length) continue;
+      // A reading that rules out every spot still standing is the one that is off, not the spots: one
+      // such pulse used to wipe the whole solution, the solved spot with it. It is set aside. Only
+      // several different readings against what is left say that what is left is wrong.
+      if (drops.length >= rec.spots.length - elim.size) {
+        const off = scanOffRings[areaKey] || (scanOffRings[areaKey] = new Set());
+        if (!off.has(ring.key)) {
+          off.add(ring.key);
+          scanLog('set aside: ' + ring.band + ' from ' + ring.x + ',' + ring.y + ' range ' + R + ' rules out all ' + drops.length + ' spots left (' +
+                  drops.map(i => (i + 1) + '@' + rec.spots[i][0] + ',' + rec.spots[i][1]).join(' ') + '); ' + off.size + ' such readings');
+        }
+        continue;
+      }
+      drops.forEach(i => { elim.add(i); added.push(i); });
+      changed = true;
+      scanLog(ring.band + ' from ' + ring.x + ',' + ring.y + ' range ' + R + ' rules out ' + drops.map(i => i + 1).join(',') + '; ' + (rec.spots.length - elim.size) + ' left');
+    }
+    if (scanOffRings[areaKey] && scanOffRings[areaKey].size >= SCAN_OFF_RESET) {
+      scanLog('reset: ' + scanOffRings[areaKey].size + ' readings against the spots left, starting over');
+      delete scanOffRings[areaKey];
       elim.clear();
+      delete scanOrbClaim[areaKey];
       scanElimSave(); selectClue(); scanBandSetCap();
       return;
     }
+    if (changed && scanOffRings[areaKey]) delete scanOffRings[areaKey];   // a reading that fits: the earlier ones were the odd ones
     if (changed) { scanElimSave(); selectClue(); scanBandSetCap(); }
   }
   clueMapZoom = 1; let clueMapDrag = null; let clueMapStageEl = null; let clueMapZoomBound = false;
@@ -1268,6 +1350,10 @@
   function teleQuestIdsOf(r) {
     if (r.questId != null) return Array.isArray(r.questId) ? r.questId : [r.questId];
     if (r.questName && TELE_QUEST_IDS[r.questName] != null) return [TELE_QUEST_IDS[r.questName]];
+    if (r.questName && typeof QUESTS !== 'undefined' && QUESTS) {   // by the game's own quest list
+      const q = QUESTS.find(function (z) { return z.n === r.questName; });
+      if (q) return [q.id];
+    }
     return [];
   }
   function teleQuestIdOf(r) {
@@ -1771,21 +1857,41 @@
                          return (a >= 400 && b < 10) ? '3' : '5'; }
     return null;
   }
+  const clueHeldGone = new Map();   // clue item id -> good backpack reads in a row it has been missing from
   async function fetchClues(force) {
     if (!bridge() || clueFetching) return;
     const _t = Date.now(); if (!force && _t - clueFetchAt < 2000) return; clueFetchAt = _t;
     clueFetching = true;
     try {
       const held = new Set(), heldInv = new Set(), scrolls = [], puzzles = [];
+      let invRead = false;   // the backpack read came back with items: a read that failed looks like an empty backpack
       if (bridge().containerItems) {
         for (const cid of [93, 95]) {   // inventory + bank (only while open); items = [[slot, item_id, stack, name], ..]
-          try { const r = await rtxData.call('state.container', cid); if (cid === 93) fpBackpackSeen(r.items); (r.items || []).forEach(x => { if (Array.isArray(x) && x[1] > 0) { held.add(x[1]); if (cid === 93) { heldInv.add(x[1]); const isTicket = x[3] && /skipping ticket/i.test(x[3]); if (x[3] && !isTicket && /clue scroll|puzzle box|challenge scroll/i.test(x[3])) scrolls.push(x[1]); if (x[3] && !isTicket && /puzzle (box|scroll box|casket)/i.test(x[3])) { const lc = x[3].toLowerCase(); const t = lc.includes('master') ? 4 : lc.includes('elite') ? 3 : lc.includes('hard') ? 2 : lc.includes('medium') ? 1 : 0; puzzles.push({ i: x[1], t: t, a: 'puzzle', nm: x[3] }); } } } }); } catch (e) {}
+          try { const r = await rtxData.call('state.container', cid); if (cid === 93) { fpBackpackSeen(r.items); if (r && Array.isArray(r.items) && r.items.length) invRead = true; } (r.items || []).forEach(x => { if (Array.isArray(x) && x[1] > 0) { held.add(x[1]); if (cid === 93) { heldInv.add(x[1]); const isTicket = x[3] && /skipping ticket/i.test(x[3]); if (x[3] && !isTicket && /clue scroll|puzzle box|challenge scroll/i.test(x[3])) scrolls.push(x[1]); if (x[3] && !isTicket && /puzzle (box|scroll box|casket)/i.test(x[3])) { const lc = x[3].toLowerCase(); const t = lc.includes('master') ? 4 : lc.includes('elite') ? 3 : lc.includes('hard') ? 2 : lc.includes('medium') ? 1 : 0; puzzles.push({ i: x[1], t: t, a: 'puzzle', nm: x[3] }); } } } }); } catch (e) {}
         }
       }
-      if (clueHeldPrevInit) {
-        for (const id of held) if (!clueHeldPrev.has(id)) scanElimResetFor(id);
+      // A clue that was held, then missing from a good backpack read, then held again is a new one.
+      // One read that fails or comes back short is not: it used to reset a solved scan.
+      if (invRead) {
+        if (clueHeldPrevInit) {
+          for (const id of held) if (!clueHeldPrev.has(id)) {
+            const gone = clueHeldGone.get(id);
+            if (gone === undefined || gone >= 1) {
+              scanLog('clue ' + id + ' arrived (' + (gone === undefined ? 'not held before' : 'missing for ' + gone + ' reads') + '): its scan and compass state start over');
+              scanElimResetFor(id);
+              const cz = CLUE_DATA && CLUE_DATA.find(z => z.i === id);
+              if (cz && cz.a === 'scan' && typeof isCompassClue === 'function' && isCompassClue(cz) && typeof compassClueArrived === 'function') compassClueArrived();
+            }
+          }
+          for (const id of clueHeldPrev) if (!held.has(id)) clueHeldGone.set(id, (clueHeldGone.get(id) || 0) + 1);
+          for (const id of held) clueHeldGone.set(id, 0);
+          for (const id of clueHeldGone.keys()) if (!held.has(id) && !clueHeldPrev.has(id)) clueHeldGone.set(id, (clueHeldGone.get(id) || 0) + 1);
+        } else for (const id of held) clueHeldGone.set(id, 0);
+        // an id stays in the previous set while it is only briefly missing, so its return is not an arrival
+        const keep = new Set(held);
+        for (const id of clueHeldPrev) if (!held.has(id) && (clueHeldGone.get(id) || 0) < 1) keep.add(id);
+        clueHeldPrev = keep; clueHeldPrevInit = true;
       }
-      clueHeldPrev = new Set(held); clueHeldPrevInit = true;
       clueHeld = held; clueHeldInv = heldInv; cluePuzzleHeld = puzzles;
       tetraHeldEntry = heldInv.has(TETRA_POWERED)
         ? { i: TETRA_POWERED, t: 5, a: 'tetra', nm: 'Tetracompass (powered)' } : null;
@@ -1915,16 +2021,16 @@
 {n:'Eastern Anachronia',src:'Standard Spellbook',x:5599,y:2331,p:0,sp:10369},
 {n:'Northern Lost Grove',src:'Standard Spellbook',x:1402,y:5724,p:0,sp:11316},
     {n:'Ring of Wealth - Grand Exchange',src:'Enchanted Jewellery',x:3162,y:3464,p:0,item:20659,kb:'1'},
-    {n:'Ring of Wealth - Miscellania',src:'Enchanted Jewellery',x:2508,y:3861,p:1,item:20659,kb:'2'},
+    {n:'Ring of Wealth - Miscellania',src:'Enchanted Jewellery',x:2508,y:3861,p:1,item:20659,kb:'2',hid:1,req:{questName:'Throne of Miscellania'}},
     {n:'Ring of Fortune - Grand Exchange',src:'Enchanted Jewellery',x:3162,y:3464,p:0,item:39808,kb:'1'},
-    {n:'Ring of Fortune - Miscellania',src:'Enchanted Jewellery',x:2508,y:3861,p:1,item:39808,kb:'2'},
+    {n:'Ring of Fortune - Miscellania',src:'Enchanted Jewellery',x:2508,y:3861,p:1,item:39808,kb:'2',hid:1,req:{questName:'Throne of Miscellania'}},
     {n:'Luck of the dwarves - Grand Exchange',src:'Enchanted Jewellery',x:3162,y:3464,p:0,item:39812,kb:'1'},
     {n:'Luck of the Dwarves - Grand Exchange',src:'Enchanted Jewellery',x:3162,y:3464,p:0,item:39812,kb:'2'},
-    {n:'Luck of the Dwarves - Miscellania',src:'Enchanted Jewellery',x:2508,y:3861,p:1,item:39812,kb:'1'},
+    {n:'Luck of the Dwarves - Miscellania',src:'Enchanted Jewellery',x:2508,y:3861,p:1,item:39812,kb:'1',hid:1,req:{questName:'Throne of Miscellania'}},
     {n:'Luck of the Dwarves - Keldagrim',src:'Enchanted Jewellery',x:2857,y:10199,p:0,item:39812,kb:'3'},
     {n:'Luck of the Dwarves - Dwarven Outpost',src:'Enchanted Jewellery',x:2554,y:3475,p:0,item:39812,kb:'4',req:{vb:52158,vbMin:1,vbWhy:'needs the Dark Facet of Luck'}},
     {n:'Hazelmere\'s signet ring - Grand Exchange',src:'Enchanted Jewellery',x:3162,y:3464,p:0,item:39814,kb:'2'},
-    {n:'Hazelmere\'s signet ring - Miscellania',src:'Enchanted Jewellery',x:2508,y:3861,p:1,item:39814,kb:'1'},
+    {n:'Hazelmere\'s signet ring - Miscellania',src:'Enchanted Jewellery',x:2508,y:3861,p:1,item:39814,kb:'1',hid:1,req:{questName:'Throne of Miscellania'}},
     {n:'Hazelmere\'s signet ring - Keldagrim',src:'Enchanted Jewellery',x:2857,y:10199,p:0,item:39814,kb:'3'},
     {n:'Hazelmere\'s signet ring - Hazelmere\'s Statue',src:'Enchanted Jewellery',x:2424,y:3396,p:0,item:39814,kb:'4'},
     {n:'Hazelmere\'s signet ring - Dwarven Outpost',src:'Enchanted Jewellery',x:2554,y:3475,p:0,item:39814,kb:'5',req:{vb:52158,vbMin:1,vbWhy:'needs the Dark Facet of Luck'}},
@@ -1949,9 +2055,9 @@
     {n:'Games necklace - Corporeal Beast',src:'Enchanted Jewellery',x:2885,y:4372,p:2,item:3853,kb:'5',req:{questName:"Summer's End",questId:95}},
     {n:'Games necklace - Burgh De Rott',src:'Enchanted Jewellery',x:3487,y:3237,p:0,item:3853,kb:'6',req:{questName:'The Darkness of Hallowvale',questId:311}},
     {n:'Games necklace - Tears of Guthix',src:'Enchanted Jewellery',x:3250,y:9517,p:2,item:3853,kb:'7',req:{questName:'Tears of Guthix',questId:81}},
-    {n:'Ring of duelling - Al Kharid Duel Arena',src:'Enchanted Jewellery',x:3316,y:3234,p:0,item:2552,kb:'1'},
+    {n:'Ring of duelling - Het\'s Oasis',src:'Enchanted Jewellery',x:3316,y:3234,p:0,item:2552,kb:'1'},
     {n:'Ring of duelling - Castle Wars Arena',src:'Enchanted Jewellery',x:2442,y:3089,p:0,item:2552,kb:'2'},
-    {n:'Ring of duelling - South Feldip Hills',src:'Enchanted Jewellery',x:2413,y:2847,p:0,item:2552,kb:'3'},
+    {n:'Ring of duelling - The Warforge',src:'Enchanted Jewellery',x:2413,y:2847,p:0,item:2552,kb:'3'},
     {n:'Ring of duelling - Fist of Guthix',src:'Enchanted Jewellery',x:1694,y:5601,p:0,item:2552,kb:'4'},
     {n:'Ring of respawn - Lumbridge',src:'Enchanted Jewellery',x:3223,y:3222,p:0,item:39366,kb:'1'},
     {n:'Ring of respawn - Falador',src:'Enchanted Jewellery',x:2971,y:3340,p:0,item:39366,kb:'2'},
@@ -2880,11 +2986,28 @@
       }
     }
     const m = new Map();
-    at.forEach((i, d) => m.set(d, String(i - first + 1)));
+    // Numbered from the first option a row matched, so options ahead of the destinations do not count.
+    // When the item has exactly one option per row, every option is a destination and the menu's own
+    // numbers stand: a row whose name the game has since changed then cannot shift the others down.
+    const base = opts.length === rows.length ? 1 : first;
+    at.forEach((i, d) => m.set(d, String(i - base + 1)));
     teleKbByItem.set(item, m);
     if (typeof wmKick === 'function') try { wmKick(); } catch (e) {}
   }
+  // The option number as the menu shows it to this player. The game leaves an option out of the menu
+  // until it is unlocked (rows marked hid), and the ones after it move up.
   function teleKb(T) {
+    const k = teleKbBase(T);
+    if (!T || !T.item || !/^\d+$/.test(k)) return k;
+    let up = 0;
+    for (const z of MAP_TELEPORTS) {
+      if (z === T || z.item !== T.item || !z.hid || teleReqMet(z)) continue;
+      const kz = teleKbBase(z);
+      if (/^\d+$/.test(kz) && +kz < +k) ++up;
+    }
+    return up ? String(+k - up) : k;
+  }
+  function teleKbBase(T) {
     if (T && T.item) {
       const m = teleKbByItem.get(T.item);
       if (m) { const k = m.get(teleDest(T)); if (k) return k; }
@@ -3125,5 +3248,5 @@
   for (const T of MAP_TELEPORTS) if (T.src === 'Portable fairy ring')
     T.req = { questName: 'A Fairy Tale II - Cure a Queen',questId:309, skill: 26, level: 94, heldAny: [41076] };
 
-Object.assign(window, { CLUE_ACT_LBL, CLUE_KEYS, MAP_LABELS, MAP_TELEPORTS, applyMapZoom, clueAct, clueActionText, clueDrawLabelsWindow, clueDrawNomove, clueDrawObjects, clueDrawTeleports, clueMapBindZoom, clueMapBlit, clueMapCtx, clueMapPlayerDraw, clueMapTelePrefetch, clueObjAt, drawClueMap, fetchClues, mapRes, mapWindowCached, nearLabel, teleChargeInfo, teleInPassage, teleItemChargeMax, teleItemChargeVal, teleKb, teleKeySeq, telePassageSlot, teleReqBlock, teleResetIn, teleRqText, teleTaskSetWhy, teleWhyCached, towersTick });
+Object.assign(window, { scanTick, CLUE_ACT_LBL, CLUE_KEYS, MAP_LABELS, MAP_TELEPORTS, applyMapZoom, clueAct, clueActionText, clueDrawLabelsWindow, clueDrawNomove, clueDrawObjects, clueDrawTeleports, clueMapBindZoom, clueMapBlit, clueMapCtx, clueMapPlayerDraw, clueMapTelePrefetch, clueObjAt, drawClueMap, fetchClues, mapRes, mapWindowCached, nearLabel, teleChargeInfo, teleInPassage, teleItemChargeMax, teleItemChargeVal, teleKb, teleKeySeq, telePassageSlot, teleReqBlock, teleResetIn, teleRqText, teleTaskSetWhy, teleWhyCached, towersTick });
 })();

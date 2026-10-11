@@ -25,6 +25,7 @@
 #include "../../companion/FrameShare.h"
 #include "../../companion/NetProbeShare.h"
 #include "MenuSwap.h"
+#include "../../companion/MenuShare.h"
 #include "../cache/Achievements.h"
 #include "../../companion/HudShare.h"
 #include "../../companion/MarkerShare.h"
@@ -812,6 +813,36 @@ JSValueRef MenuEnable(JSContextRef ctx, JSObjectRef, JSObjectRef,
     return JSValueMakeBoolean(ctx, rtx::launcher::menuswap::SetEnabled(pid, mode));
 }
 
+// menuHideRows(pid, on): a "Hide" row under each NPC's and player's rows. True when the game client can take rows.
+JSValueRef MenuHideRows(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                        size_t argc, const JSValueRef argv[], JSValueRef*) {
+    if (argc < 2) return JSValueMakeBoolean(ctx, false);
+    auto pid = static_cast<std::uint32_t>(JSValueToNumber(ctx, argv[0], nullptr));
+    return JSValueMakeBoolean(ctx, rtx::launcher::menuswap::SetHideRows(pid, JSValueToBoolean(ctx, argv[1])));
+}
+
+// menuHideClick(pid): {"seq":n,"kind":"npc"|"player","name":".."} for the last click on a "Hide"
+// row; the name is empty when that actor has left the scene. seq counts clicks since the client started.
+JSValueRef MenuHideClick(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                         size_t argc, const JSValueRef argv[], JSValueRef*) {
+    if (argc < 1) return utf8_to_js(ctx, "{}");
+    auto pid = static_cast<std::uint32_t>(JSValueToNumber(ctx, argv[0], nullptr));
+    static std::mutex mu;
+    static std::map<std::uint32_t, std::pair<std::uint32_t, std::string>> last;   // pid -> click count, its answer
+    std::uint32_t seq = 0; int kind = 0; std::uint64_t actor = 0;
+    if (!rtx::launcher::menuswap::HideClick(pid, seq, kind, actor)) return utf8_to_js(ctx, "{}");
+    std::lock_guard<std::mutex> lk(mu);
+    auto it = last.find(pid);
+    if (it != last.end() && it->second.first == seq) return utf8_to_js(ctx, it->second.second);
+    std::string name; int actorKind = 0;
+    if (seq) rtx::reader::RenderActorName(pid, actor, actorKind, name);
+    std::string esc;
+    for (char c : name) if (c != '"' && c != '\\' && (unsigned char)c >= 0x20) esc.push_back(c);
+    const std::string out = "{\"seq\":" + std::to_string(seq) + ",\"kind\":\"" + (actorKind == 2 ? "player" : "npc") + "\",\"show\":" + ((kind & rtx::menu::kHideClickShow) ? "true" : "false") + ",\"name\":\"" + esc + "\"}";
+    last[pid] = { seq, out };
+    return utf8_to_js(ctx, out);
+}
+
 JSValueRef MenuSwapFn(JSContextRef ctx, JSObjectRef, JSObjectRef,
                       size_t argc, const JSValueRef argv[], JSValueRef*) {
     if (argc < 2) return JSValueMakeBoolean(ctx, false);
@@ -1512,6 +1543,35 @@ JSValueRef EventsMask(JSContextRef ctx, JSObjectRef, JSObjectRef,
 }
 
 // which: 0 hide NPCs, 1 hide other players, 2 hide the whole scene.
+// renderRules(pid, npcAll, playerAll, npcHide, npcKeep, playerHide, playerKeep[, playerMaxDist,
+// crowdCount, crowdRange]): the four lists are names separated by line breaks.
+JSValueRef RenderRulesFn(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                         size_t argc, const JSValueRef argv[], JSValueRef*) {
+    if (argc < 7) return JSValueMakeBoolean(ctx, false);
+    auto pid = static_cast<std::uint32_t>(JSValueToNumber(ctx, argv[0], nullptr));
+    if (!pid) return JSValueMakeBoolean(ctx, false);
+    rtx::reader::RenderRules r;
+    r.npcAll = JSValueToBoolean(ctx, argv[1]);
+    r.playerAll = JSValueToBoolean(ctx, argv[2]);
+    std::vector<std::string>* lists[4] = { &r.npcHide, &r.npcKeep, &r.playerHide, &r.playerKeep };
+    for (int i = 0; i < 4; ++i) {
+        if (!JSValueIsString(ctx, argv[3 + i])) continue;
+        const std::string all = js_to_utf8(ctx, argv[3 + i]);
+        std::size_t at = 0;
+        while (at <= all.size() && lists[i]->size() < 512) {
+            std::size_t e = all.find('\n', at);
+            if (e == std::string::npos) e = all.size();
+            if (e > at) lists[i]->push_back(all.substr(at, e - at));
+            at = e + 1;
+        }
+    }
+    auto num = [&](size_t i) { const int v = argc > i ? js_int(ctx, argv[i]) : 0; return v < 0 ? 0 : v > 200 ? 200 : v; };
+    r.playerMaxDist = num(7); r.crowdCount = num(8); r.crowdRange = num(9);
+    rtx::launcher::companion::EnsureLoaded(pid);
+    rtx::reader::RenderRulesSet(pid, r);
+    return JSValueMakeBoolean(ctx, true);
+}
+
 JSValueRef RenderToggle(JSContextRef ctx, JSObjectRef, JSObjectRef,
                         size_t argc, const JSValueRef argv[], JSValueRef*) {
     if (argc < 3) return JSValueMakeBoolean(ctx, false);
@@ -6517,6 +6577,8 @@ void AttachBridge(ultralight::View* view) {
     install_fn(ctx, ns, "menuStatus",        MenuStatus);
     install_fn(ctx, ns, "menuEnable",        MenuEnable);
     install_fn(ctx, ns, "menuPins",          MenuSwapFn);
+    install_fn(ctx, ns, "menuHideRows",      MenuHideRows);
+    install_fn(ctx, ns, "menuHideClick",     MenuHideClick);
     install_fn(ctx, ns, "hostInfo",          HostInfo);
     install_fn(ctx, ns, "readerHealth",      ReaderHealth);
     install_fn(ctx, ns, "readerHealthStart", ReaderHealthStart);
@@ -6601,6 +6663,7 @@ void AttachBridge(ultralight::View* view) {
     install_fn(ctx, ns, "events",            Events);
     install_fn(ctx, ns, "eventsMask",        EventsMask);
     install_fn(ctx, ns, "renderToggle",      RenderToggle);
+    install_fn(ctx, ns, "renderRules",       RenderRulesFn);
     install_fn(ctx, ns, "outlineNpc",        OutlineNpc);
     install_fn(ctx, ns, "outlineObject",     OutlineObject);
     install_fn(ctx, ns, "nameplatePlayer",   NameplatePlayer);

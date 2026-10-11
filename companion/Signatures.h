@@ -51,6 +51,24 @@ inline constexpr unsigned char kNpcDisBody[] = {
     0x90, 0x10, 0x01, 0x00, 0x00,
 };
 
+// Actors standing still on one tile: the game draws one of them and marks the rest as not drawn, in
+// two passes over the actors (count the ones at the tile's highest draw order, then mark all but
+// one). Both open the same way: cmp [rbx+0x50],r8d ; jne ; cmp word [rbx+order],-1. The counting
+// pass leaves on -1 (je rel32); the marking pass clears the actor's mark there (jne ; mov byte
+// [rbx+mark],0). The two field offsets are open.
+inline constexpr unsigned char kStackCount[] = {
+    0x44, 0x39, 0x43, 0x50, 0x0F, 0x85, 0, 0, 0, 0, 0x66, 0x83, 0xBB, 0, 0, 0x00, 0x00, 0xFF, 0x0F, 0x84,
+};
+inline constexpr unsigned char kStackCountMask[] = {
+    1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1, 0, 0, 1, 1, 1, 1, 1,
+};
+inline constexpr unsigned char kStackMark[] = {
+    0x44, 0x39, 0x43, 0x50, 0x0F, 0x85, 0, 0, 0, 0, 0x66, 0x83, 0xBB, 0, 0, 0x00, 0x00, 0xFF, 0x75, 0, 0xC6, 0x83, 0, 0, 0x00, 0x00, 0x00,
+};
+inline constexpr unsigned char kStackMarkMask[] = {
+    1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1, 0, 0, 1, 1, 1, 1, 0, 1, 1, 0, 0, 1, 1, 1,
+};
+
 // Player visibility: mov rax,[rcx+0x1078] ; mov rbp,r9. The actor field's low byte is open
 // (0x1088 on the plugin client).
 inline constexpr unsigned char kPlDisBody[] = {
@@ -163,6 +181,19 @@ inline constexpr unsigned char kMenuBuildMask[] = {   // the frame size, the rbp
     0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 1, 1,
     1, 1, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0,
 };
+
+// The routine every menu builder adds a row through, inside its body: the row count of the entry
+// vector against its cap. mov rax,[rcx+0x98] ; sub rax,[rcx+0x90] ; sar rax,4 ; cmp rax,700.
+// The hook is the function holding it, and the match sits kMenuAddRowAt bytes into that function
+// on the builds whose argument list is the one the hook passes on.
+inline constexpr unsigned char kMenuAddRow[] = {
+    0x48, 0x8B, 0x81, 0x98, 0x00, 0x00, 0x00, 0x48, 0x2B, 0x81, 0x90, 0x00, 0x00, 0x00,
+    0x48, 0xC1, 0xF8, 0x04, 0x48, 0x3D, 0xBC, 0x02, 0x00, 0x00,
+};
+inline constexpr unsigned char kMenuAddRowMask[] = {
+    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+};
+inline constexpr unsigned kMenuAddRowAt = 55;
 
 // Menu snapshot, inside its body: inc qword [rcx+0x21B0] (counter) ; lea reg,[rcx+0x1A80] (base).
 // It copies the top records into the left-click slots. The hook is the function holding it.
@@ -441,6 +472,8 @@ inline constexpr Sig kTable[] = {
     RTX_SIG_B("ccdrag-observer", kCcDragBody,     kFirstExec, kOnce,       "Interface drag tracking"),
     RTX_SIG_B("npc-display",     kNpcDisBody,     kFirstExec, kOnce,       "Rendering: hide NPCs"),
     RTX_SIG_MH("player-display", kPlDisBody, kPlDisMask, kFirstExec, kOnce, kHitInFunction, "Rendering: hide players"),
+    RTX_SIG_MH("stack-count",    kStackCount, kStackCountMask, kFirstExec, kOnce, kHitInFunction, "Rendering: a hidden actor on a shared tile"),
+    RTX_SIG_MH("stack-mark",     kStackMark,  kStackMarkMask,  kFirstExec, kOnce, kHitInFunction, "Rendering: a hidden actor on a shared tile"),
     RTX_SIG_B("scene-blank",     kRenderBody,     kFirstExec, kOpenGlOnce, "Rendering: hide scene"),
     RTX_SIG_M("framer",          kFramerBody, kFramerMask, kFirstExec, kOnce, "Chat capture, event channel, packet feed"),
     RTX_SIG_M("spawn-hook",      kObjSubmitBody, kObjSubmitMask, kFirstExec, kOnce, "Scene objects, specials"),
@@ -452,6 +485,7 @@ inline constexpr Sig kTable[] = {
     RTX_SIG_M("menu-build",      kMenuBuild, kMenuBuildMask, kFirstExec, kOnce, "Menu swaps: reordering"),
     RTX_SIG_MH("menu-snap",      kMenuSnap,  kMenuSnapMask,  kFirstExec, kOnce, kInFunction, "Menu swaps: left-click option"),
     RTX_SIG_MH("menu-exec",      kMenuExec,  kMenuExecMask,  kFirstExec, kOnce, kInFunction, "Menu swaps: action log"),
+    RTX_SIG_MH("menu-add-row",   kMenuAddRow, kMenuAddRowMask, kFirstExec, kOnce, kInFunction, "Right-click Hide entry"),
     RTX_SIG_I("tooltip-stub",    kTooltipStub,    kAllExec,   kSameTarget, "Tooltip text (item prices, levels)"),
     RTX_SIG_I("outline-switch",  kOutlineSwitch,  kAllExec,   kOnce,       "Native outlines"),
     RTX_SIG_I("outline-table",   kOutlineTable,   kAllExec,   kOnce,       "Native outlines: colours and modes"),

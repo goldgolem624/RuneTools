@@ -188,6 +188,7 @@ struct OverlayPoint {
     int         kind = 0;
     std::string label;
     bool        has_box = false;
+    bool        outline_only = false;      // the box's marked edges alone: no fill over the ground
     float       box[12] = {0};             // 4 * (x,y,z)
     float       box_h = 0;                 // prism height in world-fine units (0 = flat)
     bool        has_box3d = false;
@@ -304,6 +305,22 @@ std::string EventsJson(std::uint32_t pid, std::uint64_t since);
 bool EventsMaskSet(std::uint32_t pid, const std::uint32_t mask[8]);
 
 bool RenderToggle(std::uint32_t pid, int which, bool on);
+// Which NPCs and players the game draws. An actor is hidden when it is on its hide list, or when its
+// whole class is hidden and it is not on the keep list. Players are also hidden past a distance from
+// the local player, and all of them while more than a number stand within a range of it; the keep
+// list wins over both. Names are matched without case; an NPC entry made of digits is an NPC id. The
+// rules are applied to the actors in the scene a few times a second for as long as any of them needs
+// the scene. Empty rules put everything back.
+struct RenderRules {
+    bool npcAll = false, playerAll = false;
+    std::vector<std::string> npcHide, npcKeep, playerHide, playerKeep;
+    int playerMaxDist = 0;                       // tiles; 0 = no limit
+    int crowdCount = 0, crowdRange = 0;          // more than crowdCount other players within crowdRange tiles; 0 = off
+};
+void RenderRulesSet(std::uint32_t pid, const RenderRules& rules);
+// The name of an actor that is in the scene right now, as the lists take it. kind 1 NPC, 2 player;
+// false when no actor in the scene sits at that address any more.
+bool RenderActorName(std::uint32_t pid, std::uint64_t actor, int& kind, std::string& name);
 std::string GpuTimingJson(std::uint32_t pid);   // companion per-pass GPU timing (Vulkan)
 std::uint64_t RenderInputWindow(std::uint32_t pid);
 

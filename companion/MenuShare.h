@@ -8,7 +8,7 @@ namespace rtx::menu {
 
 inline constexpr wchar_t kSectionPrefix[] = L"Local\\RuneToolsXMenu_v1_";
 inline constexpr std::uint32_t kMagic   = 0x554E454D;   // 'MENU'
-inline constexpr std::uint32_t kVersion = 10;
+inline constexpr std::uint32_t kVersion = 11;           // rows of our own: hideRows, hideClick*
 
 inline constexpr std::uint32_t kPromoSrcNone       = 0;
 inline constexpr std::uint32_t kPromoSrcLearned    = 1;
@@ -54,6 +54,8 @@ struct Entry {
     std::int32_t  type;                 // kType*; -1 unknown
 };
 
+inline constexpr std::int32_t kHideClickShow = 0x100;
+
 inline constexpr std::uint32_t kFlagHooked = 1u << 0;
 // Set when a reorder was withheld because the live records did not pass the structural check
 // (every row must decode a verb). Cleared on the next write that passes.
@@ -88,6 +90,14 @@ struct Share {
     std::int32_t  promoPartnerPrio;     // 0 = unreadable
     std::uint32_t promoSource;          // kPromoSrc*
     char          promoVerb[kVerbLen];
+
+    // A "Hide" row under the rows of each NPC and player. The launcher asks for it; a click on one
+    // comes back as the actor it was added for.
+    volatile std::uint32_t hideRows;        // launcher -> companion
+    std::uint32_t          hideReady;       // companion: the add-row routine was found
+    volatile std::uint32_t hideClickSeq;    // bumped after the two fields below are written
+    std::int32_t           hideClickKind;   // kTypeNpc / kTypePlayer, | kHideClickShow on a "Show" row
+    std::uint64_t          hideClickActor;
 };
 
 template <std::size_t N>

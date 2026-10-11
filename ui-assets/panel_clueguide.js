@@ -320,7 +320,10 @@ const CLUE_SCAN_AREAS = {"the deepest levels of the wilderness":{"r":25,"t":"eli
       const rec = scanSpotsFor(c);
       if (rec && rec.spots && rec.spots.length) {
         const key = rec.key || ('en' + c.en);
-        if (scanElimOwner[key] !== c.i) { scanElimGet(key).clear(); scanElimOwner[key] = c.i; }
+        if (scanElimOwner[key] !== c.i) {
+          if (scanElimGet(key).size) try { console.log('[scan] area ' + key + ' passed from clue ' + scanElimOwner[key] + ' to ' + c.i + ': its ruled-out spots cleared'); } catch (e) {}
+          scanElimGet(key).clear(); scanElimOwner[key] = c.i;
+        }
         const elim = scanElimGet(key);
         if (elim.size >= rec.spots.length) { elim.clear(); }
         const remain = [], idx = [];
@@ -352,9 +355,30 @@ const CLUE_SCAN_AREAS = {"the deepest levels of the wilderness":{"r":25,"t":"eli
       } else {                                               // solving -> mark the remaining candidates, COLOURED so none of them takes the direction arrow
         recs = spots.slice(0, 24).map((s, k) => enc(s, 'Scan ' + ((idx ? idx[k] : k) + 1), 0xFF2D95)).join('\x1e');
       }
-      rtxData.sync('overlay.guideMarks', recs);
+      scanGuideRecs = recs; scanGuideOpen = spots.length > 1;
+      scanGuideSend();
     } catch (e) {}
   }
+  // The marks last sent for a scan, and the zone box drawn with them while more than one spot is left.
+  let scanGuideRecs = '', scanGuideOpen = false, scanZoneRec = '', scanZoneAt = 0;
+  function scanGuideSend() {
+    try { rtxData.sync('overlay.guideMarks', scanGuideRecs + (scanGuideOpen && scanZoneRec ? '\x1e' + scanZoneRec : '')); } catch (e) {}
+  }
+  // The ground box for the last pulse: a square of `half` tiles around the tile it was judged from.
+  // Empty clears it. Sent again only when it changes.
+  function scanZoneSet(x, y, plane, half, rgb) {
+    let rec = '';
+    if (half > 0 && x > 0 && y > 0) {
+      const x0 = Math.max(1, x - half), y0 = Math.max(1, y - half);
+      rec = x0 + '\x1f' + y0 + '\x1f' + (plane | 0) + '\x1f\x1f0\x1f' + rgb + '\x1f' + (x + half) + '\x1f' + (y + half);
+    }
+    if (rec === scanZoneRec) return;
+    const now = Date.now();
+    if (rec && scanZoneRec && now - scanZoneAt < 250) return;   // a ring that follows the player is a new tile every step
+    scanZoneAt = now;
+    scanZoneRec = rec;
+    if (scanGuideRecs) scanGuideSend();
+  }
 
-Object.assign(window, { CLUE_SCAN_AREAS, CLUE_SCAN_RESOLVED, COMPASS_FIELD_MIN, SCAN_SPOT_INDEX, clueDismissAuto, clueGuide, clueHeldList, clueScrollTick, clueSetNpc, clueTile, isCompassClue, renderEmotePanel, scanElimGet, scanElimResetFor, scanKey, scanSpotsFor, selectClue });
+Object.assign(window, { scanZoneSet, CLUE_SCAN_AREAS, CLUE_SCAN_RESOLVED, COMPASS_FIELD_MIN, SCAN_SPOT_INDEX, clueDismissAuto, clueGuide, clueHeldList, clueScrollTick, clueSetNpc, clueTile, isCompassClue, renderEmotePanel, scanElimGet, scanElimResetFor, scanKey, scanSpotsFor, selectClue });
 })();

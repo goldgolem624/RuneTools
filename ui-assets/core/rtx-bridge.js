@@ -143,6 +143,8 @@
     if (n.length <= max) return n.join(', ');
     return n.slice(0, max).join(', ') + ' and ' + (n.length - max) + ' more';
   }
+  // "Everything" is the feature of the rows the whole reader stands on.
+  function rtxHealthAll(impact) { return !!impact && (impact.broken || []).some(e => e.feature === 'Everything'); }
   function rtxHealthOpen() {
     try {
       const t = (typeof allTabs === 'function' ? allTabs() : TABS).find(x => x.id === 'health');
@@ -153,6 +155,7 @@
   function rtxHealthToast(h) {
     const run = h.run, im = h.impact;
     if (!run || !im || typeof uiNotify !== 'function') return;
+    if (!run.version && !(run.build || {}).stamp) return;   // no game was attached: nothing was judged
     const to = (im.build && im.build.to) || run.version || '';
     const cacheOnly = h.trigger === 'cache update' || (im.build && im.build.exe === 'same' && im.build.cache === 'changed');
     const head = cacheOnly ? 'Game content updated' : ('Game updated' + (to ? ' to ' + to : ''));
@@ -160,6 +163,7 @@
     const unv = (im.unverified || []).filter(e => !e.precondition).length;
     let sub, level = h.level;
     if (im.complete === false && level !== 'red') { sub = 'Log in so RuneTools can finish checking (' + done + ' of ' + total + ' done).'; level = 'amber'; }
+    else if (level === 'red' && rtxHealthAll(im)) sub = 'RuneTools cannot read the game until it is updated.';
     else if (level === 'red') sub = (im.broken.length === 1 ? '1 feature needs' : im.broken.length + ' features need') + ' a RuneTools update: ' + rtxHealthNames(im.broken, 4) + '. Everything else works.';
     else if ((im.format || []).length && cacheOnly) sub = im.format.length + ' format change' + (im.format.length === 1 ? '' : 's') + ': ' + rtxHealthNames(im.format, 3) + ' may show less.';
     else if (level === 'amber') sub = 'Everything works; ' + (im.moved || []).length + ' feature' + ((im.moved || []).length === 1 ? ' runs' : 's run') + ' with a warning and ' + unv + ' could not be verified yet.';
@@ -187,7 +191,7 @@
       RTX_HEALTH.seq = d.seq;
       RTX_HEALTH.run = d.run;
       RTX_HEALTH.impact = rtxHealthImpact(d.run);
-      RTX_HEALTH.level = rtxHealthLevel(RTX_HEALTH.impact);
+      RTX_HEALTH.level = (!d.run.version && !(d.run.build || {}).stamp) ? 'none' : rtxHealthLevel(RTX_HEALTH.impact);
       // a run this page did not ask for is announced once per run, across page reloads
       let seen = '';
       try { seen = localStorage.getItem('rtxHealthToasted') || ''; } catch (e) {}
@@ -221,7 +225,8 @@
     let text = '', click = false;
     const h = RTX_HEALTH;
     if (h.level === 'red' && h.impact) {
-      text = 'Game updated: ' + rtxHealthNames(h.impact.broken, 2) + ' affected. Open Health check';
+      text = rtxHealthAll(h.impact) ? 'Game updated: RuneTools needs an update to read it. Open Health check'
+                                    : 'Game updated: ' + rtxHealthNames(h.impact.broken, 2) + ' affected. Open Health check';
       click = true;
     } else if (h.running && h.trigger !== 'manual') {
       text = 'Game updated: checking what still works...';

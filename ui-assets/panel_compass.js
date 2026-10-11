@@ -327,11 +327,24 @@
     compassBusy = true;
     try {
       let raw = -1; try { raw = parseInt(rtxData.sync('solver.compassHeading'), 10); } catch (e) {}
-      let open = raw >= 0;
-      if (open) compassLastRaw = raw;
-      const tgt = compassTargetSpot();
+      // The needle is open when its interface is: the rotation read alone can fail and say closed.
+      let needle = raw >= 0;
+      if (!needle) { try { const ig = typeof openIfaceGroups === 'function' ? openIfaceGroups() : null; needle = !!(ig && ig.has(996)); } catch (e) {} }
+      let open = needle;
+      if (raw >= 0) compassLastRaw = raw;
+      // The clue's stored target outlives the clue: it still holds the last compass clue's spot until
+      // the needle of the next one is opened. So it counts only as read with the needle open, and is
+      // then kept for this clue after the needle is closed.
+      if (needle) compassTgtHeld = compassTargetSpot();
+      const tgt = compassTgtHeld;
       if (tgt) open = true;
       const pos = open ? await scanPlayerTile() : null;         // current tile (for the player marker only; capture is manual)
+      // Standing on the spot with the needle closed: the dig is done or about to be, and the next
+      // compass clue can take this one's place without ever leaving the backpack. Let the spot go.
+      if (tgt && !needle && pos && Math.max(Math.abs(pos.x - tgt[0]), Math.abs(pos.y - tgt[1])) <= 1) {
+        if (!compassAtSince) compassAtSince = Date.now();
+        else if (Date.now() - compassAtSince > 5000) { compassTgtHeld = null; compassAtSince = 0; }
+      } else compassAtSince = 0;
       const res = tgt ? { state: 'solved', spot: tgt, best: tgt, err: 0, cands: 1, via: 'varc' }
                       : (open || compassReads.length) ? compassSolve() : null;
       const ac2 = (activeClueId >= 0) ? CLUE_DATA.find(z => z.i === activeClueId) : null;
@@ -351,7 +364,12 @@
       compassPaint();
     } catch (e) {} finally { compassBusy = false; }
   }
+  let compassTgtHeld = null;      // the stored target as read with this clue's needle open
+  let compassAtSince = 0;         // since when the player has stood on it with the needle closed
+  // A compass clue just arrived in the backpack: nothing read for the one before it applies.
+  function compassClueArrived() { compassTgtHeld = null; compassReset(); }
   function compassReset() {
+    compassTgtHeld = null;
     compassReads = []; compassResult = null; compassMapSig = null;
     try { if (bridge() && bridge().guideMarks) rtxData.sync('overlay.guideMarks', ''); } catch (e) {}
     drawCompassMap(); compassPaint();
@@ -496,5 +514,5 @@
     }); }
   }
 
-Object.assign(window, { FP_PAINTING, TETRA_POWERED, clueVarcIsPair, clueVarcPinned, clueVarcRoute, compassTick, fpActionText, fpBackpackSeen, fpPick, fpTick, tetraOpen, tetraTarget, tetraTick });
+Object.assign(window, { compassClueArrived, FP_PAINTING, TETRA_POWERED, clueVarcIsPair, clueVarcPinned, clueVarcRoute, compassTick, fpActionText, fpBackpackSeen, fpPick, fpTick, tetraOpen, tetraTarget, tetraTick });
 })();

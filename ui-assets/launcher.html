@@ -3434,11 +3434,17 @@
     if (d.running) { hcShow('', 'Checking the game', 'RuneTools is checking what still works after the update...'); return; }
     if (!run || !im) { hcHide(); return; }
     const b = run.build || {}, cache = run.cache || {};
+    // a run with no game attached judged nothing: there is no build to name and nothing to report
+    if (!run.version && !b.stamp) { hcHide(); return; }
     hcKey = 'run|' + (run.version || '') + '|' + (b.stamp || '') + '|' + (cache.gen || '') + '|' + d.seq;
     if (hcDismissed(hcKey)) { hcHide(); return; }
     const s = run.summary || {}, total = (s.pass | 0) + (s.fail | 0) + (s.warn | 0) + (s.unchecked | 0);
     const to = (run.version || '') + (b.stamp ? ' (' + b.stamp + ')' : '');
-    if (im.broken.length) {
+    // "Everything" is the feature of the rows the whole reader stands on: with one of those broken
+    // there is no "everything else" to speak of
+    if (im.broken.some(e => e.feature === 'Everything')) {
+      hcShow('bad', 'RuneTools needs an update for this game version', 'Game ' + to + ': RuneTools cannot read the game until it is updated.');
+    } else if (im.broken.length) {
       hcShow('bad', (im.broken.length === 1 ? '1 feature needs' : im.broken.length + ' features need') + ' a RuneTools update',
              'Game ' + to + ': ' + hcNames(im.broken, 5) + (im.broken.length === 1 ? ' is' : ' are') + ' affected. Everything else works.');
     } else if (im.complete === false) {
