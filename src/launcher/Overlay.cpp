@@ -471,9 +471,8 @@ void DrawFrame(Gdiplus::Graphics& g, const Config& cfg,
                     float wx = (float)(f.player_tx - R + tgx + CX[c]) * 512.0f;
                     float wy = (float)(f.player_ty - R + tgy + CY[c]) * 512.0f;
                     const bool liveC = haveF && f.heights_fine[i] != INT32_MIN;
-                    if (!liveC && haveH && f.heights[i] == kNoH) continue;   // no data at all: leave invisible
-                    float cz = liveC ? (float)f.heights_fine[i]
-                             : (haveH && f.heights[i] != kNoH) ? kHScale * (float)f.heights[i] : f.player_z;
+                    if (!liveC && (!haveH || f.heights[i] == kNoH)) continue;   // no data at all: leave invisible
+                    float cz = liveC ? (float)f.heights_fine[i] : kHScale * (float)f.heights[i];
                     float sx, sy;
                     if (WorldToScreen(f.matrix, vpX, vpY, vpW, vpH, wx, wy, cz, sx, sy) &&
                         sx > -(float)W && sx < 2.0f * W && sy > -(float)H && sy < 2.0f * H) {
@@ -543,7 +542,7 @@ void DrawFrame(Gdiplus::Graphics& g, const Config& cfg,
         gr.FillPath(b, &path);
     };
     for (const auto& p : f.points) {
-        if (!wanted(p.kind)) continue;
+        if (!wanted(p.kind) || p.no_height) continue;
         // Live model AABB: 3D box, corner bits 0=east 1=north 2=up.
         if (p.has_box3d) {
             float ex[2] = { p.bmin[0], p.bmax[0] };
@@ -607,7 +606,7 @@ void DrawFrame(Gdiplus::Graphics& g, const Config& cfg,
     for (int kp = 3; kp >= 0; --kp) {
         if (!wanted(kp)) continue;
         for (const auto& p : f.points) {
-            if (p.kind != kp || p.label.empty()) continue;
+            if (p.kind != kp || p.label.empty() || p.no_height) continue;
             float sx, sy;
             if (!project(p, sx, sy)) continue;
             int wl = MultiByteToWideChar(CP_UTF8, 0, p.label.c_str(), -1, nullptr, 0);
@@ -1161,9 +1160,8 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
                     float wx = (float)(f->player_tx - R + tgx + CX[c]) * 512.0f;
                     float wy = (float)(f->player_ty - R + tgy + CY[c]) * 512.0f;
                     const bool liveC = haveF && f->heights_fine[i] != INT32_MIN;
-                    if (!liveC && haveH && f->heights[i] == kNoH) continue;
-                    float cz = liveC ? (float)f->heights_fine[i]
-                             : (haveH && f->heights[i] != kNoH) ? kHScale * (float)f->heights[i] : f->player_z;
+                    if (!liveC && (!haveH || f->heights[i] == kNoH)) continue;
+                    float cz = liveC ? (float)f->heights_fine[i] : kHScale * (float)f->heights[i];
                     wz[i] = cz;
                     const float wpt[3] = { wx, wy, cz };
                     if (ProjW(f->matrix, wpt) < kNearW) { vis[i] = 2; continue; }
@@ -1329,7 +1327,7 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
         return kind == 4 ? true : kind == 5 ? cfg.true_tile : kind == 0 ? cfg.objects : kind == 1 ? cfg.npcs : kind == 2 ? cfg.players : cfg.specials;
     };
     if (f && cfg.enabled) for (const auto& p : f->points) {
-        if (!wanted(p.kind)) continue;
+        if (!wanted(p.kind) || p.no_height) continue;
         const KC kc = kindCol[p.kind >= 0 && p.kind < 5 ? p.kind : 0];
         if (p.kind == 5) {                                   // true-tile outline, flat on the ground
             if (!p.has_box) continue;
@@ -1439,7 +1437,7 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
         std::vector<Bucket> buckets;
         const int npR = cfg.np_range > 0 ? cfg.np_range : 20;
         for (const auto& p : f->points) {
-            if (p.is_self || p.label.empty()) continue;
+            if (p.is_self || p.label.empty() || p.no_height) continue;
             if (p.kind == 2) {   // picked players override the master toggle
                 bool show = cfg.np_player_uids.empty()
                     ? cfg.np_players
@@ -1623,11 +1621,25 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
 
     if (f && cfg.markers) {
         auto mlist = rtx::markers::Snapshot(cfg.pid);
+        const rtx::markers::Keybinds mkb = rtx::markers::GetKeybinds();
+        const float mkW = (float)mkb.width / 2.0f;      // 2 is the thickness the markers always had
         const std::int16_t kNo = -32768;
+        const bool inInstance = rtx::reader::InInstance(cfg.pid);
         for (const auto& m : mlist) {
-            if (m.plane != f->plane) continue;
-            int gx = ((m.region >> 8) << 6) + m.lx;
-            int gy = ((m.region & 0xFF) << 6) + m.ly;
+            // Inside an instance a marker is drawn on every tile its own tile was copied to; one that
+            // was copied nowhere, and every marker outside an instance, is drawn where it says.
+            const int mx = ((m.region >> 8) << 6) + m.lx, my = ((m.region & 0xFF) << 6) + m.ly;
+            int placeX[8], placeY[8], places = 0;
+            bool copied = false;
+            if (inInstance)
+                for (const auto& t : rtx::reader::InstanceTargets(cfg.pid, mx, my, m.plane)) {
+                    copied = true;
+                    if (t.plane == f->plane && places < 8) { placeX[places] = t.x; placeY[places] = t.y; ++places; }
+                }
+            if (!copied && m.plane == f->plane) { placeX[0] = mx; placeY[0] = my; places = 1; }
+            for (int pi = 0; pi < places; ++pi) {
+            int gx = placeX[pi];
+            int gy = placeY[pi];
             int adx = gx - f->player_tx; if (adx < 0) adx = -adx;
             int ady = gy - f->player_ty; if (ady < 0) ady = -ady;
             if ((adx > ady ? adx : ady) > 128) continue;
@@ -1635,7 +1647,8 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
             std::int16_t ch[4];
             rtx::cache::TileCornerHeights(gx, gy, f->plane, ch);
             std::int32_t lch[4]; const bool liveOk = rtx::reader::LiveCornerHeights(f->pid, gx, gy, f->plane, lch);
-            auto cz = [&](int c) { return liveOk ? (float)lch[c] : (ch[c] == kNo) ? f->player_z : 32.0f * (float)ch[c]; };
+            if (!liveOk && (ch[0] == kNo || ch[1] == kNo || ch[2] == kNo || ch[3] == kNo)) continue;   // no ground height known here yet
+            auto cz = [&](int c) { return liveOk ? (float)lch[c] : 32.0f * (float)ch[c]; };
             float zSW = cz(0), zSE = cz(1), zNE = cz(2), zNW = cz(3);
             const float wc[4][3] = {
                 { gx * 512.f,       gy * 512.f,       zSW },
@@ -1665,8 +1678,26 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
                     push(q);
                 }
             };
-            if (nq >= 3 && any) {
-                if (m.color2) {
+            if (nq >= 3 && any && m.style == rtx::markers::kStyleCorners) {
+                // each corner as two short strokes along its edges, a quarter of the edge long
+                const int c2r = (m.color2 >> 16) & 0xFF, c2g = (m.color2 >> 8) & 0xFF, c2b = m.color2 & 0xFF;
+                for (int i = 0; i < 4; ++i) {
+                    const float* a = wc[i]; const float* b = wc[(i + 1) % 4];
+                    const bool second = m.color2 && i < 2;
+                    for (int end = 0; end < 2; ++end) {
+                        const float t0 = end ? 0.75f : 0.0f, t1 = end ? 1.0f : 0.25f;
+                        const float p0[3] = { a[0] + (b[0] - a[0]) * t0, a[1] + (b[1] - a[1]) * t0, a[2] + (b[2] - a[2]) * t0 };
+                        const float p1[3] = { a[0] + (b[0] - a[0]) * t1, a[1] + (b[1] - a[1]) * t1, a[2] + (b[2] - a[2]) * t1 };
+                        float ax2, ay2, bx2, by2;
+                        if (!ClipProjectSegment(f->matrix, vpX, vpY, vpW, vpH, p0, p1, ax2, ay2, bx2, by2)) continue;
+                        line(ax2, ay2, bx2, by2, 3.2f * mkW, kInkR, kInkG, kInkB, 140);
+                        line(ax2, ay2, bx2, by2, 1.9f * mkW, second ? c2r : cr, second ? c2g : cg, second ? c2b : cb, 255);
+                    }
+                }
+            } else if (nq >= 3 && any) {
+                const bool fill = m.style == rtx::markers::kStyleFilled;
+                if (!fill) {
+                } else if (m.color2) {
                     const int c2r = (m.color2 >> 16) & 0xFF, c2g = (m.color2 >> 8) & 0xFF, c2b = m.color2 & 0xFF;
                     const float triSE[3][3] = { { wc[0][0], wc[0][1], wc[0][2] },
                                                 { wc[1][0], wc[1][1], wc[1][2] },
@@ -1690,30 +1721,35 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
                         if (!ClipProjectSegment(f->matrix, vpX, vpY, vpW, vpH,
                                                 wc[i], wc[(i + 1) % 4], ax2, ay2, bx2, by2)) continue;
                         const bool second = i < 2;
-                        line(ax2, ay2, bx2, by2, 3.0f, kInkR, kInkG, kInkB, 140);
-                        line(ax2, ay2, bx2, by2, 1.8f,
+                        line(ax2, ay2, bx2, by2, 3.0f * mkW, kInkR, kInkG, kInkB, 140);
+                        line(ax2, ay2, bx2, by2, 1.8f * mkW,
                              second ? c2r : cr, second ? c2g : cg, second ? c2b : cb, 255);
                     }
-                    float sx2, sy2, ex2, ey2;   // diagonal seam
-                    if (ClipProjectSegment(f->matrix, vpX, vpY, vpW, vpH, wc[0], wc[2], sx2, sy2, ex2, ey2))
+                    float sx2, sy2, ex2, ey2;   // diagonal seam, where the two fills meet
+                    if (fill && ClipProjectSegment(f->matrix, vpX, vpY, vpW, vpH, wc[0], wc[2], sx2, sy2, ex2, ey2))
                         line(sx2, sy2, ex2, ey2, 1.4f, kInkR, kInkG, kInkB, 170);
                 } else
                     for (int i = 0; i < nq; ++i) {
-                        line(qx[i], qy[i], qx[(i + 1) % nq], qy[(i + 1) % nq], 3.0f, kInkR, kInkG, kInkB, 140);
-                        line(qx[i], qy[i], qx[(i + 1) % nq], qy[(i + 1) % nq], 1.6f, cr, cg, cb, 255);
+                        line(qx[i], qy[i], qx[(i + 1) % nq], qy[(i + 1) % nq], 3.0f * mkW, kInkR, kInkG, kInkB, 140);
+                        line(qx[i], qy[i], qx[(i + 1) % nq], qy[(i + 1) % nq], 1.6f * mkW, cr, cg, cb, 255);
                     }
             }
             if (!m.label.empty()) {
-                float zc = (zSW + zSE + zNE + zNW) * 0.25f;
+                // The label sits on the tile: bare text centred on the point a little above the middle
+                // of the tile, in a lighter shade of the marker's colour, over a black copy set down
+                // and to the right as its shadow.
+                float zc = (zSW + zSE + zNE + zNW) * 0.25f + 100.0f;
                 float cx, cy;
                 if (WorldToScreen(f->matrix, vpX, vpY, vpW, vpH,
                                   (gx + 0.5f) * 512.f, (gy + 0.5f) * 512.f, zc, cx, cy) &&
                     cx > -200.f && cx < W + 200.f && cy > -120.f && cy < H + 120.f) {
+                    auto lift = [](int c) { return (std::uint8_t)(c + (255 - c) * 44 / 100); };
                     marker::Command t{}; t.type = marker::kText;
+                    t.glyph = (std::uint16_t)(marker::kTextPlain | marker::kTextAlignCentre);
                     t.x0 = cx;
-                    t.y0 = cy - 22.0f;
-                    t.x1 = 14.0f;             // glyph height px
-                    t.r = (std::uint8_t)cr; t.g = (std::uint8_t)cg; t.b = (std::uint8_t)cb; t.a = 235;
+                    t.y0 = cy;
+                    t.x1 = (float)mkb.labelPx;   // glyph height px
+                    t.r = lift(cr); t.g = lift(cg); t.b = lift(cb); t.a = 255;
                     int n = (int)m.label.size();
                     if (n > marker::kTextMax) {
                         std::memcpy(t.text, m.label.data(), marker::kTextMax - 2);
@@ -1724,8 +1760,13 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
                         std::memcpy(t.text, m.label.data(), (size_t)n);
                         t.text[n] = '\0';
                     }
+                    marker::Command sh = t;
+                    const float off = mkb.labelPx >= 18 ? 2.0f : 1.0f;
+                    sh.x0 += off; sh.y0 += off; sh.r = 0; sh.g = 0; sh.b = 0; sh.a = 255;
+                    push(sh);
                     push(t);
                 }
+            }
             }
         }
     }
@@ -1734,12 +1775,15 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
         const std::int16_t kNo = -32768;
         const std::size_t nT = f->guide_path.size() / 2;
         std::vector<float> cz((std::size_t)nT * 4);
+        std::vector<char> known(nT, 1);   // a path tile with no ground height from the game or the cache is left out
         for (std::size_t i = 0; i < nT; ++i) {
             std::int16_t ch[4];
             rtx::cache::TileCornerHeights(f->guide_path[i * 2], f->guide_path[i * 2 + 1], f->plane, ch);
             std::int32_t lch[4]; const bool liveOk = rtx::reader::LiveCornerHeights(f->pid, f->guide_path[i * 2], f->guide_path[i * 2 + 1], f->plane, lch);
-            for (int c = 0; c < 4; ++c)
-                cz[i * 4 + c] = liveOk ? (float)lch[c] : (ch[c] == kNo) ? f->player_z : 32.0f * (float)ch[c];
+            for (int c = 0; c < 4; ++c) {
+                if (!liveOk && ch[c] == kNo) { known[i] = 0; cz[i * 4 + c] = 0.f; continue; }
+                cz[i * 4 + c] = liveOk ? (float)lch[c] : 32.0f * (float)ch[c];
+            }
         }
         for (std::size_t i = 0; i + 1 < nT; ++i) {
             int dx = f->guide_path[(i + 1) * 2]     - f->guide_path[i * 2];
@@ -1751,12 +1795,14 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
             else if (dy ==  1) { a0 = 3; b0 = 0; a1 = 2; b1 = 1; }   // north
             else if (dy == -1) { a0 = 0; b0 = 3; a1 = 1; b1 = 2; }   // south
             else continue;
+            if (!known[i] || !known[i + 1]) continue;
             float w0 = (cz[i * 4 + a0] + cz[(i + 1) * 4 + b0]) * 0.5f;
             float w1 = (cz[i * 4 + a1] + cz[(i + 1) * 4 + b1]) * 0.5f;
             cz[i * 4 + a0] = cz[(i + 1) * 4 + b0] = w0;
             cz[i * 4 + a1] = cz[(i + 1) * 4 + b1] = w1;
         }
         for (std::size_t i = 0; i < nT; ++i) {
+            if (!known[i]) continue;
             int gx = f->guide_path[i * 2], gy = f->guide_path[i * 2 + 1];
             static const int CX[4] = { 0, 1, 1, 0 }, CY[4] = { 0, 0, 1, 1 };
             float wcp[4][3];
@@ -1787,6 +1833,7 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
     struct GuideLbl { float cx, cy; int nl, mc; const std::string* text; int r, g, b; bool hazard; float lift; };
     std::vector<GuideLbl> glbls;
     if (f) for (const auto& p : f->guides) {
+        if (p.no_height) continue;   // no ground height known here: drawn once the terrain has loaded
         // corners: base ring 0-3 (SW,SE,NE,NW), top ring 4-7
         float wc[8][3]; int nv;
         if (p.has_box3d) {

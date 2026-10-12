@@ -189,6 +189,7 @@ struct OverlayPoint {
     std::string label;
     bool        has_box = false;
     bool        outline_only = false;      // the box's marked edges alone: no fill over the ground
+    bool        no_height = false;         // neither the game nor the cache has the ground height here: not drawn
     float       box[12] = {0};             // 4 * (x,y,z)
     float       box_h = 0;                 // prism height in world-fine units (0 = flat)
     bool        has_box3d = false;
@@ -321,6 +322,18 @@ void RenderRulesSet(std::uint32_t pid, const RenderRules& rules);
 // The name of an actor that is in the scene right now, as the lists take it. kind 1 NPC, 2 player;
 // false when no actor in the scene sits at that address any more.
 bool RenderActorName(std::uint32_t pid, std::uint64_t actor, int& kind, std::string& name);
+
+// Instances. The game builds an instance out of 8x8 tile zones copied from the real map, and puts it
+// at a different place each visit, so a tile inside one is only the same tile next time by the place
+// it was copied from. These translate between the two.
+// InstanceSource: 0 = not in an instance (the tile is itself, outputs untouched), 1 = the tile's
+// source in sx/sy/splane, -1 = in an instance but this tile was copied from nowhere.
+int InstanceSource(std::uint32_t pid, int x, int y, int plane, int& sx, int& sy, int& splane);
+// Every tile of the instance the player is in that shows source tile (sx, sy, splane), as
+// {x, y, plane}; a zone copied more than once gives more than one. Empty outside an instance.
+struct InstanceTile { int x, y, plane; };
+std::vector<InstanceTile> InstanceTargets(std::uint32_t pid, int sx, int sy, int splane);
+bool InInstance(std::uint32_t pid);
 std::string GpuTimingJson(std::uint32_t pid);   // companion per-pass GPU timing (Vulkan)
 std::uint64_t RenderInputWindow(std::uint32_t pid);
 

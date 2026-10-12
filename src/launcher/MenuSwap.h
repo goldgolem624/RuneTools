@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace rtx::launcher::menuswap {
 
@@ -24,5 +25,8 @@ bool SetHideRows(std::uint32_t pid, bool on);
 // The last click on one: its count since the client started, the row kind (4 NPC, 7 player) and
 // the actor it was added for. False when there is no channel.
 bool HideClick(std::uint32_t pid, std::uint32_t& seq, int& kind, std::uint64_t& actor);
+// A "Mark tile" row under "Walk here"; `marked` are the tiles that read "Unmark tile", as (x << 16) | y.
+// False when the companion cannot add rows.
+bool SetMarkRows(std::uint32_t pid, bool on, const std::vector<std::uint32_t>& marked);
 
 }  // namespace rtx::launcher::menuswap

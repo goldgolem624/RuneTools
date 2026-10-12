@@ -59,14 +59,14 @@ inline constexpr unsigned char kNpcDisBody[] = {
 inline constexpr unsigned char kStackCount[] = {
     0x44, 0x39, 0x43, 0x50, 0x0F, 0x85, 0, 0, 0, 0, 0x66, 0x83, 0xBB, 0, 0, 0x00, 0x00, 0xFF, 0x0F, 0x84,
 };
-inline constexpr unsigned char kStackCountMask[] = {
-    1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1, 0, 0, 1, 1, 1, 1, 1,
+inline constexpr unsigned char kStackCountMask[] = {   // the actor's level position (byte 3) is open too
+    1, 1, 1, 0, 1, 1, 0, 0, 0, 0, 1, 1, 1, 0, 0, 1, 1, 1, 1, 1,
 };
 inline constexpr unsigned char kStackMark[] = {
     0x44, 0x39, 0x43, 0x50, 0x0F, 0x85, 0, 0, 0, 0, 0x66, 0x83, 0xBB, 0, 0, 0x00, 0x00, 0xFF, 0x75, 0, 0xC6, 0x83, 0, 0, 0x00, 0x00, 0x00,
 };
 inline constexpr unsigned char kStackMarkMask[] = {
-    1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1, 0, 0, 1, 1, 1, 1, 0, 1, 1, 0, 0, 1, 1, 1,
+    1, 1, 1, 0, 1, 1, 0, 0, 0, 0, 1, 1, 1, 0, 0, 1, 1, 1, 1, 0, 1, 1, 0, 0, 1, 1, 1,
 };
 
 // Player visibility: mov rax,[rcx+0x1078] ; mov rbp,r9. The actor field's low byte is open
@@ -190,8 +190,8 @@ inline constexpr unsigned char kMenuAddRow[] = {
     0x48, 0x8B, 0x81, 0x98, 0x00, 0x00, 0x00, 0x48, 0x2B, 0x81, 0x90, 0x00, 0x00, 0x00,
     0x48, 0xC1, 0xF8, 0x04, 0x48, 0x3D, 0xBC, 0x02, 0x00, 0x00,
 };
-inline constexpr unsigned char kMenuAddRowMask[] = {
-    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+inline constexpr unsigned char kMenuAddRowMask[] = {   // where the entry vector sits in the manager is open
+    1, 1, 1, 0, 0, 1, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
 };
 inline constexpr unsigned kMenuAddRowAt = 55;
 

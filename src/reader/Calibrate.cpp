@@ -70,6 +70,8 @@ const Rule kRules[] = {
     { "md::kServerTimeOffset", "DATE_RUNEDAY",                 "48 F7 A9", kMdLo, kMdHi, 0, rtx::md::kServerTimeOffset },   // imul [rcx+disp]
     { "md::kCountry",      "PLAYERCOUNTRY",                    "8B 91",    kMdLo, kMdHi, 0, rtx::md::kCountry },        // mov edx,[rcx+disp]
     { "md::kWorldInfo",    "REBOOTTIMER",                      "48 8B 81", kMdLo, kMdHi, 0, rtx::md::kWorldInfo },
+    { "md::kFps",          "FPS_STATS",                        "F3 44 0F 2C 89", 0x100, 0x2000, 0, rtx::md::kFps },   // cvttss2si r9d,[rcx+disp]
+    { "md::kVarWatch",     "popvar",                           "49 8B 9E", kMdLo, kMdHi, 0, rtx::md::kVarWatch },      // mov rbx,[r14+disp]
     // references: offsets written out in the reader and the companion
     { "dbMgr",             "DB_FIND_GET",                      "48 8B B1", kMdLo, kMdHi, 0, 0x19980, false, "ScriptRunner" },
     { "dbOther",           "DB_LISTALL",                       "48 8B 89", kMdLo, kMdHi, 0, 0x198C0, false, "DbDatabase" },

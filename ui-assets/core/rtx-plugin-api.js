@@ -480,6 +480,7 @@ try{parent.postMessage({__rtxPlugin:P,kind:'hello'},'*');}catch(e){}})();`;
     'act.markerAdd':          { scope: 'actuator',    json: false, run: (a, pid) => bridge().markerAdd(pid, ...pArgs(a)) },
     'act.markerRemove':       { scope: 'actuator',    json: false, run: (a, pid) => bridge().markerRemove(pid, ...pArgs(a)) },
     'act.markerSetColor':     { scope: 'actuator',    json: false, run: (a, pid) => bridge().markerSetColor(pid, ...pArgs(a)) },
+    'act.markerSetStyle':     { scope: 'actuator',    json: false, run: (a, pid) => bridge().markerSetStyle(pid, ...pArgs(a)) },
     'act.markerSetLabel':     { scope: 'actuator',    json: false, run: (a, pid) => bridge().markerSetLabel(pid, ...pArgs(a)) },
     'act.markersClear':       { scope: 'actuator',    json: false, run: (a, pid) => bridge().markersClear(pid, ...pArgs(a)) },
     'act.markerKeybindsSet':  { scope: 'actuator',    json: false, run: (a) => bridge().markerKeybindsSet(...pArgs(a)) },

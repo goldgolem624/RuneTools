@@ -821,6 +821,29 @@ JSValueRef MenuHideRows(JSContextRef ctx, JSObjectRef, JSObjectRef,
     return JSValueMakeBoolean(ctx, rtx::launcher::menuswap::SetHideRows(pid, JSValueToBoolean(ctx, argv[1])));
 }
 
+// menuMarkRows(pid, on, plane): a "Mark tile" row under "Walk here", "Unmark tile" on the tiles
+// marked on that level. True when the game client can take rows.
+JSValueRef MenuMarkRows(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                        size_t argc, const JSValueRef argv[], JSValueRef*) {
+    if (argc < 3) return JSValueMakeBoolean(ctx, false);
+    auto pid = static_cast<std::uint32_t>(JSValueToNumber(ctx, argv[0], nullptr));
+    const bool on = JSValueToBoolean(ctx, argv[1]);
+    const int plane = js_int(ctx, argv[2]);
+    std::vector<std::uint32_t> marked;
+    const bool inst = on && rtx::reader::InInstance(pid);
+    if (on) for (const auto& m : rtx::markers::Snapshot(pid)) {
+        const int x = ((m.region >> 8) << 6) | (m.lx & 63), y = ((m.region & 0xFF) << 6) | (m.ly & 63);
+        // in an instance the row is asked about the tile on screen: every place the marker's tile was copied to
+        bool placed = false;
+        if (inst) for (const auto& t : rtx::reader::InstanceTargets(pid, x, y, m.plane)) {
+            placed = true;
+            if (t.plane == plane) marked.push_back(((std::uint32_t)t.x << 16) | (std::uint32_t)t.y);
+        }
+        if (!placed && m.plane == plane) marked.push_back(((std::uint32_t)x << 16) | (std::uint32_t)y);
+    }
+    return JSValueMakeBoolean(ctx, rtx::launcher::menuswap::SetMarkRows(pid, on, marked));
+}
+
 // menuHideClick(pid): {"seq":n,"kind":"npc"|"player","name":".."} for the last click on a "Hide"
 // row; the name is empty when that actor has left the scene. seq counts clicks since the client started.
 JSValueRef MenuHideClick(JSContextRef ctx, JSObjectRef, JSObjectRef,
@@ -834,6 +857,13 @@ JSValueRef MenuHideClick(JSContextRef ctx, JSObjectRef, JSObjectRef,
     std::lock_guard<std::mutex> lk(mu);
     auto it = last.find(pid);
     if (it != last.end() && it->second.first == seq) return utf8_to_js(ctx, it->second.second);
+    if (kind & rtx::menu::kHideClickTile) {
+        const std::string out = "{\"seq\":" + std::to_string(seq) + ",\"kind\":\"tile\",\"show\":" + ((kind & rtx::menu::kHideClickShow) ? "true" : "false") +
+                                ",\"custom\":" + ((kind & rtx::menu::kHideClickCustom) ? "true" : "false") +
+                                ",\"x\":" + std::to_string((std::uint32_t)actor) + ",\"y\":" + std::to_string((std::uint32_t)(actor >> 32)) + "}";
+        last[pid] = { seq, out };
+        return utf8_to_js(ctx, out);
+    }
     std::string name; int actorKind = 0;
     if (seq) rtx::reader::RenderActorName(pid, actor, actorKind, name);
     std::string esc;
@@ -2424,6 +2454,8 @@ JSValueRef MarkerAdd(JSContextRef ctx, JSObjectRef, JSObjectRef,
     int plane  = js_int(ctx, argv[4]);
     std::uint32_t color = (argc >= 6) ? (std::uint32_t)JSValueToNumber(ctx, argv[5], nullptr) : 0x46E0C0;
     std::string label = (argc >= 7) ? js_to_utf8(ctx, argv[6]) : std::string();
+    // an eighth argument, true: the tile is one the game shows now, not one read back from the list
+    if (argc >= 8 && JSValueToBoolean(ctx, argv[7])) rtx::markers::ToStored(pid, region, lx, ly, plane);
     return JSValueMakeBoolean(ctx, rtx::markers::Add(pid, region, lx, ly, plane, color, label));
 }
 JSValueRef MarkerRemove(JSContextRef ctx, JSObjectRef, JSObjectRef,
@@ -2434,6 +2466,7 @@ JSValueRef MarkerRemove(JSContextRef ctx, JSObjectRef, JSObjectRef,
     int lx     = js_int(ctx, argv[2]);
     int ly     = js_int(ctx, argv[3]);
     int plane  = js_int(ctx, argv[4]);
+    if (argc >= 6 && JSValueToBoolean(ctx, argv[5])) rtx::markers::ToStored(pid, region, lx, ly, plane);   // a tile the game shows now
     return JSValueMakeBoolean(ctx, rtx::markers::Remove(pid, region, lx, ly, plane));
 }
 JSValueRef MarkerSetLabel(JSContextRef ctx, JSObjectRef, JSObjectRef,
@@ -2459,6 +2492,23 @@ JSValueRef MarkerSetColor(JSContextRef ctx, JSObjectRef, JSObjectRef,
     std::uint32_t color2 = (argc >= 7) ? (std::uint32_t)JSValueToNumber(ctx, argv[6], nullptr) : 0;
     return JSValueMakeBoolean(ctx, rtx::markers::SetColor(pid, region, lx, ly, plane, color, color2));
 }
+// markerStored(pid, region, lx, ly, plane): "region/lx/ly/plane" a marker on that on-screen tile is kept under.
+JSValueRef MarkerStored(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                        size_t argc, const JSValueRef argv[], JSValueRef*) {
+    if (argc < 5) return utf8_to_js(ctx, "");
+    auto pid = (std::uint32_t)JSValueToNumber(ctx, argv[0], nullptr);
+    int region = js_int(ctx, argv[1]), lx = js_int(ctx, argv[2]), ly = js_int(ctx, argv[3]), plane = js_int(ctx, argv[4]);
+    rtx::markers::ToStored(pid, region, lx, ly, plane);
+    return utf8_to_js(ctx, std::to_string(region) + "/" + std::to_string(lx) + "/" + std::to_string(ly) + "/" + std::to_string(plane));
+}
+// markerSetStyle(pid, region, lx, ly, plane, style): 0 filled, 1 outline, 2 corners.
+JSValueRef MarkerSetStyle(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                          size_t argc, const JSValueRef argv[], JSValueRef*) {
+    if (argc < 6) return JSValueMakeBoolean(ctx, false);
+    auto pid = (std::uint32_t)JSValueToNumber(ctx, argv[0], nullptr);
+    return JSValueMakeBoolean(ctx, rtx::markers::SetStyle(pid, js_int(ctx, argv[1]), js_int(ctx, argv[2]), js_int(ctx, argv[3]),
+                                                          js_int(ctx, argv[4]), js_int(ctx, argv[5])));
+}
 JSValueRef MarkersClear(JSContextRef ctx, JSObjectRef, JSObjectRef,
                         size_t argc, const JSValueRef argv[], JSValueRef*) {
     std::uint32_t pid = (argc >= 1) ? (std::uint32_t)JSValueToNumber(ctx, argv[0], nullptr) : 0;
@@ -2467,15 +2517,18 @@ JSValueRef MarkersClear(JSContextRef ctx, JSObjectRef, JSObjectRef,
 JSValueRef MarkerKeybindsGet(JSContextRef ctx, JSObjectRef, JSObjectRef,
                              size_t, const JSValueRef[], JSValueRef*) {
     auto kb = rtx::markers::GetKeybinds();
-    char buf[128];
+    char buf[192];
     std::snprintf(buf, sizeof(buf),
-        "{\"mark\":%d,\"remove\":%d,\"color\":%u}",
-        kb.markVk, kb.removeVk, kb.defColor & 0xFFFFFFu);
+        "{\"mark\":%d,\"remove\":%d,\"color\":%u,\"style\":%d,\"width\":%d,\"labelPx\":%d}",
+        kb.markVk, kb.removeVk, kb.defColor & 0xFFFFFFu, kb.defStyle, kb.width, kb.labelPx);
     return utf8_to_js(ctx, buf);
 }
 JSValueRef MarkerKeybindsSet(JSContextRef ctx, JSObjectRef, JSObjectRef,
                              size_t argc, const JSValueRef argv[], JSValueRef*) {
-    rtx::markers::Keybinds kb;
+    rtx::markers::Keybinds kb = rtx::markers::GetKeybinds();   // a caller that sends three values keeps the rest
+    if (argc >= 4) kb.defStyle = js_int(ctx, argv[3]);
+    if (argc >= 5) kb.width    = js_int(ctx, argv[4]);
+    if (argc >= 6) kb.labelPx  = js_int(ctx, argv[5]);
     if (argc >= 1) kb.markVk   = js_int(ctx, argv[0]);
     if (argc >= 2) kb.removeVk = js_int(ctx, argv[1]);
     if (argc >= 3) kb.defColor = (std::uint32_t)JSValueToNumber(ctx, argv[2], nullptr);
@@ -6579,6 +6632,7 @@ void AttachBridge(ultralight::View* view) {
     install_fn(ctx, ns, "menuPins",          MenuSwapFn);
     install_fn(ctx, ns, "menuHideRows",      MenuHideRows);
     install_fn(ctx, ns, "menuHideClick",     MenuHideClick);
+    install_fn(ctx, ns, "menuMarkRows",      MenuMarkRows);
     install_fn(ctx, ns, "hostInfo",          HostInfo);
     install_fn(ctx, ns, "readerHealth",      ReaderHealth);
     install_fn(ctx, ns, "readerHealthStart", ReaderHealthStart);
@@ -6715,6 +6769,8 @@ void AttachBridge(ultralight::View* view) {
     install_fn(ctx, ns, "markerRemove",      MarkerRemove);
     install_fn(ctx, ns, "markerSetLabel",    MarkerSetLabel);
     install_fn(ctx, ns, "markerSetColor",    MarkerSetColor);
+    install_fn(ctx, ns, "markerSetStyle",    MarkerSetStyle);
+    install_fn(ctx, ns, "markerStored",      MarkerStored);
     install_fn(ctx, ns, "markersClear",      MarkersClear);
     install_fn(ctx, ns, "markerKeybindsGet", MarkerKeybindsGet);
     install_fn(ctx, ns, "markerKeybindsArm", MarkerKeybindsArm);

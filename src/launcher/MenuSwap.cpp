@@ -93,6 +93,19 @@ bool SetHideRows(std::uint32_t pid, bool on) {
     return v.sh->hideReady != 0;
 }
 
+bool SetMarkRows(std::uint32_t pid, bool on, const std::vector<std::uint32_t>& marked) {
+    View v(pid);
+    if (!v) return false;
+    std::uint32_t n = (std::uint32_t)marked.size();
+    if (n > (std::uint32_t)rtx::menu::kMaxMarkTiles) n = rtx::menu::kMaxMarkTiles;
+    // count down, entries, count up: a row built in between sees a shorter list, never a wrong tile
+    if (n < v.sh->markCount) v.sh->markCount = n;
+    for (std::uint32_t i = 0; i < n; ++i) if (v.sh->markTiles[i] != marked[i]) v.sh->markTiles[i] = marked[i];
+    v.sh->markCount = n;
+    v.sh->markRows = on ? 1u : 0u;
+    return v.sh->hideReady != 0;
+}
+
 bool HideClick(std::uint32_t pid, std::uint32_t& seq, int& kind, std::uint64_t& actor) {
     View v(pid);
     if (!v) return false;

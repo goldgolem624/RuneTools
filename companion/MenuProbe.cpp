@@ -1208,24 +1208,32 @@ void __fastcall RowClicked(RowCall* self, std::uint64_t rec) {
     sh->hideClickSeq = sh->hideClickSeq + 1;
 }
 void* const g_rowVtbl[6] = { (void*)&RowNoop, (void*)&RowNoop, (void*)&RowClicked, (void*)&RowNoop, (void*)&RowNoop, (void*)&RowNoop };
-// NPC, player, then the same two for an actor that is hidden now: its row reads "Show".
-RowCall g_rowCall[4] = { { g_rowVtbl, rtx::menu::kTypeNpc }, { g_rowVtbl, rtx::menu::kTypePlayer },
-                         { g_rowVtbl, rtx::menu::kTypeNpc | rtx::menu::kHideClickShow }, { g_rowVtbl, rtx::menu::kTypePlayer | rtx::menu::kHideClickShow } };
-RowClass g_rowClass[4] = { { {}, &g_rowCall[0], kRowAction, rtx::menu::kTypeGround, 0 }, { {}, &g_rowCall[1], kRowAction, rtx::menu::kTypeGround, 0 },
-                           { {}, &g_rowCall[2], kRowAction, rtx::menu::kTypeGround, 0 }, { {}, &g_rowCall[3], kRowAction, rtx::menu::kTypeGround, 0 } };
+// NPC, player, then the same two for an actor that is hidden now (its row reads "Show"), then a
+// tile, a tile that is marked now ("Unmark tile") and that tile's "Customize tile".
+constexpr int kRowClasses = 7, kRowTile = 4, kRowHideClasses = 4;
+RowCall g_rowCall[kRowClasses] = { { g_rowVtbl, rtx::menu::kTypeNpc }, { g_rowVtbl, rtx::menu::kTypePlayer },
+                                   { g_rowVtbl, rtx::menu::kTypeNpc | rtx::menu::kHideClickShow }, { g_rowVtbl, rtx::menu::kTypePlayer | rtx::menu::kHideClickShow },
+                                   { g_rowVtbl, rtx::menu::kHideClickTile }, { g_rowVtbl, rtx::menu::kHideClickTile | rtx::menu::kHideClickShow },
+                                   { g_rowVtbl, rtx::menu::kHideClickTile | rtx::menu::kHideClickCustom } };
+RowClass g_rowClass[kRowClasses] = { { {}, &g_rowCall[0], kRowAction, rtx::menu::kTypeGround, 0 }, { {}, &g_rowCall[1], kRowAction, rtx::menu::kTypeGround, 0 },
+                                     { {}, &g_rowCall[2], kRowAction, rtx::menu::kTypeGround, 0 }, { {}, &g_rowCall[3], kRowAction, rtx::menu::kTypeGround, 0 },
+                                     { {}, &g_rowCall[4], kRowAction, rtx::menu::kTypeGround, 0 }, { {}, &g_rowCall[5], kRowAction, rtx::menu::kTypeGround, 0 },
+                                     { {}, &g_rowCall[6], kRowAction, rtx::menu::kTypeGround, 0 } };
+constexpr std::uint64_t kClassAction = 0x40;
+constexpr std::int32_t kActionWalk = 23;        // the class of "Walk here"; its row's third and fourth ints are the tile
 
 typedef void(__fastcall* AddRow_t)(std::uint64_t mgr, const char* verb, const char* target, std::uint64_t cursor, std::uint64_t cls, std::uint64_t actorRef,
                                    std::uint64_t a7, std::uint64_t a8, std::uint64_t a9, std::uint64_t a10, std::uint64_t a11, std::uint64_t a12,
                                    std::uint64_t a13, std::uint64_t a14, std::uint64_t a15, std::uint64_t a16, std::uint64_t a17, std::uint64_t a18);
 AddRow_t g_origAddRow = nullptr;
 
-// Our row for this actor already in the list being built.
-bool RowPresent(std::uint64_t mgr, std::uint64_t actor) {
+// A row of ours, of one of the classes first..last, for this actor or tile already in the list being built.
+bool RowPresent(std::uint64_t mgr, std::uint64_t actor, int first, int last) {
     std::uint64_t b = 0, e = 0;
     if (!Rd(mgr + kEntriesBegin, &b, 8) || !Rd(mgr + kEntriesEnd, &e, 8) || !b || e < b || (e - b) % kRecSize || (e - b) > kRecSize * 700) return true;   // not readable: add nothing
     for (std::uint64_t r = b; r < e; r += kRecSize) {
         std::uint64_t obj = 0, c = 0; std::uint32_t lo = 0, hi = 0;
-        if (!Rd(r + 8, &obj, 8) || !obj || !Rd(obj + kDispTag, &c, 8) || c < (std::uint64_t)&g_rowClass[0] || c > (std::uint64_t)&g_rowClass[3]) continue;
+        if (!Rd(r + 8, &obj, 8) || !obj || !Rd(obj + kDispTag, &c, 8) || c < (std::uint64_t)&g_rowClass[first] || c > (std::uint64_t)&g_rowClass[last]) continue;
         if (Rd(obj + kRowActorLo, &lo, 4) && Rd(obj + kRowActorHi, &hi, 4) && (((std::uint64_t)hi << 32) | lo) == actor) return true;
     }
     return false;
@@ -1235,17 +1243,35 @@ void __fastcall Detour_AddRow(std::uint64_t mgr, const char* verb, const char* t
                               std::uint64_t a13, std::uint64_t a14, std::uint64_t a15, std::uint64_t a16, std::uint64_t a17, std::uint64_t a18) {
     g_origAddRow(mgr, verb, target, cursor, cls, actorRef, a7, a8, a9, a10, a11, a12, a13, a14, a15, a16, a17, a18);
     rtx::menu::Share* sh = g_share;
-    if (!sh || !sh->hideRows || !mgr || !cls || !actorRef || !target) return;
-    std::int32_t entry = -1;
-    if (!Rd(cls + kClassEntry, &entry, 4)) return;
+    if (!sh || (!sh->hideRows && !sh->markRows) || !mgr || !cls) return;
+    static std::uint64_t s_none[2] = { 0, 0 };
+    std::int32_t entry = -1, action = -1;
+    if (!Rd(cls + kClassEntry, &entry, 4) || !Rd(cls + kClassAction, &action, 4)) return;
+    if (entry == rtx::menu::kTypeGround && action == kActionWalk) {
+        // "Walk here": a row for its tile, "Unmark tile" when the launcher lists the tile as marked
+        const std::uint32_t x = (std::uint32_t)a9, y = (std::uint32_t)a10;
+        if (!sh->markRows || x == 0 || y == 0 || x > 0x3FFF || y > 0x3FFF) return;
+        const std::uint64_t key = ((std::uint64_t)y << 32) | x;
+        bool marked = false;
+        std::uint32_t n = sh->markCount;
+        if (n > (std::uint32_t)rtx::menu::kMaxMarkTiles) n = rtx::menu::kMaxMarkTiles;
+        for (std::uint32_t i = 0; i < n; ++i) if (sh->markTiles[i] == ((x << 16) | y)) { marked = true; break; }
+        if (!RowPresent(mgr, key, kRowTile, kRowTile + 1))
+            g_origAddRow(mgr, marked ? "Unmark tile" : "Mark tile", "", ~0ull, (std::uint64_t)&g_rowClass[kRowTile + (marked ? 1 : 0)], (std::uint64_t)s_none,
+                         x, y, 0, 0, a11, a12, a13, a14, a15, 0, a17, 2);
+        if (marked && !RowPresent(mgr, key, kRowTile + 2, kRowTile + 2))
+            g_origAddRow(mgr, "Customize tile", "", ~0ull, (std::uint64_t)&g_rowClass[kRowTile + 2], (std::uint64_t)s_none,
+                         x, y, 0, 0, a11, a12, a13, a14, a15, 0, a17, 2);
+        return;
+    }
+    if (!sh->hideRows || !actorRef || !target) return;
     const int k = entry == rtx::menu::kTypeNpc ? 0 : entry == rtx::menu::kTypePlayer ? 1 : -1;
     if (k < 0) return;
     std::uint64_t actor = 0;
-    if (!Rd(actorRef + 8, &actor, 8) || !actor || RowPresent(mgr, actor)) return;
+    if (!Rd(actorRef + 8, &actor, 8) || !actor || RowPresent(mgr, actor, 0, kRowHideClasses - 1)) return;
     const bool hidden = rtx::renderhide::Hidden(actor, k == 1);
     // Under the same subject as the row just added (its target text and the three placement
     // arguments), with no actor of its own: the actor rides in two of the row's ints.
-    static std::uint64_t s_none[2] = { 0, 0 };
     g_origAddRow(mgr, hidden ? "Show" : "Hide", target, ~0ull, (std::uint64_t)&g_rowClass[k + (hidden ? 2 : 0)], (std::uint64_t)s_none,
                  (std::uint32_t)actor, (std::uint32_t)(actor >> 32), 0, 0, a11, a12, a13, a14, a15, 0, a17, 2);
 }
@@ -1354,6 +1380,7 @@ bool Install() {
         g_share->promoState = rtx::menu::kPromoIdle;
         g_share->promoPrio = 0; g_share->promoPartnerPrio = 0; g_share->promoVerb[0] = 0;
         g_share->promoSource = rtx::menu::kPromoSrcNone;
+        g_share->markRows = 0; g_share->markCount = 0;
         g_share->hideRows = 0; g_share->hideClickSeq = 0; g_share->hideClickKind = 0; g_share->hideClickActor = 0;
         g_share->hideReady = g_origAddRow ? 1u : 0u;
     }
@@ -1385,6 +1412,7 @@ void Rebind() {
     fresh->promoState = rtx::menu::kPromoIdle;
     fresh->promoPrio = 0; fresh->promoPartnerPrio = 0; fresh->promoVerb[0] = 0;
     fresh->promoSource = rtx::menu::kPromoSrcNone;
+    fresh->markRows = 0; fresh->markCount = 0;
     fresh->hideRows = 0; fresh->hideClickSeq = 0; fresh->hideClickKind = 0; fresh->hideClickActor = 0;
     fresh->hideReady = g_origAddRow ? 1u : 0u;
 

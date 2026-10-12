@@ -145,6 +145,8 @@ void save_locked(const std::string& acct, const Account& a) {
         else
             std::snprintf(hdr, sizeof(hdr), "%d\t%d\t%d\t%d\t%06X\t",
                           m.region, m.lx, m.ly, m.plane, m.color & 0xFFFFFF);
+        // the style rides behind the colours as ":n"; a build without styles stops reading at the ':'
+        if (m.style) { std::string h(hdr); h.insert(h.size() - 1, ":" + std::to_string(m.style)); f << h << m.label << '\n'; continue; }
         f << hdr << m.label << '\n';
     }
 }
@@ -180,6 +182,9 @@ Account& get_or_load(const std::string& acct) {   // caller holds g_mu
             auto slash = color.find('/');
             if (slash != std::string::npos && slash + 1 < color.size())
                 m.color2 = (std::uint32_t)std::stoul(color.substr(slash + 1), nullptr, 16) & 0xFFFFFF;
+            auto colon = color.find(':');
+            if (colon != std::string::npos && colon + 1 < color.size()) m.style = std::stoi(color.substr(colon + 1));
+            if (m.style < 0 || m.style > kStyleCorners) m.style = 0;
         } catch (...) { continue; }
         m.label = clean_label(label);
         if (m.lx < 0 || m.lx > 63 || m.ly < 0 || m.ly > 63 || m.plane < 0 || m.plane > 3) continue;
@@ -209,6 +214,12 @@ void load_keybinds_locked() {
         if (mk) g_kb.markVk = mk;          // 0 = unbound -> keep the default
         if (rm) g_kb.removeVk = rm;
         g_kb.defColor = col & 0xFFFFFF;
+        int st = 0, w = 0, lp = 0;          // added later: default style, outline thickness, label size
+        if (f >> std::dec >> st >> w >> lp) {
+            if (st >= 0 && st <= kStyleCorners) g_kb.defStyle = st;
+            if (w >= 1 && w <= 5) g_kb.width = w;
+            if (lp >= 10 && lp <= 28) g_kb.labelPx = lp;
+        }
     }
 }
 
@@ -217,9 +228,9 @@ void save_keybinds_locked() {
     if (dir.empty()) return;
     std::ofstream f(dir / L"_input.txt", std::ios::trunc);
     if (!f) return;
-    char b[64];   // keep the 4-field layout (middle field reserved) for compatibility
-    std::snprintf(b, sizeof(b), "%d %d %d %06X", g_kb.markVk, g_kb.removeVk,
-                  1, g_kb.defColor & 0xFFFFFF);
+    char b[96];   // the first four fields keep their layout (third reserved); the rest came later
+    std::snprintf(b, sizeof(b), "%d %d %d %06X %d %d %d", g_kb.markVk, g_kb.removeVk,
+                  1, g_kb.defColor & 0xFFFFFF, g_kb.defStyle, g_kb.width, g_kb.labelPx);
     f << b;
 }
 
@@ -240,17 +251,17 @@ std::string GetJson(std::uint32_t pid) {
     std::string out = "[";
     for (size_t i = 0; i < a.markers.size(); ++i) {
         const auto& m = a.markers[i];
-        char buf[192];
+        char buf[224];
         if (m.color2)
             std::snprintf(buf, sizeof(buf),
-                "%s{\"region\":%d,\"lx\":%d,\"ly\":%d,\"plane\":%d,\"color\":\"#%06X\","
+                "%s{\"region\":%d,\"lx\":%d,\"ly\":%d,\"plane\":%d,\"style\":%d,\"color\":\"#%06X\","
                 "\"color2\":\"#%06X\",\"label\":\"",
-                i ? "," : "", m.region, m.lx, m.ly, m.plane,
+                i ? "," : "", m.region, m.lx, m.ly, m.plane, m.style,
                 m.color & 0xFFFFFF, m.color2 & 0xFFFFFF);
         else
             std::snprintf(buf, sizeof(buf),
-                "%s{\"region\":%d,\"lx\":%d,\"ly\":%d,\"plane\":%d,\"color\":\"#%06X\",\"label\":\"",
-                i ? "," : "", m.region, m.lx, m.ly, m.plane, m.color & 0xFFFFFF);
+                "%s{\"region\":%d,\"lx\":%d,\"ly\":%d,\"plane\":%d,\"style\":%d,\"color\":\"#%06X\",\"label\":\"",
+                i ? "," : "", m.region, m.lx, m.ly, m.plane, m.style, m.color & 0xFFFFFF);
         out += buf; out += json_escape(m.label); out += "\"}";
     }
     out += "]";
@@ -278,6 +289,8 @@ bool Add(std::uint32_t pid, int region, int lx, int ly, int plane,
     } else {
         TileMarker m; m.region = region; m.lx = lx; m.ly = ly; m.plane = plane;
         m.color = color & 0xFFFFFF; m.label = clean_label(label);
+        load_keybinds_locked();
+        m.style = g_kb.defStyle;
         if (a.markers.size() < 4096) a.markers.push_back(std::move(m)); else return false;
     }
     a.version = ++g_version_seq;
@@ -321,6 +334,20 @@ bool SetColor(std::uint32_t pid, int region, int lx, int ly, int plane, std::uin
     if (idx < 0) return false;
     a.markers[idx].color = color & 0xFFFFFF;
     a.markers[idx].color2 = color2 & 0xFFFFFF;   // 0 = back to single-colour
+    a.version = ++g_version_seq;
+    save_locked(acct, a);
+    return true;
+}
+
+bool SetStyle(std::uint32_t pid, int region, int lx, int ly, int plane, int style) {
+    if (style < 0 || style > kStyleCorners) return false;
+    std::string acct = account_for(pid);
+    if (acct.empty()) return false;
+    std::lock_guard<std::mutex> lk(g_mu);
+    Account& a = get_or_load(acct);
+    int idx = find_idx(a, region, lx, ly, plane);
+    if (idx < 0) return false;
+    a.markers[idx].style = style;
     a.version = ++g_version_seq;
     save_locked(acct, a);
     return true;
@@ -437,6 +464,13 @@ bool KeybindArmed(std::uint32_t pid) {
     return it != g_kb_armed.end() && it->second;
 }
 
+void ToStored(std::uint32_t pid, int& region, int& lx, int& ly, int& plane) {
+    const int x = ((region >> 8) << 6) | (lx & 63), y = ((region & 0xFF) << 6) | (ly & 63);
+    int sx = 0, sy = 0, sp = 0;
+    if (rtx::reader::InstanceSource(pid, x, y, plane, sx, sy, sp) != 1) return;
+    region = ((sx >> 6) << 8) | (sy >> 6); lx = sx & 63; ly = sy & 63; plane = sp;
+}
+
 bool MarkAtCursor(std::uint32_t pid, int action) {
     if (!KeybindArmed(pid)) return false;             // panel not open: key falls through to the game
     if (account_for(pid).empty()) {
@@ -447,6 +481,7 @@ bool MarkAtCursor(std::uint32_t pid, int action) {
     if (!cursor_tile(pid, tx, ty, plane)) return false;
     int region = ((tx >> 6) << 8) | (ty >> 6);
     int lx = tx & 63, ly = ty & 63;
+    ToStored(pid, region, lx, ly, plane);
     std::uint32_t col;
     { std::lock_guard<std::mutex> lk(g_mu); load_keybinds_locked(); col = g_kb.defColor; }
     if (action < 0) return Remove(pid, region, lx, ly, plane);
@@ -464,6 +499,9 @@ void SetKeybinds(const Keybinds& kb) {
     g_kb_loaded = true;
     g_kb = kb;
     g_kb.defColor &= 0xFFFFFF;
+    if (g_kb.defStyle < 0 || g_kb.defStyle > kStyleCorners) g_kb.defStyle = 0;
+    if (g_kb.width < 1 || g_kb.width > 5) g_kb.width = 2;
+    if (g_kb.labelPx < 10 || g_kb.labelPx > 28) g_kb.labelPx = 14;
     save_keybinds_locked();
 }
 

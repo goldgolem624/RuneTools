@@ -93,6 +93,7 @@
     if (pid !== hideClickPid) { hideClickPid = pid; hideClickSeq = d.seq; return; }   // clicks from before this page looked are not acted on
     if (d.seq === hideClickSeq) return;
     hideClickSeq = d.seq;
+    if (d.kind === 'tile') { if (typeof mkMenuClick === 'function') mkMenuClick(d); return; }
     if (!d.name) return;
     const kind = d.kind === 'player' ? 'player' : 'npc', pre = kind === 'player' ? 'pl' : 'npc';
     if (!d.show) { hideEntity(kind, d.name, false); return; }

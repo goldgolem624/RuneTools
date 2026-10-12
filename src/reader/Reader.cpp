@@ -141,6 +141,13 @@ std::uint32_t kOffVarpMgr       = rtx::md::kVarpMgr;        // 0x19FB8 (0x19F78 
 std::uint32_t kOffOptions       = rtx::md::kOptions;        // 0x535D0
 // Root slots the state readers use beyond the companion table (950-1). Read through the same
 // calibration names, so a rule of that name moves them when the client proves another place.
+std::uint32_t kOffFps           = rtx::md::kFps;            // 0x550, float frames per second
+// Actor fields the game's own routines name (see actor_layout): the compiled value until a client has
+// shown its own.
+std::uint64_t kScnPlane      = rtx::scn::kPlane;
+std::uint64_t kScnUid        = rtx::scn::kUid;
+std::uint64_t kScnPlayerData = rtx::scn::kPlayerData;
+std::uint64_t kScnLocalUid   = rtx::scn::kLocalUid;
 std::uint32_t kOffConnection    = rtx::md::kConnection;     // 0x198B8 -> connection: i32 logout reason +0x50
 std::uint32_t kOffVarWatch      = rtx::md::kVarWatch;       // 0x198C8 -> var watch: u32 change counter +0x10, dirty byte +0x14 (bumped by the var and interface packets)
 std::uint32_t kOffFriendsChat   = rtx::md::kFriendsChat;    // 0x198E0 -> friends chat channel
@@ -760,11 +767,91 @@ const CalibratedOffset kCalibrated[] = {
     { "md::kOptions",    &kOffOptions,     kOffOptions },
     { "md::kConnection", &kOffConnection,  kOffConnection },
     { "md::kVarWatch",   &kOffVarWatch,    kOffVarWatch },
+    { "md::kFps",        &kOffFps,         kOffFps },
     { "md::kFriendsChat", &kOffFriendsChat, kOffFriendsChat },
     { "md::kLoginMgr",   &kOffLoginMgr,    kOffLoginMgr },
     { "md::kWorldInfo",  &kOffWorldInfo,   kOffWorldInfo },
     { "md::kCountry",    &kOffCountry,     kOffCountry },
 };
+
+// ---- positions read out of the client's own code ----
+// A stretch of the client's code with the positions in it left open: -1 = any byte, `take` names up
+// to four of those places (offset into the match, and 1 or 4 bytes to read). The client's image is
+// read once and every pattern must be found exactly once to count.
+struct CodePat { std::vector<int> b; int takeAt[4] = { -1, -1, -1, -1 }; int takeSize[4] = { 0, 0, 0, 0 }; int hits = 0; std::uint32_t v[4] = { 0, 0, 0, 0 }; };
+void scan_code_pats(HANDLE h, std::uint64_t base, std::uint64_t size, CodePat* pats, int n) {
+    if (!base || size < 0x1000 || size > 0x8000000) return;
+    constexpr std::size_t kChunk = 0x100000, kOverlap = 0x80;
+    std::vector<std::uint8_t> buf(kChunk + kOverlap);
+    for (std::uint64_t off = 0; off < size; off += kChunk) {
+        const std::size_t got = (std::size_t)std::min<std::uint64_t>(kChunk + kOverlap, size - off);
+        if (!rpm_bytes(h, base + off, buf.data(), (SIZE_T)got)) continue;
+        for (int pi = 0; pi < n; ++pi) {
+            CodePat& p = pats[pi];
+            const std::size_t len = p.b.size();
+            const std::uint8_t first = (std::uint8_t)p.b[0];
+            for (std::size_t i = 0; i + len <= got && i < kChunk; ++i) {
+                if (buf[i] != first) continue;
+                std::size_t k = 1;
+                for (; k < len; ++k) if (p.b[k] >= 0 && buf[i + k] != (std::uint8_t)p.b[k]) break;
+                if (k != len) continue;
+                ++p.hits;
+                for (int g = 0; g < 4; ++g) {
+                    if (p.takeAt[g] < 0) continue;
+                    p.v[g] = 0;
+                    std::memcpy(&p.v[g], buf.data() + i + p.takeAt[g], (std::size_t)p.takeSize[g]);
+                }
+            }
+        }
+    }
+}
+
+// Actor fields, from two of the game's routines. The pass that counts the actors standing on a tile
+// opens by comparing the actor's level with the level asked for, takes the actor's scene node and
+// tests the low bit of its tile size. The routine that draws a player opens by going from the actor
+// to the game root, on to the account, and comparing the actor's index with the local player's.
+struct ActorLayout {
+    bool tried = false, ok = false; int missing = 0;
+    std::uint32_t plane = 0, node = 0, size = 0, root = 0, account = 0, uid = 0, localIdx = 0;
+};
+std::mutex g_actor_layout_mu;
+ActorLayout g_actor_layout;
+void actor_layout_from_code(HANDLE h) {
+    ActorLayout L; L.tried = true;
+    HMODULE mod = nullptr; DWORD need = 0; MODULEINFO mi{};
+    if (EnumProcessModules(h, &mod, sizeof(mod), &need) && mod && GetModuleInformation(h, mod, &mi, sizeof(mi))) {
+        CodePat pats[2];
+        // cmp [rbx+plane],r8d ; jne ; cmp word [rbx+order],-1 ; je ; mov rcx,[rbx+node] ; call ; cvttss2si ecx,[rax] ; and ecx,0x1ff ; test byte [rbx+size],1
+        pats[0].b = { 0x44, 0x39, 0x43, -1, 0x0F, 0x85, -1, -1, -1, -1, 0x66, 0x83, 0xBB, -1, -1, 0x00, 0x00, 0xFF, 0x0F, 0x84, -1, -1, -1, -1,
+                      0x48, 0x8B, 0x4B, -1, 0xE8, -1, -1, -1, -1, 0xF3, 0x0F, 0x2C, 0x08, 0x81, 0xE1, 0xFF, 0x01, 0x00, 0x00, 0xF6, 0x83, -1, -1, -1, -1, 0x01 };
+        pats[0].takeAt[0] = 3;  pats[0].takeSize[0] = 1;
+        pats[0].takeAt[1] = 27; pats[0].takeSize[1] = 1;
+        pats[0].takeAt[2] = 45; pats[0].takeSize[2] = 4;
+        // mov rax,[rcx+root] ; mov rbp,r9 ; mov rsi,r8 ; mov r14,rdx ; mov rdi,rcx ; mov r10,[rax+account] ; mov eax,[rcx+uid] ; cmp [r10+local],eax
+        pats[1].b = { 0x48, 0x8B, 0x81, -1, -1, -1, -1, 0x49, 0x8B, 0xE9, 0x49, 0x8B, 0xF0, 0x4C, 0x8B, 0xF2, 0x48, 0x8B, 0xF9,
+                      0x4C, 0x8B, 0x90, -1, -1, -1, -1, 0x8B, 0x81, -1, -1, -1, -1, 0x41, 0x39, 0x42, -1 };
+        pats[1].takeAt[0] = 3;  pats[1].takeSize[0] = 4;
+        pats[1].takeAt[1] = 22; pats[1].takeSize[1] = 4;
+        pats[1].takeAt[2] = 28; pats[1].takeSize[2] = 4;
+        pats[1].takeAt[3] = 35; pats[1].takeSize[3] = 1;
+        scan_code_pats(h, (std::uint64_t)mi.lpBaseOfDll, mi.SizeOfImage, pats, 2);
+        for (const CodePat& p : pats) if (p.hits != 1) ++L.missing;
+        if (!L.missing) {
+            L.plane = pats[0].v[0]; L.node = pats[0].v[1]; L.size = pats[0].v[2];
+            L.root = pats[1].v[0]; L.account = pats[1].v[1]; L.uid = pats[1].v[2]; L.localIdx = pats[1].v[3];
+            const auto in = [](std::uint32_t v, std::uint32_t lo, std::uint32_t hi) { return v >= lo && v < hi; };
+            L.ok = in(L.plane, 8, 0x80) && in(L.node, 8, 0x80) && in(L.size, 0x40, 0x2000) && in(L.root, 0x100, 0x10000) &&
+                   in(L.account, 0x1000, 0x100000) && in(L.uid, 0x20, 0x2000) && in(L.localIdx, 8, 0x80);
+        }
+    } else L.missing = 2;
+    // the client's own where it showed them, the compiled ones where it did not
+    kScnPlane      = L.ok ? L.plane    : rtx::scn::kPlane;
+    kScnUid        = L.ok ? L.uid      : rtx::scn::kUid;
+    kScnPlayerData = L.ok ? L.account  : rtx::scn::kPlayerData;
+    kScnLocalUid   = L.ok ? L.localIdx : rtx::scn::kLocalUid;
+    std::lock_guard<std::mutex> lk(g_actor_layout_mu);
+    g_actor_layout = L;
+}
 
 // Ask the client itself for the offsets, once per attach. The exe on disk is read, not the process.
 // Each offset is the client's when it proved it, else the compiled value, never what an earlier
@@ -773,6 +860,7 @@ void calibrate_offsets(HANDLE h) {
     wchar_t path[MAX_PATH] = {};
     if (!GetModuleFileNameExW(h, nullptr, path, MAX_PATH)) {
         for (const auto& c : kCalibrated) *c.at = c.compiled;
+        actor_layout_from_code(h);
         rtx::log::Client(GetProcessId(h), "calibrate: client exe not found, using the compiled offsets");
         return;
     }
@@ -786,6 +874,7 @@ void calibrate_offsets(HANDLE h) {
     // its compiled value
     rtx::calib::Run(path, opcodes);
     for (const auto& c : kCalibrated) *c.at = rtx::calib::Use(c.name, c.compiled);
+    actor_layout_from_code(h);
     {
         // what the client proved about itself, or why it proved nothing, on the record at every
         // attach; the report is one line per offset, and the log takes a line at a time
@@ -4395,7 +4484,7 @@ static std::uint64_t local_player_sec_fast(HANDLE h, std::uint64_t root, int loc
     auto sec = rpm<std::uint64_t>(h, *ent + 0x38);
     if (!sec || *sec <= 0x10000 || *sec > 0x00007FFFFFFFFFFFull) return 0;
     if (rpm<std::uint8_t>(h, *sec + rtx::scn::kType).value_or(0xff) != 2) return 0;
-    if (rpm<std::int32_t>(h, *sec + rtx::scn::kUid).value_or(-1) != local_uid) return 0;
+    if (rpm<std::int32_t>(h, *sec + kScnUid).value_or(-1) != local_uid) return 0;
     return *sec;
 }
 
@@ -4449,8 +4538,8 @@ void CombatLogPoll(std::uint32_t pid) {
     auto root = rpm<std::uint64_t>(h, mgva);
     if (!root || *root <= 0x10000) return;
     const int clockNow = (int)rpm<std::uint32_t>(h, *root + kOffClientClock).value_or(0);   // CLIENTCLOCK, 50/s
-    auto pdata = deref(root, rtx::scn::kPlayerData);
-    int local_uid = (pdata && *pdata > 0x10000) ? rpm<std::int32_t>(h, *pdata + rtx::scn::kLocalUid).value_or(-1) : -1;
+    auto pdata = deref(root, kScnPlayerData);
+    int local_uid = (pdata && *pdata > 0x10000) ? rpm<std::int32_t>(h, *pdata + kScnLocalUid).value_or(-1) : -1;
     auto cont = deref(root, rtx::scn::kContainer);
     auto idx  = (cont && *cont > 0x10000) ? rpm<std::int32_t>(h, *cont + rtx::scn::kActiveIdx) : std::nullopt;
     auto arr  = deref(cont, rtx::scn::kEntryArr);
@@ -4483,7 +4572,7 @@ void CombatLogPoll(std::uint32_t pid) {
         // Every actor is tracked from the poll it is first seen, ring or no ring: an NPC only gets
         // its overhead object the first time it is hit, and those first hits (a killing blow that
         // spreads onto untouched enemies, a fresh spawn you open on) must not look like a stale ring.
-        int uid = rpm<std::int32_t>(h, *sec + rtx::scn::kUid).value_or(0);
+        int uid = rpm<std::int32_t>(h, *sec + kScnUid).value_or(0);
         std::vector<std::uint64_t>& keys = cur[uid];
         const std::vector<std::uint64_t>* old = nullptr;
         { auto pit = prev.find(uid); if (pit != prev.end()) old = &pit->second; }
@@ -4509,7 +4598,7 @@ void CombatLogPoll(std::uint32_t pid) {
                 base.type = type; base.uid = uid; base.self = (type == 2 && uid == local_uid);
                 auto fx = rpm<float>(h, *sec + rtx::scn::kPosX), fy = rpm<float>(h, *sec + rtx::scn::kPosY);
                 base.x = fx ? (int)(*fx / 512.f) : 0; base.y = fy ? (int)(*fy / 512.f) : 0;
-                base.plane = rpm<std::int32_t>(h, *sec + rtx::scn::kPlane).value_or(0);
+                base.plane = rpm<std::int32_t>(h, *sec + kScnPlane).value_or(0);
                 char nm[40] = {0};
                 rpm_bytes(h, *sec + rtx::scn::kName, nm, sizeof(nm) - 1);
                 for (int j = 0; j < (int)sizeof(nm) && nm[j]; ++j) {
@@ -4714,8 +4803,8 @@ bool cb_read_actor(CombatCtx& c, std::uint64_t sec, bool bars, CombatActorSample
     if (type != 1 && type != 2) return false;
     const float fx = f32(rtx::scn::kPosX), fy = f32(rtx::scn::kPosY);
     if (!(fx > 0.f && fx < 1e8f && fy > 0.f && fy < 1e8f)) return false;
-    a.type = type; a.tx = (int)(fx / 512.f); a.ty = (int)(fy / 512.f); a.plane = i32(rtx::scn::kPlane); a.addr = sec;
-    a.uid = i32(rtx::scn::kUid); a.anim = i32(kCbAnim); a.targetUid = i32(kCbTargetUid); a.targetKind = b[kCbTargetKind];
+    a.type = type; a.tx = (int)(fx / 512.f); a.ty = (int)(fy / 512.f); a.plane = i32(kScnPlane); a.addr = sec;
+    a.uid = i32(kScnUid); a.anim = i32(kCbAnim); a.targetUid = i32(kCbTargetUid); a.targetKind = b[kCbTargetKind];
     cb_name(b + rtx::scn::kName, u64(kCbNameLen), a.name);
     a.self = (type == 2 && a.uid == c.out.localUid);
     if (type == 1) {
@@ -4901,8 +4990,8 @@ bool CombatRead(std::uint32_t pid, bool bars, CombatSample& out) {
         ++out.reads;
         return rpm<std::uint64_t>(h, *p + off);
     };
-    auto pdata = deref(root, rtx::scn::kPlayerData);
-    out.localUid = (pdata && *pdata > 0x10000) ? rpm<std::int32_t>(h, *pdata + rtx::scn::kLocalUid).value_or(-1) : -1;
+    auto pdata = deref(root, kScnPlayerData);
+    out.localUid = (pdata && *pdata > 0x10000) ? rpm<std::int32_t>(h, *pdata + kScnLocalUid).value_or(-1) : -1;
     ++out.reads;
     auto cont = deref(root, rtx::scn::kContainer);
     auto idx  = (cont && *cont > 0x10000) ? rpm<std::int32_t>(h, *cont + rtx::scn::kActiveIdx) : std::nullopt;
@@ -5069,8 +5158,56 @@ bool rpm_blocks(HANDLE h, const std::uint64_t* addr, int n, std::size_t size, vo
         if (!rpm_bytes(h, addr[i], d + (std::size_t)i * size, (SIZE_T)size)) return false;
     return true;
 }
+// Where a mapsquare's terrain object keeps its height grids, read from the game's own height sampler
+// and the helper it calls for a tile's standing offset. Each of the five instructions is matched
+// with its displacement left open, must be found exactly once, and the two that both name the plane
+// vector must agree. Nothing found, nothing read: the overlay then has the cache's heights only.
+struct TerrainLayout {
+    std::uint32_t pid = 0; bool tried = false, ok = false;
+    std::uint32_t none = 0;        // byte, non-zero = this terrain has no heights
+    std::uint32_t planes = 0;      // vector of planes, 0x10 each, grid pointer at +8
+    std::uint32_t adjusted = 0;    // level 0's adjusted grid
+    std::uint32_t liftCount = 0, liftTab = 0;   // standing offsets: level count, table
+    int missing = 0;               // how many of the five were not found once
+};
+std::mutex g_terr_layout_mu;
+TerrainLayout g_terr_layout;
+thread_local const TerrainLayout* t_terr = nullptr;   // the layout the terrain reads below go by, set by their caller
+
+TerrainLayout terrain_layout(HANDLE h, std::uint32_t pid, std::uint64_t base, std::uint64_t size) {
+    std::lock_guard<std::mutex> lk(g_terr_layout_mu);
+    TerrainLayout& L = g_terr_layout;
+    if (L.pid == pid && L.tried) return L;
+    L = TerrainLayout{}; L.pid = pid; L.tried = true;
+    if (!base || size < 0x1000 || size > 0x8000000) { L.missing = 5; return L; }
+    // -1 = any byte; a displacement is four of them
+    struct Init { int at[2]; std::vector<int> b; };
+    const Init init[5] = {
+        { { 11, -1 }, { 0xC7, 0x02, 0xFF, 0xFF, 0xFF, 0xFF, 0x48, 0x8B, 0xDA, 0x80, 0xB9, -1, -1, -1, -1, 0x00 } },                       // mov [rdx],-1 ; mov rbx,rdx ; cmp byte [rcx+none],0
+        { { 3, 10 },  { 0x49, 0x8B, 0x82, -1, -1, -1, -1, 0x49, 0x2B, 0x82, -1, -1, -1, -1, 0x48, 0xC1, 0xF8, 0x04, 0x48, 0x3B, 0xC8 } },   // mov rax,[r10+planes+8] ; sub rax,[r10+planes] ; sar rax,4 ; cmp rcx,rax
+        { { 5, 14 },  { 0x75, -1, 0x49, 0x8B, 0x82, -1, -1, -1, -1, 0xEB, -1, 0x49, 0x8B, 0x82, -1, -1, -1, -1, 0x48, 0x03, 0xC9 } },       // jne ; mov rax,[r10+adjusted] ; jmp ; mov rax,[r10+planes] ; add rcx,rcx
+        { { 3, -1 },  { 0x4C, 0x3B, 0x99, -1, -1, -1, -1, 0x73, -1, 0x41, 0xBA, 0x3F, 0x00, 0x00, 0x00 } },                               // cmp r11,[rcx+liftCount] ; jae ; mov r10d,63
+        { { 3, -1 },  { 0x48, 0x8B, 0x83, -1, -1, -1, -1, 0x48, 0x8D, 0x14, 0x88, 0x8B, 0x44, 0x24, 0x28, 0x83, 0xF8, 0x01 } },             // mov rax,[rbx+liftTab] ; lea rdx,[rax+rcx*4] ; mov eax,[rsp+28] ; cmp eax,1
+    };
+    CodePat pat[5];
+    for (int i = 0; i < 5; ++i) {
+        pat[i].b = init[i].b;
+        for (int g = 0; g < 2; ++g) if (init[i].at[g] >= 0) { pat[i].takeAt[g] = init[i].at[g]; pat[i].takeSize[g] = 4; }
+    }
+    scan_code_pats(h, base, size, pat, 5);
+    for (const CodePat& p : pat) if (p.hits != 1) ++L.missing;
+    if (L.missing) return L;
+    L.none = pat[0].v[0]; L.planes = pat[1].v[1]; L.adjusted = pat[2].v[0]; L.liftCount = pat[3].v[0]; L.liftTab = pat[4].v[0];
+    const auto sane = [](std::uint32_t v) { return v >= 8 && v < 0x10000; };
+    L.ok = pat[1].v[0] == L.planes + 8 && pat[2].v[1] == L.planes &&
+           sane(L.none) && sane(L.planes) && sane(L.adjusted) && sane(L.liftCount) && sane(L.liftTab);
+    if (!L.ok) L.missing = -1;     // found, but the pieces do not fit together
+    return L;
+}
+
 // The terrain object of region (rx, ry), 0 when the region is not loaded. Every plane shares it.
 std::uint64_t terrain_object(HANDLE h, std::uint64_t scene, int rx, int ry) {
+    if (!t_terr || !t_terr->ok) return 0;
     auto mgr = rpm<std::uint64_t>(h, scene + 0x140C0);
     if (!mgr || *mgr <= 0x10000) return 0;
     auto minx = rpm<std::int32_t>(h, *mgr + 0x14034), miny = rpm<std::int32_t>(h, *mgr + 0x14038);
@@ -5087,7 +5224,7 @@ std::uint64_t terrain_object(HANDLE h, std::uint64_t scene, int rx, int ry) {
         auto t = rpm<std::uint64_t>(h, *region + off);
         if (t && *t > 0x10000 && rpm<std::uint8_t>(h, *t + 0x21).value_or(1) == rpm<std::uint8_t>(h, *t + 0x22).value_or(2)) { terrain = *t; break; }
     }
-    if (!terrain || rpm<std::uint8_t>(h, terrain + 0x169).value_or(1) != 0) return 0;
+    if (!terrain || rpm<std::uint8_t>(h, terrain + t_terr->none).value_or(1) != 0) return 0;
     return terrain;
 }
 // One plane's tile flag bytes, masked, into dst[x][y] (layout below, in terrain_read_plane).
@@ -5115,11 +5252,12 @@ bool terrain_read_flags(HANDLE h, std::uint64_t terrain, int fplane, std::uint8_
 // flags are per region and filled in by the caller.
 bool terrain_read_plane(HANDLE h, std::uint64_t terrain, int plane, TerrainRegion& out) {
     out.ok = false;
-    auto p0 = rpm<std::uint64_t>(h, terrain + 0x170), p1 = rpm<std::uint64_t>(h, terrain + 0x178);
+    if (!t_terr || !t_terr->ok) return false;
+    auto p0 = rpm<std::uint64_t>(h, terrain + t_terr->planes), p1 = rpm<std::uint64_t>(h, terrain + t_terr->planes + 8);
     if (!p0 || !p1 || *p1 < *p0) return false;
     const int nplanes = (int)((*p1 - *p0) / 16);
     if (plane < 0 || plane >= nplanes) return false;
-    std::optional<std::uint64_t> grid = (plane == 0) ? rpm<std::uint64_t>(h, terrain + 0x1F8) : std::nullopt;
+    std::optional<std::uint64_t> grid = (plane == 0) ? rpm<std::uint64_t>(h, terrain + t_terr->adjusted) : std::nullopt;
     if (!grid || *grid <= 0x10000) grid = rpm<std::uint64_t>(h, *p0 + (std::uint64_t)plane * 0x10 + 8);
     if (!grid || *grid <= 0x10000) return false;
     auto cols = rpm<std::uint64_t>(h, *grid);
@@ -5138,7 +5276,7 @@ bool terrain_read_plane(HANDLE h, std::uint64_t terrain, int plane, TerrainRegio
     // standing offset raised locs set (a fountain rim reads 180, a lodestone 80); mode 2 uses
     // max(first, second), the second being the tallest scenery on the tile. Plane count at +0x1E0.
     std::memset(out.lift, 0, sizeof(out.lift));
-    auto nlift = rpm<std::uint64_t>(h, terrain + 0x1E0), tab = rpm<std::uint64_t>(h, terrain + 0x1E8);
+    auto nlift = rpm<std::uint64_t>(h, terrain + t_terr->liftCount), tab = rpm<std::uint64_t>(h, terrain + t_terr->liftTab);
     if (nlift && tab && *tab > 0x10000 && (std::uint64_t)plane < *nlift && *nlift <= 8) {
         std::int16_t cells[64 * 64 * 2];
         if (rpm_bytes(h, *tab + (std::uint64_t)plane * sizeof(cells), cells, sizeof(cells))) {
@@ -5165,10 +5303,13 @@ bool LiveTerrainSnapshot(std::uint32_t pid, int cx, int cy, int plane) {
     ProcSnap ps = snap_proc(pid);
     if (!ps) return false;
     HANDLE h = ps.h; const std::uint64_t mgva = ps.mgva;
+    const TerrainLayout layout = terrain_layout(h, pid, ps.mod_base, ps.mod_size);
+    if (!layout.ok) return false;
+    struct UseLayout { UseLayout(const TerrainLayout* l) { t_terr = l; } ~UseLayout() { t_terr = nullptr; } } useLayout(&layout);
     auto root = rpm<std::uint64_t>(h, mgva);
     if (!root || *root <= 0x10000) return false;
-    auto pdata = rpm<std::uint64_t>(h, *root + rtx::scn::kPlayerData);
-    int local_uid = (pdata && *pdata > 0x10000) ? rpm<std::int32_t>(h, *pdata + rtx::scn::kLocalUid).value_or(-1) : -1;
+    auto pdata = rpm<std::uint64_t>(h, *root + kScnPlayerData);
+    int local_uid = (pdata && *pdata > 0x10000) ? rpm<std::int32_t>(h, *pdata + kScnLocalUid).value_or(-1) : -1;
     std::uint64_t psec = local_player_sec_fast(h, *root, local_uid);
     if (!psec) return false;
     auto scene = rpm<std::uint64_t>(h, psec + 0x60);
@@ -5366,7 +5507,7 @@ bool ReadLiveLocs(std::uint32_t pid, std::vector<LiveLoc>& out) {
             LiveLoc L;
             L.id = live_loc_config(h, *sec);
             if (!L.id) continue;
-            L.plane = rpm<std::int32_t>(h, *sec + rtx::scn::kPlane).value_or(0);
+            L.plane = rpm<std::int32_t>(h, *sec + kScnPlane).value_or(0);
             // Placement comes from the entity's world box; the class origin is kept in the world
             // view's own space, so it says how tall the model is but not where it stands.
             const float mnx = rpm<float>(h, *ep + 0x40).value_or(0.f);
@@ -5519,7 +5660,7 @@ std::string OverheadClassJson(std::uint32_t pid) {
         auto hgt = rpm<std::uint64_t>(h, *vt + 0x78);
         if (!pos || !hgt) continue;
         int type = rpm<std::uint8_t>(h, *sec + rtx::scn::kType).value_or(0xff);
-        int cfg  = rpm<std::int32_t>(h, *sec + rtx::scn::kUid).value_or(-1);
+        int cfg  = rpm<std::int32_t>(h, *sec + kScnUid).value_or(-1);
         int cfgId = rpm<std::int32_t>(h, *sec + rtx::scn::kConfig).value_or(-1);
         int src = 0;
         const int oh = overhead_height(h, *sec, type, &src);
@@ -5537,6 +5678,247 @@ std::string OverheadClassJson(std::uint32_t pid) {
         out += b; first = false;
     }
     out += "]}";
+    return out;
+}
+
+// ---- instances: where each zone was copied from ----
+// On an instanced worldView every loaded mapsquare holds a table of its 8x8 zones on each of the four
+// levels: the level, zone x, zone y and rotation each was copied from. The whole of it is read into a
+// snapshot, kept while the worldView and its map definition stay the same.
+namespace {
+// Nothing about the table's shape is compiled in. A zone table is small vectors inside small vectors,
+// each stored right behind its own three pointers and two spare words (kVecInline): 4 levels of 10
+// columns of 10 records. The game's own routines that look a tile up in it multiply by the size of a
+// level and then by the size of a column, and those two numbers are tied together, level = header +
+// 10 columns: the one pair of multiplies in the client that fits is where they are read from. The
+// table's place on a mapsquare is found by looking at what the mapsquare points at.
+constexpr std::size_t kVecInline = 0x28;
+struct InstLayout {
+    std::uint32_t pid = 0; bool tried = false, ok = false;
+    std::size_t level = 0, column = 0, record = 0, table = 0;   // sizes: one level, one column, one record, the whole table
+    std::uint64_t regionOff = 0;                                // mapsquare -> zone table, 0 until one has been seen
+    int pairs = 0;                                              // multiply pairs found in the client that fit
+};
+InstLayout g_inst_layout;
+
+// The two sizes, from the client's code. Every pair that fits must name the same sizes.
+void inst_layout_from_code(HANDLE h, std::uint64_t base, std::uint64_t size, InstLayout& L) {
+    L.tried = true;
+    if (!base || size < 0x1000 || size > 0x8000000) return;
+    constexpr std::size_t kChunk = 0x100000, kOverlap = 0x200;
+    std::vector<std::uint8_t> buf(kChunk + kOverlap);
+    std::vector<std::pair<std::uint64_t, std::uint32_t>> mul;   // rva of an imul r64, r/m64, imm32 and its immediate
+    for (std::uint64_t off = 0; off < size; off += kChunk) {
+        const std::size_t n = (std::size_t)std::min<std::uint64_t>(kChunk + kOverlap, size - off);
+        if (!rpm_bytes(h, base + off, buf.data(), (SIZE_T)n)) continue;
+        for (std::size_t i = 0; i + 7 <= n && i < kChunk; ++i) {
+            if ((buf[i] & 0xFA) != 0x48 || buf[i + 1] != 0x69 || buf[i + 2] < 0xC0) continue;   // any 64-bit register pair
+            std::uint32_t imm; std::memcpy(&imm, buf.data() + i + 3, 4);
+            if (imm > 0x28 && imm < 0x100000) mul.emplace_back(off + i, imm);
+        }
+    }
+    std::size_t level = 0, column = 0; bool agree = true;
+    for (std::size_t i = 0; i < mul.size(); ++i)
+        for (std::size_t j = i + 1; j < mul.size() && mul[j].first - mul[i].first <= 0x100; ++j) {
+            const std::uint32_t lv = mul[i].second, col = mul[j].second;
+            if ((col - kVecInline) % 10 != 0 || lv != kVecInline + 10 * col) continue;
+            ++L.pairs;
+            if (!level) { level = lv; column = col; } else if (level != lv || column != col) agree = false;
+        }
+    if (!L.pairs || !agree) return;
+    L.level = level; L.column = column; L.record = (column - kVecInline) / 10; L.table = kVecInline + 4 * level;
+    L.ok = L.record >= 13;       // a record holds three ints and a byte at the least
+}
+
+// Whether `p` is a zone table: four levels stored inline behind its own header.
+bool inst_is_table(HANDLE h, std::uint64_t p, const InstLayout& L) {
+    std::uint64_t v[2] = {};
+    return p > 0x10000 && (p & 7) == 0 && rpm_bytes(h, p, v, sizeof(v)) && v[0] == p + kVecInline && v[1] == v[0] + 4 * L.level;
+}
+// The zone table of a mapsquare, 0 when it has none. Until a table has been seen the mapsquare's
+// pointers are tried one by one; the place the first one sits at is then used for all.
+std::uint64_t inst_region_table(HANDLE h, std::uint64_t region, InstLayout& L) {
+    if (L.regionOff) {
+        const std::uint64_t p = rpm<std::uint64_t>(h, region + L.regionOff).value_or(0);
+        return inst_is_table(h, p, L) ? p : 0;
+    }
+    std::uint64_t head[0x200 / 8];
+    if (!rpm_bytes(h, region, head, sizeof(head))) return 0;
+    std::uint64_t found = 0, at = 0; int n = 0;
+    for (std::size_t i = 0; i < 0x200 / 8; ++i)
+        if (head[i] > 0x10000 && head[i] < 0x00007FFFFFFFFFFFull && inst_is_table(h, head[i], L)) { found = head[i]; at = i * 8; ++n; }
+    if (n != 1) return 0;
+    L.regionOff = at;
+    return found;
+}
+struct InstZone { std::int8_t level = -1; std::uint8_t rot = 0; std::int16_t zx = 0, zy = 0; };
+struct InstSnap {
+    std::uint32_t pid = 0; std::uint64_t wv = 0, def = 0; ULONGLONG checked = 0, built = 0;
+    bool instanced = false;
+    bool boxBad = false, layoutBad = false;           // an instance whose grid or zone tables are not as expected: nothing is translated
+    int tables = 0, zones = 0, rotated = 0;           // mapsquares with a zone table, zones copied from somewhere, of those turned
+    int minx = 0, miny = 0, nx = 0, ny = 0;           // the loaded mapsquares
+    std::vector<InstZone> zone;                       // [plane][square x][square y][zone x][zone y]
+    std::unordered_multimap<std::uint32_t, std::uint32_t> from;   // source zone -> instance zone
+    InstZone& at(int p, int qx, int qy, int zx, int zy) { return zone[((((std::size_t)p * nx + qx) * ny + qy) * 8 + zx) * 8 + zy]; }
+};
+std::mutex g_inst_mu;
+InstSnap g_inst;
+std::uint32_t inst_src_key(int level, int zx, int zy) { return ((std::uint32_t)level << 22) | ((std::uint32_t)zx << 11) | (std::uint32_t)zy; }
+
+// The active worldView, 0 when there is none.
+std::uint64_t inst_worldview(HANDLE h, std::uint64_t mgva) {
+    const std::uint64_t root = rpm<std::uint64_t>(h, mgva).value_or(0);
+    if (root <= 0x10000) return 0;
+    const std::uint64_t cont = rpm<std::uint64_t>(h, root + rtx::scn::kContainer).value_or(0);
+    if (cont <= 0x10000) return 0;
+    const int idx = rpm<std::int32_t>(h, cont + rtx::scn::kActiveIdx).value_or(-1);
+    const std::uint64_t arr = rpm<std::uint64_t>(h, cont + rtx::scn::kEntryArr).value_or(0);
+    if (idx < 0 || arr <= 0x10000) return 0;
+    const std::uint64_t wv = rpm<std::uint64_t>(h, arr + (std::uint64_t)idx * 0x10 + rtx::scn::kEntryWv).value_or(0);
+    return wv > 0x10000 ? wv : 0;
+}
+
+// One mapsquare's zone table into the snapshot. False when what is there is not laid out as a zone
+// table: the snapshot is then not used at all, and tiles stay themselves.
+bool inst_read_square(HANDLE h, std::uint64_t zm, InstSnap& s, int qx, int qy, const InstLayout& L) {
+    const std::size_t kZoneLevel = L.level, kZoneColumn = L.column, kZoneRecord = L.record;
+    std::vector<std::uint8_t> b(L.table);
+    if (!rpm_bytes(h, zm, b.data(), (SIZE_T)b.size())) return false;
+    auto q = [&](std::size_t off) { std::uint64_t v = 0; std::memcpy(&v, b.data() + off, 8); return v; };
+    // each vector's storage is the block right behind its three pointers
+    auto inl = [&](std::size_t off, std::size_t count, std::size_t stride) {
+        return q(off) == zm + off + kVecInline && q(off + 8) == q(off) + count * stride;
+    };
+    if (!inl(0, 4, kZoneLevel)) return false;
+    for (int p = 0; p < 4; ++p) {
+        const std::size_t lv = kVecInline + (std::size_t)p * kZoneLevel;
+        if (!inl(lv, 10, kZoneColumn)) return false;
+        for (int c = 1; c <= 8; ++c) {
+            const std::size_t col = lv + kVecInline + (std::size_t)c * kZoneColumn;
+            if (!inl(col, 10, kZoneRecord)) return false;
+            for (int r = 1; r <= 8; ++r) {
+                const std::uint8_t* rec = b.data() + col + kVecInline + (std::size_t)r * kZoneRecord;
+                std::int32_t level, zx, zy; std::memcpy(&level, rec, 4); std::memcpy(&zx, rec + 4, 4); std::memcpy(&zy, rec + 8, 4);
+                const std::uint8_t rot = rec[12];
+                if (level == -1) continue;
+                if (level < 0 || level > 3 || zx < 0 || zx > 0x3FF || zy < 0 || zy > 0x7FF || rot > 3) return false;
+                InstZone& z = s.at(p, qx, qy, c - 1, r - 1);
+                z.level = (std::int8_t)level; z.rot = rot; z.zx = (std::int16_t)zx; z.zy = (std::int16_t)zy;
+            }
+        }
+    }
+    return true;
+}
+
+// The snapshot for this client, brought up to date. Caller holds g_inst_mu.
+InstSnap& inst_snap_locked(std::uint32_t pid) {
+    InstSnap& s = g_inst;
+    const ULONGLONG now = GetTickCount64();
+    if (s.pid == pid && now - s.checked < 250) return s;
+    HANDLE h = nullptr; std::uint64_t mgva = 0, modBase = 0, modSize = 0;
+    {
+        std::lock_guard<std::mutex> lk(g_mu);
+        auto it = g_states.find((DWORD)pid);
+        if (it != g_states.end() && it->second.proc && it->second.main_global_va &&
+            DuplicateHandle(GetCurrentProcess(), it->second.proc, GetCurrentProcess(), &h, 0, FALSE, DUPLICATE_SAME_ACCESS)) {
+            mgva = it->second.main_global_va; modBase = it->second.mod_base; modSize = it->second.mod_size;
+        }
+    }
+    struct DupGuard { HANDLE h; ~DupGuard() { if (h) CloseHandle(h); } } _dup{ h };
+    InstLayout& L = g_inst_layout;
+    if (L.pid != pid) { L = InstLayout{}; L.pid = pid; }
+    if (h && !L.tried) inst_layout_from_code(h, modBase, modSize, L);
+    const std::uint64_t wv = (h && mgva && L.ok) ? inst_worldview(h, mgva) : 0;
+    const std::uint64_t def = wv ? rpm<std::uint64_t>(h, wv + rtx::scn::kMapDef).value_or(0) : 0;
+    // an instance is built once and stays; the table is read again every few seconds all the same,
+    // so mapsquares that were still loading on the first pass are picked up
+    if (s.pid == pid && s.wv == wv && s.def == def && now - s.built < 3000) { s.checked = now; return s; }
+    InstSnap n; n.pid = pid; n.wv = wv; n.def = def; n.checked = now; n.built = now;
+    std::int32_t bd[4] = { 0, 0, -1, -1 };
+    // an instance loads a handful of mapsquares; the real map's grid is the whole world, or a box with no zone tables in it
+    if (wv && rpm<std::uint64_t>(h, wv + rtx::scn::kWvGrid).value_or(0) == wv &&
+        rpm_bytes(h, wv + rtx::scn::kGridMin, bd, sizeof(bd)) && bd[0] >= 0 && bd[1] >= 0 &&
+        bd[2] >= bd[0] && bd[3] >= bd[1] && bd[2] - bd[0] < 16 && bd[3] - bd[1] < 16 && bd[2] < 256 && bd[3] < 256) {
+        n.minx = bd[0]; n.miny = bd[1]; n.nx = bd[2] - bd[0] + 1; n.ny = bd[3] - bd[1] + 1;
+        n.zone.assign((std::size_t)4 * n.nx * n.ny * 64, InstZone{});
+        bool ok = true;
+        const std::uint64_t rows = rpm<std::uint64_t>(h, wv + rtx::scn::kGridRows).value_or(0);
+        for (int qx = 0; ok && qx < n.nx && rows > 0x10000; ++qx) {
+            const std::uint64_t col = rpm<std::uint64_t>(h, rows + (std::uint64_t)qx * 0x18).value_or(0);
+            if (col <= 0x10000) continue;
+            for (int qy = 0; ok && qy < n.ny; ++qy) {
+                const std::uint64_t region = rpm<std::uint64_t>(h, col + (std::uint64_t)qy * 0x18 + 8).value_or(0);
+                const std::uint64_t zm = region > 0x10000 ? inst_region_table(h, region, L) : 0;
+                if (zm > 0x10000) { ok = inst_read_square(h, zm, n, qx, qy, L); ++n.tables; }
+            }
+        }
+        n.layoutBad = !ok;
+        if (ok && n.tables > 0) {
+            n.instanced = true;
+            for (int p = 0; p < 4; ++p) for (int qx = 0; qx < n.nx; ++qx) for (int qy = 0; qy < n.ny; ++qy)
+                for (int zx = 0; zx < 8; ++zx) for (int zy = 0; zy < 8; ++zy) {
+                    const InstZone& z = n.at(p, qx, qy, zx, zy);
+                    if (z.level < 0) continue;
+                    ++n.zones; if (z.rot) ++n.rotated;
+                    n.from.emplace(inst_src_key(z.level, z.zx, z.zy),
+                                   ((std::uint32_t)p << 28) | ((std::uint32_t)((n.minx + qx) * 8 + zx) << 14) | (std::uint32_t)((n.miny + qy) * 8 + zy));
+                }
+        } else if (!ok) {
+            static ULONGLONG s_said = 0;
+            if (now - s_said > 60000) { s_said = now; rtx::log::Launcher("instance: the zone table is not laid out as expected; tiles in this instance are not translated"); }
+        }
+    } else if (def > 0x10000 && L.ok) n.boxBad = true;
+    s = std::move(n);
+    return s;
+}
+
+// The snapshot's own account of itself, for the update check.
+struct InstFacts { bool def = false, instanced = false, boxBad = false, layoutBad = false; int squares = 0, tables = 0, zones = 0, rotated = 0; InstLayout layout; };
+InstFacts inst_facts(std::uint32_t pid) {
+    std::lock_guard<std::mutex> lk(g_inst_mu);
+    g_inst.checked = 0; g_inst.built = 0;             // the check reads the game now, not a kept copy
+    const InstSnap& s = inst_snap_locked(pid);
+    return { s.def > 0x10000, s.instanced, s.boxBad, s.layoutBad, s.nx * s.ny, s.tables, s.zones, s.rotated, g_inst_layout };
+}
+}  // namespace
+
+bool InInstance(std::uint32_t pid) {
+    std::lock_guard<std::mutex> lk(g_inst_mu);
+    return inst_snap_locked(pid).instanced;
+}
+
+int InstanceSource(std::uint32_t pid, int x, int y, int plane, int& sx, int& sy, int& splane) {
+    std::lock_guard<std::mutex> lk(g_inst_mu);
+    InstSnap& s = inst_snap_locked(pid);
+    if (!s.instanced) return 0;
+    const int qx = (x >> 6) - s.minx, qy = (y >> 6) - s.miny;
+    if (plane < 0 || plane > 3 || x < 0 || y < 0 || qx < 0 || qy < 0 || qx >= s.nx || qy >= s.ny) return -1;
+    const InstZone& z = s.at(plane, qx, qy, (x >> 3) & 7, (y >> 3) & 7);
+    if (z.level < 0) return -1;
+    const int dx = x & 7, dy = y & 7;
+    const int ox = z.rot == 0 ? dx : z.rot == 1 ? 7 - dy : z.rot == 2 ? 7 - dx : dy;
+    const int oy = z.rot == 0 ? dy : z.rot == 1 ? dx : z.rot == 2 ? 7 - dy : 7 - dx;
+    sx = z.zx * 8 + ox; sy = z.zy * 8 + oy; splane = z.level;
+    return 1;
+}
+
+std::vector<InstanceTile> InstanceTargets(std::uint32_t pid, int sx, int sy, int splane) {
+    std::vector<InstanceTile> out;
+    std::lock_guard<std::mutex> lk(g_inst_mu);
+    InstSnap& s = inst_snap_locked(pid);
+    if (!s.instanced || sx < 0 || sy < 0 || splane < 0 || splane > 3 || (sx >> 3) > 0x3FF || (sy >> 3) > 0x7FF) return out;
+    const int ox = sx & 7, oy = sy & 7;
+    auto range = s.from.equal_range(inst_src_key(splane, sx >> 3, sy >> 3));
+    for (auto it = range.first; it != range.second; ++it) {
+        const int p = (int)(it->second >> 28), izx = (int)((it->second >> 14) & 0x3FFF), izy = (int)(it->second & 0x3FFF);
+        const int qx = (izx >> 3) - s.minx, qy = (izy >> 3) - s.miny;
+        const std::uint8_t rot = s.at(p, qx, qy, izx & 7, izy & 7).rot;
+        // the way back: where the source offset sits inside the copied zone
+        const int dx = rot == 0 ? ox : rot == 1 ? oy : rot == 2 ? 7 - ox : 7 - oy;
+        const int dy = rot == 0 ? oy : rot == 1 ? 7 - ox : rot == 2 ? 7 - oy : ox;
+        out.push_back({ izx * 8 + dx, izy * 8 + dy, p });
+    }
     return out;
 }
 
@@ -5622,8 +6004,8 @@ bool rr_exceptions(std::uint32_t pid, const RenderRulesUse& use, std::vector<std
     const bool crowdRule = use.rules.crowdCount > 0 && use.rules.crowdRange > 0;
     const bool playerLists = !use.playerHide.empty() || !use.playerKeep.empty() || use.rules.playerMaxDist > 0 || crowdRule;
     std::unordered_map<int, std::pair<std::string, int>> npcSeen;   // config -> name key, shown id
-    const std::uint64_t pdata = rpm<std::uint64_t>(h, root + rtx::scn::kPlayerData).value_or(0);
-    const int localUid = pdata > 0x10000 ? rpm<std::int32_t>(h, pdata + rtx::scn::kLocalUid).value_or(-1) : -1;
+    const std::uint64_t pdata = rpm<std::uint64_t>(h, root + kScnPlayerData).value_or(0);
+    const int localUid = pdata > 0x10000 ? rpm<std::int32_t>(h, pdata + kScnLocalUid).value_or(-1) : -1;
     struct Pl { std::uint64_t sec; bool inHide, inKeep; int tx, ty; };
     std::vector<Pl> pls;                          // the other players, judged once the local one is placed
     int myX = -1, myY = -1;
@@ -5641,7 +6023,7 @@ bool rr_exceptions(std::uint32_t pid, const RenderRulesUse& use, std::vector<std
             if (key.empty()) continue;
             const float fx = rpm<float>(h, sec + rtx::scn::kPosX).value_or(0.f), fy = rpm<float>(h, sec + rtx::scn::kPosY).value_or(0.f);
             const int tx = (int)(fx / 512.f), ty = (int)(fy / 512.f);
-            if (rpm<std::int32_t>(h, sec + rtx::scn::kUid).value_or(-2) == localUid) { myX = tx; myY = ty; continue; }
+            if (rpm<std::int32_t>(h, sec + kScnUid).value_or(-2) == localUid) { myX = tx; myY = ty; continue; }
             pls.push_back({ sec, use.playerHide.count(key) != 0, use.playerKeep.count(key) != 0, tx, ty });
             continue;
         } else if (type == 1 && npcLists) {
@@ -5782,14 +6164,14 @@ std::string SceneJson(std::uint32_t pid, int obj_range) {
     constexpr std::uint64_t kVecEnd    = rtx::scn::kVecEnd;
     constexpr std::uint64_t kSecPtr    = rtx::scn::kSecPtr;
     constexpr std::uint64_t kType      = rtx::scn::kType;
-    constexpr std::uint64_t kName      = rtx::scn::kName;
-    constexpr std::uint64_t kUid       = rtx::scn::kUid;
+    const std::uint64_t kName      = rtx::scn::kName;
+    const std::uint64_t kUid       = kScnUid;
     constexpr std::uint64_t kConfig    = rtx::scn::kConfig;
     constexpr std::uint64_t kCombat    = rtx::scn::kCombat;
     constexpr std::uint64_t kPosX      = rtx::scn::kPosX;
-    constexpr std::uint64_t kPosY      = rtx::scn::kPosY;
-    constexpr std::uint64_t kPlayerData = rtx::scn::kPlayerData;
-    constexpr std::uint64_t kLocalUid   = rtx::scn::kLocalUid;
+    const std::uint64_t kPosY      = rtx::scn::kPosY;
+    const std::uint64_t kPlayerData = kScnPlayerData;
+    const std::uint64_t kLocalUid   = kScnLocalUid;
 
     std::string players, npcs, specials, projectiles, effects;
     int prc = 0, efc = 0;
@@ -5860,7 +6242,7 @@ std::string SceneJson(std::uint32_t pid, int obj_range) {
                     }
                     if (sx4 > 0 && sy4 > 0) {
                         int uid4 = rpm<std::int32_t>(h, *sec + 0x98).value_or(0);
-                        int pl4  = rpm<std::int32_t>(h, *sec + rtx::scn::kPlane).value_or(0);   // plane (sec+0x40)
+                        int pl4  = rpm<std::int32_t>(h, *sec + kScnPlane).value_or(0);   // plane (sec+0x40)
                         if (pl4 < 0 || pl4 > 3) pl4 = 0;
                         if (sc4) specials.push_back(',');
                         char sbuf[160];
@@ -5886,7 +6268,7 @@ std::string SceneJson(std::uint32_t pid, int obj_range) {
                         int dtx = hasDest ? (int)(*dxf / 512.f) : 0;
                         int dty = hasDest ? (int)(*dyf / 512.f) : 0;
                         bool isScan = hasDest && dtx == sx13 && dty == sy13;
-                        int pl13 = rpm<std::int32_t>(h, *sec + rtx::scn::kPlane).value_or(0);
+                        int pl13 = rpm<std::int32_t>(h, *sec + kScnPlane).value_or(0);
                         if (pl13 < 0 || pl13 > 3) pl13 = 0;
                         int uid13 = rpm<std::int32_t>(h, *sec + 0x98).value_or(0);
                         if (sc4) specials.push_back(',');
@@ -5938,11 +6320,11 @@ std::string SceneJson(std::uint32_t pid, int obj_range) {
                     if (name.empty()) continue;               // players always carry a live name
                     bool self = (uid == local_uid);
                     if (self) { player_x = tx; player_y = ty;
-                                player_plane = rpm<std::int32_t>(h, *sec + rtx::scn::kPlane).value_or(0); }
+                                player_plane = rpm<std::int32_t>(h, *sec + kScnPlane).value_or(0); }
                     int combat = rpm<std::int32_t>(h, *sec + kCombat).value_or(-1);
                     if (combat < 0 || combat > 5000) combat = -1;
                     int anim = rpm<std::int32_t>(h, *sec + 0xA90).value_or(-1);  // shared actor anim
-                    int plane = rpm<std::int32_t>(h, *sec + rtx::scn::kPlane).value_or(0);   // shared actor plane
+                    int plane = rpm<std::int32_t>(h, *sec + kScnPlane).value_or(0);   // shared actor plane
                     if (pc) players.push_back(',');
                     std::snprintf(buf, sizeof(buf),
                         "{\"uid\":%d,\"x\":%d,\"y\":%d,\"trueTile\":{\"x\":%d,\"y\":%d},\"plane\":%d,\"combat\":%d,\"anim\":%d,\"self\":%s,\"name\":\"",
@@ -5990,7 +6372,7 @@ std::string SceneJson(std::uint32_t pid, int obj_range) {
                             if (y && w && (*y != 0.0f || *w != 0.0f)) face = toDeg(2.0 * std::atan2(-(double)*w, (double)*y));
                         }
                     }
-                    int npcPlane = rpm<std::int32_t>(h, *sec + rtx::scn::kPlane).value_or(0);   // shared actor plane
+                    int npcPlane = rpm<std::int32_t>(h, *sec + kScnPlane).value_or(0);   // shared actor plane
                     std::snprintf(buf, sizeof(buf),
                         "{\"id\":%d,\"uid\":%d,\"x\":%d,\"y\":%d,\"trueTile\":{\"x\":%d,\"y\":%d},\"plane\":%d,\"combat\":%d,\"anim\":%d,\"face\":%d,\"size\":%d,\"name\":\"",
                         reportId, uid, tx, ty, ttx, tty, npcPlane, meta.combat_level, anim, face, meta.size);
@@ -7506,9 +7888,9 @@ std::string HoverEntityJson(std::uint32_t pid) {
     bool targetless = verb == "Walk here" || verb == "Cancel" || verb == "Continue" || name.empty();
     if (targetless) return out + "}";
     if (ref > 0) {
-        constexpr std::uint64_t kContainer = rtx::scn::kContainer, kActiveIdx = 0x70, kEntryArr = 0x58,
+        const std::uint64_t kContainer = rtx::scn::kContainer, kActiveIdx = 0x70, kEntryArr = 0x58,
                                 kEntryWv = 0x8, kVecBegin = 0x138, kVecEnd = 0x140,
-                                kSecPtr = rtx::scn::kSecPtr, kType = rtx::scn::kType, kUid = rtx::scn::kUid,
+                                kSecPtr = rtx::scn::kSecPtr, kType = rtx::scn::kType, kUid = kScnUid,
                                 kPosX = 0x270, kPosY = 0x278;
         auto cont = rpm<std::uint64_t>(h, *root + kContainer);
         auto idx  = (cont && *cont > 0x10000) ? rpm<std::int32_t>(h, *cont + kActiveIdx) : std::nullopt;
@@ -7531,7 +7913,7 @@ std::string HoverEntityJson(std::uint32_t pid) {
                     if (t != 1 && t != 2) continue;
                     float fx = rpm<float>(h, *sec + kPosX).value_or(0);
                     float fy = rpm<float>(h, *sec + kPosY).value_or(0);
-                    int plane = rpm<std::int32_t>(h, *sec + rtx::scn::kPlane).value_or(0);
+                    int plane = rpm<std::int32_t>(h, *sec + kScnPlane).value_or(0);
                     if (plane < 0 || plane > 3) plane = 0;
                     int cfg = (t == 1) ? rpm<std::int32_t>(h, *sec + rtx::scn::kNpcCur).value_or(-1) : -1;
                     char enm[40] = {0};
@@ -9054,14 +9436,14 @@ bool BuildOverlayFrame(std::uint32_t pid, bool want_players, bool want_npcs,
                        const std::vector<OutlineLocReq>& outline_locs,
                        const std::vector<GuideSite>& guide_sites,
                        OverlayFrame& out) {
-    constexpr std::uint64_t kContainer = rtx::scn::kContainer, kActiveIdx = rtx::scn::kActiveIdx,
+    const std::uint64_t kContainer = rtx::scn::kContainer, kActiveIdx = rtx::scn::kActiveIdx,
                             kEntryArr = rtx::scn::kEntryArr, kEntryWv = rtx::scn::kEntryWv,
                             kVecBegin = rtx::scn::kVecBegin, kVecEnd = rtx::scn::kVecEnd,
                             kSecPtr = rtx::scn::kSecPtr, kType = rtx::scn::kType,
-                            kName = rtx::scn::kName, kUid = rtx::scn::kUid,
+                            kName = rtx::scn::kName, kUid = kScnUid,
                             kConfig = rtx::scn::kConfig, kPosX = rtx::scn::kPosX,
                             kPosZ = rtx::scn::kPosZ, kPosY = rtx::scn::kPosY,
-                            kPlayerData = rtx::scn::kPlayerData, kLocalUid = rtx::scn::kLocalUid;
+                            kPlayerData = kScnPlayerData, kLocalUid = kScnLocalUid;
 
     HANDLE h = nullptr; std::uint64_t mgva = 0;
     {
@@ -9174,7 +9556,7 @@ bool BuildOverlayFrame(std::uint32_t pid, bool want_players, bool want_npcs,
                 have_player = true;
                 out.player_tx = tx; out.player_ty = ty; out.player_z = fz.value_or(0);
                 out.player_fx = *fx; out.player_fy = *fy;   // smooth sub-tile position for the ground indicator
-                out.plane = rpm<std::int32_t>(h, *sec + rtx::scn::kPlane).value_or(0);  // live plane
+                out.plane = rpm<std::int32_t>(h, *sec + kScnPlane).value_or(0);  // live plane
                 out.player_ttx = ttx; out.player_tty = tty; out.player_route = onRoute;
             }
 
@@ -9329,9 +9711,12 @@ bool BuildOverlayFrame(std::uint32_t pid, bool want_players, bool want_npcs,
     out.anchor_h = have_player
         ? rtx::cache::TileHeight(out.player_tx, out.player_ty, out.plane) : kNoH;
 
-    auto cornerZ = [&](int tx, int ty) -> float {
+    // `unknown` is set when neither the game nor the cache has a height here; what comes back then
+    // is only a placeholder, and the point it goes into is marked as not to be drawn.
+    auto cornerZ = [&](int tx, int ty, bool* unknown = nullptr) -> float {
         float lz; if (liveZ(tx, ty, out.plane, lz)) return lz;
         std::int16_t hh = rtx::cache::TileHeight(tx, ty, out.plane);
+        if (hh == kNoH && unknown) *unknown = true;
         return (hh == kNoH) ? out.player_z : kHScale * (float)hh;
     };
     auto fillBox = [&](OverlayPoint& op, int swx, int swy, int W, int H,
@@ -9355,6 +9740,7 @@ bool BuildOverlayFrame(std::uint32_t pid, bool want_players, bool want_npcs,
             else { if (z < base) base = z; if (z > top) top = z; }
         }
         const float lev = atTop ? top : base;
+        if (!haveBase) op.no_height = true;
         for (int i = 0; i < 4; ++i) {
             op.box[i * 3 + 0] = cx[i] * 512.f;
             op.box[i * 3 + 1] = cy[i] * 512.f;
@@ -9399,7 +9785,7 @@ bool BuildOverlayFrame(std::uint32_t pid, bool want_players, bool want_npcs,
             rtx::cache::TileCornerHeights(gx, gy, plane, ch);
             std::int32_t lch[4]; const bool liveOk = liveTerrain && LiveCornerHeights(pid, gx, gy, plane, lch);
             float fallback = out.player_z;
-            bool haveFallback = false;
+            bool haveFallback = false, cornerMissing = false;
             if (!liveOk && (ch[0] == kNoH || ch[1] == kNoH || ch[2] == kNoH || ch[3] == kNoH)) {
                 int bestD2 = 4 * 4 + 1;                            // within 4 tiles or not at all
                 for (const auto& r : gobjs) {
@@ -9426,7 +9812,9 @@ bool BuildOverlayFrame(std::uint32_t pid, bool want_players, bool want_npcs,
                     if (liveZ(gx, gy, 0, lz0)) fallback = lz0;
                     else { std::int16_t g0 = rtx::cache::TileHeight(gx, gy, 0); if (g0 != kNoH) fallback = kHScale * (float)g0; }
                 }
+                cornerMissing = !haveFallback && fallback == out.player_z;   // nothing to go by but the player's own height
             }
+            if (cornerMissing) op.no_height = true;
             for (int i = 0; i < 4; ++i) {
                 op.box[i * 3 + 0] = cx[i] * 512.f;
                 op.box[i * 3 + 1] = cy[i] * 512.f;
@@ -9523,7 +9911,7 @@ bool BuildOverlayFrame(std::uint32_t pid, bool want_players, bool want_npcs,
                     op.rgb = first->rgb;
                     op.rgb2 = first->rgb2;
                     op.wx = t.first * 512.f + 256.f; op.wy = t.second * 512.f + 256.f;
-                    op.wz = cornerZ(t.first, t.second);
+                    op.wz = cornerZ(t.first, t.second, &op.no_height);
                     fillBox(op, t.first, t.second, 1, 1, first->plane);
                     op.box_h = 0.f;                               // floor-level only
                     int mask = 0;
@@ -9553,7 +9941,7 @@ bool BuildOverlayFrame(std::uint32_t pid, bool want_players, bool want_npcs,
             {   // label anchor height on the mark's plane
                 float lz;
                 if (liveZ(gs.gx, gs.gy, gs.plane, lz)) op.wz = lz;
-                else { std::int16_t hh = rtx::cache::TileHeight(gs.gx, gs.gy, gs.plane); op.wz = (hh == kNoH) ? out.player_z : kHScale * (float)hh; }
+                else { std::int16_t hh = rtx::cache::TileHeight(gs.gx, gs.gy, gs.plane); op.wz = (hh == kNoH) ? out.player_z : kHScale * (float)hh; if (hh == kNoH) op.no_height = true; }
             }
             if (gs.gx2 >= gs.gx && gs.gy2 >= gs.gy && gs.gx2 > 0 && gs.gy2 > 0 &&
                 (gs.gx2 - gs.gx >= 8 || gs.gy2 - gs.gy >= 8)) {
@@ -9589,7 +9977,7 @@ bool BuildOverlayFrame(std::uint32_t pid, bool want_players, bool want_npcs,
                     OverlayPoint e;
                     e.kind = 4; e.rgb = gs.rgb; e.rgb2 = 0;
                     e.wx = (tx + w * 0.5f) * 512.f; e.wy = (ty + h * 0.5f) * 512.f;
-                    e.wz = cornerZ(tx, ty);
+                    e.wz = cornerZ(tx, ty, &e.no_height);
                     const int ep = liveTerrain ? LiveTileEffPlane(pid, tx, ty, gs.plane) : rtx::cache::TileEffPlane(tx, ty, gs.plane);
                     const int cx[4] = { tx, tx + w, tx + w, tx }, cy[4] = { ty, ty, ty + h, ty + h };
                     for (int i = 0; i < 4; ++i) {
@@ -9799,7 +10187,7 @@ bool BuildOverlayFrame(std::uint32_t pid, bool want_players, bool want_npcs,
                     break;
                 }
                 float gz;
-                if (!liveZ(ax, ay, out.plane, gz)) { std::int16_t objH = rtx::cache::TileHeight(ax, ay, out.plane); gz = (objH == kNoH) ? out.player_z : kHScale * (float)objH; }
+                if (!liveZ(ax, ay, out.plane, gz)) { std::int16_t objH = rtx::cache::TileHeight(ax, ay, out.plane); gz = (objH == kNoH) ? out.player_z : kHScale * (float)objH; if (objH == kNoH) op.no_height = true; }
                 op.has_box3d = true;
                 op.bmin[0] = ax * 512.f;            op.bmin[1] = ay * 512.f;            op.bmin[2] = gz;
                 op.bmax[0] = (ax + W) * 512.f;      op.bmax[1] = (ay + H) * 512.f;      op.bmax[2] = gz + 512.f;
@@ -9900,7 +10288,7 @@ bool BuildOverlayFrame(std::uint32_t pid, bool want_players, bool want_npcs,
                 if (dup) continue;
                 OverlayPoint op;
                 op.wx = wx * 512.f + 256.f; op.wy = wy * 512.f + 256.f;
-                if (!liveZ(wx, wy, out.plane, op.wz)) { std::int16_t objH = rtx::cache::TileHeight(wx, wy, out.plane); op.wz = (objH == kNoH) ? out.player_z : kHScale * (float)objH; }
+                if (!liveZ(wx, wy, out.plane, op.wz)) { std::int16_t objH = rtx::cache::TileHeight(wx, wy, out.plane); op.wz = (objH == kNoH) ? out.player_z : kHScale * (float)objH; if (objH == kNoH) op.no_height = true; }
                 op.kind = 0; op.label = meta.name;
                 int W = meta.dim_x, H = meta.dim_y;
                 if (p.rotation == 1 || p.rotation == 3) std::swap(W, H);
@@ -9943,9 +10331,9 @@ bool BuildOverlayFrame(std::uint32_t pid, bool want_players, bool want_npcs,
 
 
 std::string PlayerInfoJson(std::uint32_t pid) {
-    constexpr std::uint64_t kContainer = rtx::scn::kContainer, kActiveIdx = 0x70, kEntryArr = 0x58,
+    const std::uint64_t kContainer = rtx::scn::kContainer, kActiveIdx = 0x70, kEntryArr = 0x58,
                             kEntryWv = 0x8, kVecBegin = 0x138,
-                            kVecEnd = 0x140, kSecPtr = rtx::scn::kSecPtr, kType = rtx::scn::kType, kUid = rtx::scn::kUid,
+                            kVecEnd = 0x140, kSecPtr = rtx::scn::kSecPtr, kType = rtx::scn::kType, kUid = kScnUid,
                             kPosX = 0x270, kPosY = 0x278, kAnim = 0xA90, kLocalUid = 0x48;
     const std::uint64_t kPlayerData = kOffAccount;
     auto ps = snap_proc(pid);
@@ -9987,7 +10375,7 @@ std::string PlayerInfoJson(std::uint32_t pid) {
     int tx = (int)(fx / 512.f), ty = (int)(fy / 512.f);
     int ttx = tx, tty = ty;                                   // server tile; visible tile when stationary
     actor_true_tile(h, psec, ttx, tty);
-    int plane = rpm<std::int32_t>(h, psec + rtx::scn::kPlane).value_or(0);   // live plane (sec + 0x40)
+    int plane = rpm<std::int32_t>(h, psec + kScnPlane).value_or(0);   // live plane (sec + 0x40)
     if (plane < 0 || plane > 3) plane = 0;
     int anim = rpm<std::int32_t>(h, psec + kAnim).value_or(-1);
     float px, py;
@@ -10262,9 +10650,9 @@ std::string SocialJson(std::uint32_t pid) {
 }
 
 bool PlayerTile(std::uint32_t pid, int& tx, int& ty, int& plane) {
-    constexpr std::uint64_t kContainer = rtx::scn::kContainer, kActiveIdx = 0x70, kEntryArr = 0x58,
+    const std::uint64_t kContainer = rtx::scn::kContainer, kActiveIdx = 0x70, kEntryArr = 0x58,
                             kEntryWv = 0x8, kVecBegin = 0x138,
-                            kVecEnd = 0x140, kSecPtr = rtx::scn::kSecPtr, kType = rtx::scn::kType, kUid = rtx::scn::kUid,
+                            kVecEnd = 0x140, kSecPtr = rtx::scn::kSecPtr, kType = rtx::scn::kType, kUid = kScnUid,
                             kPosX = 0x270, kPosY = 0x278, kLocalUid = 0x48;
     const std::uint64_t kPlayerData = kOffAccount;
     auto ps = snap_proc(pid);
@@ -10302,7 +10690,7 @@ bool PlayerTile(std::uint32_t pid, int& tx, int& ty, int& plane) {
     if (!psec) return false;
     float fx = rpm<float>(h, psec + kPosX).value_or(0), fy = rpm<float>(h, psec + kPosY).value_or(0);
     tx = (int)(fx / 512.f); ty = (int)(fy / 512.f);
-    int pl = rpm<std::int32_t>(h, psec + rtx::scn::kPlane).value_or(0);
+    int pl = rpm<std::int32_t>(h, psec + kScnPlane).value_or(0);
     plane = (pl < 0 || pl > 3) ? 0 : pl;
     return true;
 }
@@ -10922,7 +11310,7 @@ void health_calibration(HCtx& c, rtx::health::Run& run) {
     // at the old place
     {
         static const struct { const char* name; std::uint32_t copy; const std::uint32_t* live; } kPairs[] = {
-            { "status", rtx::md::kStatus, &kOffStatus }, { "player data", (std::uint32_t)rtx::scn::kPlayerData, &kOffAccount },
+            { "status", rtx::md::kStatus, &kOffStatus }, { "player data", (std::uint32_t)kScnPlayerData, &kOffAccount },
             { "world", rtx::md::kWorld, &kOffWorld }, { "containers", rtx::md::kContainers, &kOffInvData },
             { "chat store", rtx::md::kChatStore, &kOffChatStore }, { "clan settings", rtx::md::kClanSettings, &kOffClanSettings },
             { "map manager", rtx::md::kMapMgr, &kOffMapMgr }, { "input reporter", rtx::md::kInputReport, &kOffInputReporter },
@@ -11003,7 +11391,7 @@ void health_data(HCtx& c, rtx::health::Run& run) {
         run.Add(G, "data.tick", "Server tick", !haveTick ? kFail : c.inWorld ? (tok ? kPass : kFail) : kUnchecked,
                 !haveTick ? "GONE: tick counter not found (the owner global or the increment moved)" : std::string(c.inWorld && !tok ? "MOVED: " : "") + "tick " + std::to_string(tickB) + ", last change " + std::to_string((int)ageB) + " ms ago" + (c.inWorld && !tok ? " (a live tick changes every 600 ms)" : ""),
                 "Ticks|Tick timers|Metronome", "changed < 5000 ms ago", std::to_string((int)ageB) + " ms", "code.sig.tick-anchor").need = c.inWorld || !haveTick ? "" : "log in";
-        const float fps = rpm<float>(h, root + rtx::md::kFps).value_or(-1.f);
+        const float fps = rpm<float>(h, root + kOffFps).value_or(-1.f);
         const bool fpsOk = fps >= 1.f && fps <= 1000.f;
         run.Add(G, "data.fps", "FPS", fpsOk ? kPass : kFail, std::string(fpsOk ? "" : "MOVED: ") + std::to_string((int)fps) + " at MainData+" + hx(rtx::md::kFps) + (fpsOk ? "" : " (not a frame rate: the field moved)"),
                 "Player State FPS", "1..1000", std::to_string((int)fps), "data.root");
@@ -11479,7 +11867,7 @@ void health_player(HCtx& c, rtx::health::Run& run) {
             if (member != 0 && member != 1) { ok = kFail; if (word.empty()) word = "FORMAT"; d += " (member byte not 0/1)"; }
             if (uid < 1 || uid > 2047) { ok = kFail; if (word.empty()) word = "FORMAT"; d += " (uid out of range)"; }
             if (c.localSec) {
-                const int secUid = rpm<std::int32_t>(h, c.localSec + rtx::scn::kUid).value_or(-1);
+                const int secUid = rpm<std::int32_t>(h, c.localSec + kScnUid).value_or(-1);
                 const std::string sn = sec_name(h, c.localSec);
                 if (secUid != uid) { ok = kFail; if (word.empty()) word = "MOVED"; d += "; actor uid " + std::to_string(secUid); }
                 if (!name.empty() && norm_name(sn) != norm_name(name)) { ok = kFail; if (word.empty()) word = "MOVED"; d += "; actor name differs from the account name"; }
@@ -11495,7 +11883,7 @@ void health_player(HCtx& c, rtx::health::Run& run) {
         std::uint64_t viaScan = 0;
         std::vector<std::pair<std::uint64_t, std::uint64_t>> secs; scene_secs(c, secs);
         for (const auto& es : secs)
-            if (rpm<std::uint8_t>(h, es.second + rtx::scn::kType).value_or(0xFF) == 2 && rpm<std::int32_t>(h, es.second + rtx::scn::kUid).value_or(-1) == c.localUid) { viaScan = es.second; break; }
+            if (rpm<std::uint8_t>(h, es.second + rtx::scn::kType).value_or(0xFF) == 2 && rpm<std::int32_t>(h, es.second + kScnUid).value_or(-1) == c.localUid) { viaScan = es.second; break; }
         if (!viaReg) { ok = kFail; d = "GONE: registry at MainData+" + hx(kOffPlayers) + " does not give the local player"; }
         else if (viaScan && viaReg != viaScan) { ok = kFail; d = "MOVED: registry and scene disagree on the local player's actor"; }
         else d = "registry and scene agree";
@@ -11666,7 +12054,7 @@ void health_scene(HCtx& c, rtx::health::Run& run) {
             ++players;
             const std::string nm = sec_name(h, sec);
             const int cb = rpm<std::int32_t>(h, sec + rtx::scn::kCombat).value_or(-1), cb2 = rpm<std::int32_t>(h, sec + rtx::scn::kCombat + 4).value_or(-2);
-            const int pl = rpm<std::int32_t>(h, sec + rtx::scn::kPlane).value_or(-1);
+            const int pl = rpm<std::int32_t>(h, sec + kScnPlane).value_or(-1);
             // two combat levels: the one shown and a second that can sit above it (the local player
             // reads 140 and 152), each in 3..152; the name is UTF-8 as the client stores it
             const char* why = !utf8_name(nm) ? "name" : (cb < 3 || cb > 152) ? "combat" : (cb2 < 3 || cb2 > 152) ? "second combat" : (pl < 0 || pl > 3) ? "plane" : nullptr;
@@ -11810,7 +12198,7 @@ void health_scene(HCtx& c, rtx::health::Run& run) {
         int ok = kUnchecked; std::string d = "no local player", got;
         if (c.localSec) {
             const float x = rpm<float>(h, c.localSec + rtx::scn::kPosX).value_or(0), y = rpm<float>(h, c.localSec + rtx::scn::kPosY).value_or(0), z = rpm<float>(h, c.localSec + rtx::scn::kPosZ).value_or(0);
-            const int plane = rpm<std::int32_t>(h, c.localSec + rtx::scn::kPlane).value_or(0);
+            const int plane = rpm<std::int32_t>(h, c.localSec + kScnPlane).value_or(0);
             const int tx = (int)(x / 512.f), ty = (int)(y / 512.f);
             if (LiveTerrainSnapshot(c.pid, tx, ty, plane)) {
                 const std::int32_t h00 = LiveCornerHeight(c.pid, tx, ty, plane), h10 = LiveCornerHeight(c.pid, tx + 1, ty, plane);
@@ -11829,6 +12217,43 @@ void health_scene(HCtx& c, rtx::health::Run& run) {
             } else { ok = kFail; d = "GONE: terrain snapshot failed (the scene's height grid chain did not resolve)"; got = "no snapshot"; }
         }
         run.Add(G, "scene.terrain", "Terrain heights", ok, d, "Tile markers|Ground overlays|In-frame markers", "actor height within 1.5 of grid + lift + 5", got, "player.registry").need = ok == kUnchecked ? "a local player in the scene" : "";
+    }
+    // actor layout: seven actor positions the game's own routines name, against the compiled ones
+    {
+        ActorLayout al;
+        { std::lock_guard<std::mutex> lk(g_actor_layout_mu); al = g_actor_layout; }
+        int ok = kUnchecked; std::string d = "not read yet", got;
+        if (al.tried && !al.ok) {
+            ok = kFail;
+            d = "GONE: " + (al.missing ? std::to_string(al.missing) + " of the 2 routines not found exactly once" : std::string("the routines were found but their values are out of range")) +
+                "; the compiled positions are in use";
+        } else if (al.ok) {
+            struct Cmp { const char* name; std::uint32_t found; std::uint64_t compiled; bool applied; };
+            const Cmp cmp[] = { { "level", al.plane, rtx::scn::kPlane, true }, { "scene node", al.node, rtx::scn::kBack, false }, { "tile size", al.size, rtx::scn::kActorSize, false },
+                                { "account", al.account, rtx::scn::kPlayerData, true }, { "index", al.uid, rtx::scn::kUid, true }, { "local index", al.localIdx, rtx::scn::kLocalUid, true } };
+            std::string moved;
+            for (const Cmp& x : cmp) {
+                got += std::string(got.empty() ? "" : " ") + hx(x.found);
+                if (x.found != x.compiled) moved += std::string(moved.empty() ? "" : ", ") + x.name + " " + hx(x.compiled) + " -> " + hx(x.found) + (x.applied ? "" : " (the compiled copy still in use)");
+            }
+            ok = moved.empty() ? kPass : kWarn;
+            d = moved.empty() ? "level, scene node, tile size, account, index and local index as the game's own routines read them; actor to root +" + hx(al.root)
+                              : "MOVED: " + moved;
+        }
+        run.Add(G, "scene.actor-layout", "Actor layout", ok, d, "Scene|Overlays|Tile markers|Rendering", "the tile-count pass and the player draw routine, each found once", got).need = ok == kUnchecked ? "a client attached" : "";
+    }
+    // terrain layout: the five places the terrain reads go by, taken from the game's height sampler
+    {
+        const TerrainLayout tl = terrain_layout(h, c.pid, c.base, c.size);
+        std::string d, got;
+        if (tl.ok) {
+            got = hx(tl.planes) + " " + hx(tl.adjusted) + " " + hx(tl.liftCount) + " " + hx(tl.liftTab) + " " + hx(tl.none);
+            d = "from the game's height sampler: levels +" + hx(tl.planes) + ", level 0 adjusted +" + hx(tl.adjusted) + ", standing offsets +" + hx(tl.liftCount) +
+                " / +" + hx(tl.liftTab) + ", no-terrain flag +" + hx(tl.none);
+        } else if (tl.missing < 0) d = "GONE: the height sampler's instructions were found but do not fit together; live ground heights are off, the cache's are used";
+        else d = "GONE: " + std::to_string(tl.missing) + " of the height sampler's 5 instructions not found exactly once; live ground heights are off, the cache's are used";
+        run.Add(G, "scene.terrain-layout", "Terrain layout", tl.ok ? kPass : kFail, d, "Terrain heights|Tile markers|Ground overlays|In-frame markers",
+                "5 instructions of the game's height sampler, each found once and agreeing", got);
     }
     // world grid: the worldView owns it on the static map; its bounds are a box of mapsquares inside
     // 0..98 x 0..198 (the whole world, or the part loaded since a relog), the player's mapsquare lies
@@ -11876,6 +12301,47 @@ void health_scene(HCtx& c, rtx::health::Run& run) {
             }
         }
         run.Add(G, "scene.grid", "World grid", ok, d, "Terrain heights|Tile markers", "bounds a box inside 0,0..98,198 (the whole world or the loaded part) holding the player's mapsquare, the region there pointing back", got, "scene.offsets").need = ok == kUnchecked ? (c.localSec ? "the static map (not an instance)" : "a local player in the scene") : "";
+    }
+    // instance tiles: inside an instance every loaded mapsquare's zone table reads as four levels of
+    // ten columns of ten records, the player's own tile has a source, and that source leads back to
+    // the player's tile. Outside one there is nothing to judge.
+    {
+        int ok = kUnchecked; std::string d = "no local player", got, need = "a local player in the scene";
+        if (c.wv > 0x10000 && c.localSec) {
+            const InstFacts f = inst_facts(c.pid);
+            const int px = (int)(rpm<float>(h, c.localSec + rtx::scn::kPosX).value_or(0) / 512.f);
+            const int py = (int)(rpm<float>(h, c.localSec + rtx::scn::kPosY).value_or(0) / 512.f);
+            const int pp = rpm<std::int32_t>(h, c.localSec + kScnPlane).value_or(0);
+            const std::string sizes = "level " + hx(f.layout.level) + ", column " + hx(f.layout.column) + ", record " + std::to_string(f.layout.record) + " bytes from " +
+                                      std::to_string(f.layout.pairs) + " place" + (f.layout.pairs == 1 ? "" : "s") + " in the client's code";
+            if (!f.layout.ok) {
+                ok = kFail; need.clear();
+                d = f.layout.pairs ? "GONE: the client's code names more than one zone table shape; instance tiles are not translated"
+                                   : "GONE: no routine in the client's code multiplies by a zone table level and column size; instance tiles are not translated";
+            }
+            else if (!f.def && !f.instanced) { d = "not in an instance; zone table sizes read: " + sizes; need = "an instance (a house, a boss room, a quest instance)"; }
+            else if (f.def != f.instanced && !f.boxBad && !f.layoutBad) {
+                ok = kWarn; need.clear();
+                d = std::string("MOVED: the map definition at +") + hx(rtx::scn::kMapDef) + (f.def ? " is set but no loaded mapsquare has a zone table" : " is empty but mapsquares have zone tables") + " (map definition moved?)";
+            }
+            else if (f.boxBad) { ok = kFail; need.clear(); d = "FORMAT: instanced worldView whose grid is not a box of up to 16 x 16 loaded mapsquares owned by the worldView (grid moved?)"; }
+            else if (f.layoutBad) { ok = kFail; need.clear(); d = "FORMAT: a mapsquare's zone table at +" + hx(f.layout.regionOff) + " is not 4 levels of 10 columns of 10 records stored inline (" + sizes + ")"; }
+            else {
+                need.clear();
+                got = std::to_string(f.tables) + "/" + std::to_string(f.squares) + " mapsquares, " + std::to_string(f.zones) + " zones";
+                d = sizes + ", table at mapsquare +" + hx(f.layout.regionOff) + "; " + std::to_string(f.tables) + " of " + std::to_string(f.squares) + " loaded mapsquares with a zone table, " + std::to_string(f.zones) + " zones copied (" + std::to_string(f.rotated) + " turned)";
+                int sx = 0, sy = 0, sp = 0;
+                const int r = InstanceSource(c.pid, px, py, pp, sx, sy, sp);
+                if (r != 1) { ok = kFail; d = "FORMAT: " + d + "; the player's tile " + std::to_string(px) + "," + std::to_string(py) + " has no source (zone records moved?)"; }
+                else {
+                    bool back = false;
+                    for (const auto& t : InstanceTargets(c.pid, sx, sy, sp)) if (t.x == px && t.y == py && t.plane == pp) back = true;
+                    d += "; player " + std::to_string(px) + "," + std::to_string(py) + " level " + std::to_string(pp) + " from " + std::to_string(sx) + "," + std::to_string(sy) + " level " + std::to_string(sp);
+                    if (back) ok = kPass; else { ok = kFail; d = "FORMAT: " + d + ", and that source does not lead back to the player's tile"; }
+                }
+            }
+        }
+        run.Add(G, "scene.instance", "Instance tiles", ok, d, "Tile markers in instances", "every zone table 4 x 10 x 10 inline, the player's tile with a source that leads back to it", got, "scene.grid").need = ok == kUnchecked ? need : "";
     }
     // live scenery against the cache's map placements (reader side, works from the command line)
     {
@@ -13128,7 +13594,7 @@ std::string ReaderHealthJson(std::uint32_t pid, const std::string& runtimePinsJs
         if (auto p1 = rpm<std::uint64_t>(c.h, c.root + kOffWorld); p1 && *p1 > 0x10000)
             if (auto p2 = rpm<std::uint64_t>(c.h, *p1 + 0x20); p2 && *p2 > 0x10000) c.world = rpm<std::int32_t>(c.h, *p2 + 8).value_or(-1);
         const std::uint64_t pdata = rpm<std::uint64_t>(c.h, c.root + kOffAccount).value_or(0);
-        c.localUid = pdata > 0x10000 ? rpm<std::int32_t>(c.h, pdata + rtx::scn::kLocalUid).value_or(-1) : -1;
+        c.localUid = pdata > 0x10000 ? rpm<std::int32_t>(c.h, pdata + kScnLocalUid).value_or(-1) : -1;
         const std::uint64_t cont = rpm<std::uint64_t>(c.h, c.root + rtx::scn::kContainer).value_or(0);
         const int idx = cont > 0x10000 ? rpm<std::int32_t>(c.h, cont + rtx::scn::kActiveIdx).value_or(-1) : -1;
         const std::uint64_t arr = cont > 0x10000 ? rpm<std::uint64_t>(c.h, cont + rtx::scn::kEntryArr).value_or(0) : 0;
@@ -13138,7 +13604,7 @@ std::string ReaderHealthJson(std::uint32_t pid, const std::string& runtimePinsJs
         if (!c.localSec && c.worker) {
             std::vector<std::pair<std::uint64_t, std::uint64_t>> secs; scene_secs(c, secs);
             for (const auto& es : secs)
-                if (rpm<std::uint8_t>(c.h, es.second + rtx::scn::kType).value_or(0xFF) == 2 && rpm<std::int32_t>(c.h, es.second + rtx::scn::kUid).value_or(-1) == c.localUid) { c.localSec = es.second; break; }
+                if (rpm<std::uint8_t>(c.h, es.second + rtx::scn::kType).value_or(0xFF) == 2 && rpm<std::int32_t>(c.h, es.second + kScnUid).value_or(-1) == c.localUid) { c.localSec = es.second; break; }
         }
     }
     c.inWorld = c.status == 30 && c.localUid >= 0;

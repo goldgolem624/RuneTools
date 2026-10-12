@@ -2,7 +2,8 @@
 (function () {
 
   const MK_COLORS = [0x46E0C0, 0x57C6E0, 0x8BE05A, 0xF0C04A, 0xE0564E, 0xC07AE0, 0xE0903C, 0xECEFF3];
-  markerKb = { mark: 65, remove: 68, color: 0x46E0C0 };   // A = add, D = delete (default keys)
+  markerKb = { mark: 65, remove: 68, color: 0x46E0C0, style: 0, width: 2, labelPx: 14 };   // A = add, D = delete (default keys)
+  const MK_STYLES = ['Filled', 'Outline', 'Corners'];
   markerList = []; let markerVer = -1; let markerLoadedPid = -1; markerCapturing = null; let markerKbLoaded = false;
   let _mkLabelT = 0, _mkListSig = '';
   function markersActive() { return !!overlayState.markers && markerList.length > 0; }
@@ -23,9 +24,10 @@
   function loadMarkerKb() {
     if (markerKbLoaded || !bridge() || !bridge().markerKeybindsGet) return;
     markerKbLoaded = true;
-    try { const o = JSON.parse(rtxData.sync('host.markerKeybindsGet')); if (o) markerKb = { mark: (o.mark | 0) || 65, remove: (o.remove | 0) || 68, color: (o.color | 0) || 0x46E0C0 }; } catch (e) {}
+    try { const o = JSON.parse(rtxData.sync('host.markerKeybindsGet')); if (o) markerKb = { mark: (o.mark | 0) || 65, remove: (o.remove | 0) || 68, color: (o.color | 0) || 0x46E0C0,
+                                                                                               style: o.style | 0, width: (o.width | 0) || 2, labelPx: (o.labelPx | 0) || 14 }; } catch (e) {}
   }
-  function saveMarkerKb() { try { rtxData.sync('act.markerKeybindsSet', markerKb.mark | 0, markerKb.remove | 0, markerKb.color | 0); } catch (e) {} }
+  function saveMarkerKb() { try { rtxData.sync('act.markerKeybindsSet', markerKb.mark | 0, markerKb.remove | 0, markerKb.color | 0, markerKb.style | 0, markerKb.width | 0, markerKb.labelPx | 0); } catch (e) {} }
   function fetchMarkers(force) {
     if (!bridge() || !bridge().markersGet) return;
     const pid = myPid();
@@ -35,6 +37,57 @@
     markerVer = ver;
     try { const a = JSON.parse(bridge().markersGet(pid)); if (Array.isArray(a)) markerList = a; } catch (e) {}
     paneRun('markers', paintMarkerList);
+  }
+  // "Mark tile" in the game's right-click menu, under "Walk here". The launcher is told on every pass
+  // which level the player is on, so the row on a marked tile reads "Unmark tile".
+  let mkMenuPlane = -1, mkMenuPlaneAt = 0, mkMenuBusy = false;
+  function mkMenuOn() { return prefGet('rtxMarkMenu', '1') !== '0'; }
+  async function mkMenuTick() {
+    const b = bridge(), pid = myPid();
+    if (!b || !b.menuMarkRows || !pid) return;
+    const now = Date.now();
+    if (!mkMenuBusy && now - mkMenuPlaneAt > 1500 && b.playerInfo) {
+      mkMenuBusy = true; mkMenuPlaneAt = now;
+      try { const d = JSON.parse(await b.playerInfo(pid)); if (d && typeof d.plane === 'number') mkMenuPlane = d.plane | 0; } catch (e) {}
+      mkMenuBusy = false;
+    }
+    try { b.menuMarkRows(pid, mkMenuOn() && mkMenuPlane >= 0, mkMenuPlane); } catch (e) {}
+  }
+  // The Markers panel, opened on one marker: its row scrolled into view and its label box ready to type in.
+  function mkOpenAt(key) {
+    try {
+      const t = (typeof allTabs === 'function' ? allTabs() : TABS).find(x => x.id === 'markers');
+      if (t && typeof openTab === 'function') openTab(t);
+    } catch (e) {}
+    fetchMarkers(true);
+    let tries = 0;
+    const seek = () => {
+      const box = [...document.querySelectorAll('.mk-lbl')].find(el => el.dataset.k === key);
+      if (box) { try { box.scrollIntoView({ block: 'center' }); box.focus(); box.select(); } catch (e) {} return; }
+      if (++tries < 12) setTimeout(seek, 150);
+    };
+    setTimeout(seek, 100);
+  }
+  // A click on a tile row: {x, y, show, custom}; show = "Unmark tile", custom = "Customize tile".
+  function mkMenuClick(d) {
+    const x = d.x | 0, y = d.y | 0;
+    if (x <= 0 || y <= 0 || mkMenuPlane < 0) return;
+    const region = ((x >> 6) << 8) | (y >> 6), lx = x & 63, ly = y & 63;
+    if (d.custom) {
+      let key = region + '/' + lx + '/' + ly + '/' + mkMenuPlane;
+      try { if (bridge().markerStored) key = bridge().markerStored(myPid(), region, lx, ly, mkMenuPlane) || key; } catch (e) {}
+      mkOpenAt(key); return;
+    }
+    loadMarkerKb();
+    try {
+      // the last argument: the tile is the one on screen, to be kept under where it was copied from in an instance
+      if (d.show) rtxData.sync('act.markerRemove', region, lx, ly, mkMenuPlane, true);
+      else {
+        rtxData.sync('act.markerAdd', region, lx, ly, mkMenuPlane, markerKb.color | 0, '', true);
+        if (!overlayState.markers) { overlayState.markers = true; const t = $('mk_show'); if (t) t.classList.add('on'); }   // a tile just marked is meant to be seen
+      }
+    } catch (e) {}
+    fetchMarkers(true); pushOverlay(); mkMenuTick();
   }
   function mkBtn(label, fn, cls) {
     const b = document.createElement('button'); b.className = 'mk-btn' + (cls ? ' ' + cls : '');
@@ -61,7 +114,18 @@
     k.addEventListener('click', () => { markerCapturing = (markerCapturing === which) ? null : which; paintKbKeys(); });
     r.appendChild(n); r.appendChild(k); return r;
   }
+  // The keyboard goes to the page for as long as a key field is armed, and back to the game after.
+  // A field that is gone (panel closed while armed) disarms itself.
+  let mkKbGrabbed = false, mkKbWatch = 0;
+  function mkKbGrabSync() {
+    if (markerCapturing && !$('mk_key_' + markerCapturing)) markerCapturing = null;
+    const on = !!markerCapturing;
+    if (on !== mkKbGrabbed) { mkKbGrabbed = on; if (typeof kbGrab === 'function') kbGrab(on); }
+    if (on && !mkKbWatch) mkKbWatch = setInterval(mkKbGrabSync, 500);
+    else if (!on && mkKbWatch) { clearInterval(mkKbWatch); mkKbWatch = 0; }
+  }
   function paintKbKeys() {
+    mkKbGrabSync();
     ['mark', 'remove'].forEach(w => {
       const k = $('mk_key_' + w); if (!k) return;
       k.textContent = markerCapturing === w ? 'Press a key...' : mkVkName(markerKb[w]);
@@ -89,6 +153,21 @@
     try { rtxData.sync('act.markerSetColor', m.region, m.lx, m.ly, m.plane, mkParseColor(m.color), next2); } catch (e) {}
     fetchMarkers(true); pushOverlay();
   }
+  function mkCycleStyle(m) {
+    try { rtxData.sync('act.markerSetStyle', m.region, m.lx, m.ly, m.plane, ((m.style | 0) + 1) % MK_STYLES.length); } catch (e) {}
+    fetchMarkers(true); pushOverlay();
+  }
+  // One row of choices, the chosen one lit.
+  function mkChoiceRow(id, labels, get, set) {
+    const row = document.createElement('div'); row.className = 'pet-chips'; row.id = id; row.style.padding = '0 12px 6px';
+    labels.forEach((lab, i) => {
+      const b = document.createElement('button'); b.className = 'pet-chip'; b.textContent = lab;
+      b.addEventListener('click', () => { set(i); saveMarkerKb(); pushOverlay(); [...row.children].forEach((c, k) => c.classList.toggle('on', k === get())); });
+      row.appendChild(b);
+    });
+    [...row.children].forEach((c, k) => c.classList.toggle('on', k === get()));
+    return row;
+  }
   function mkDelete(m) {
     try { rtxData.sync('act.markerRemove', m.region, m.lx, m.ly, m.plane); } catch (e) {}
     fetchMarkers(true); pushOverlay();
@@ -97,7 +176,7 @@
     const list = $('mk_list'); if (!list) return;
     const g = $('mk_lgrp'); if (g) g.textContent = 'Markers (' + markerList.length + ')';
     const sig = markerList.map(m => m.region + '/' + m.lx + '/' + m.ly + '/' + m.plane + ':' + mkParseColor(m.color)
-      + (m.color2 ? '~' + mkParseColor(m.color2) : '')).join(',');
+      + (m.color2 ? '~' + mkParseColor(m.color2) : '') + 's' + (m.style | 0)).join(',');
     if (sig === _mkListSig && list.childElementCount) return;
     _mkListSig = sig;
     const act = document.activeElement;
@@ -129,14 +208,17 @@
       co.textContent = 'R' + m.region + ' (' + m.lx + ',' + m.ly + ')' + (m.plane ? ' p' + m.plane : '');
       const del = document.createElement('button'); del.className = 'mk-del'; del.innerHTML = '&times;'; del.title = 'Delete';
       del.addEventListener('click', () => mkDelete(m));
-      row.appendChild(sw); row.appendChild(sw2); row.appendChild(lbl); row.appendChild(co); row.appendChild(del);
+      const st = document.createElement('button'); st.className = 'pet-chip'; st.textContent = MK_STYLES[m.style | 0] || MK_STYLES[0]; st.title = 'Click to change how the tile is drawn';
+      st.style.flex = '0 0 auto';
+      st.addEventListener('click', () => mkCycleStyle(m));
+      row.appendChild(sw); row.appendChild(sw2); row.appendChild(lbl); if (bridge() && bridge().markerSetStyle) row.appendChild(st); row.appendChild(co); row.appendChild(del);
       list.appendChild(row);
       if (focusKey === key) { lbl.focus(); try { lbl.setSelectionRange(caret, caret); } catch (e) {} }
     });
   }
   function mkExport() {
     const payload = { v: 1, m: markerList.map(x => [x.region, x.lx, x.ly, x.plane, mkParseColor(x.color), x.label || '',
-                                                    x.color2 ? mkParseColor(x.color2) : 0]) };
+                                                    x.color2 ? mkParseColor(x.color2) : 0, x.style | 0]) };
     let code;
     try { code = 'RTXM1:' + btoa(unescape(encodeURIComponent(JSON.stringify(payload)))); } catch (e) { code = JSON.stringify(payload); }
     const ta = $('mk_share'); if (ta) { ta.value = code; ta.focus(); ta.select(); }
@@ -151,13 +233,14 @@
       obj = JSON.parse(json);
     } catch (e) { obj = null; }
     let rows = [];
-    if (obj && Array.isArray(obj.m)) rows = obj.m.map(a => ({ region: a[0] | 0, lx: a[1] | 0, ly: a[2] | 0, plane: a[3] | 0, color: (a[4] | 0) || 0x46E0C0, label: a[5] || '', color2: a[6] | 0 }));
+    if (obj && Array.isArray(obj.m)) rows = obj.m.map(a => ({ region: a[0] | 0, lx: a[1] | 0, ly: a[2] | 0, plane: a[3] | 0, color: (a[4] | 0) || 0x46E0C0, label: a[5] || '', color2: a[6] | 0, style: a.length > 7 ? a[7] | 0 : -1 }));
     else if (Array.isArray(obj)) rows = obj.map(a => ({ region: a.region | 0, lx: a.lx | 0, ly: a.ly | 0, plane: a.plane | 0, color: mkParseColor(a.color), label: a.label || '' }));
     if (!rows.length) { ta.value = '(nothing to import)'; return; }
     const pid = myPid();
     rows.forEach(r => { try {
       bridge().markerAdd(pid, r.region, r.lx, r.ly, r.plane, r.color, r.label);
       if (r.color2) bridge().markerSetColor(pid, r.region, r.lx, r.ly, r.plane, r.color, r.color2);
+      if (r.style >= 0 && bridge().markerSetStyle) bridge().markerSetStyle(pid, r.region, r.lx, r.ly, r.plane, r.style);   // a code from before styles keeps the default
     } catch (e) {} });
     fetchMarkers(true); pushOverlay(); ta.value = '';
   }
@@ -173,11 +256,27 @@
     const wrap = document.createElement('div'); wrap.id = 'mkWrap'; wrap.className = 'ov-wrap';
     wrap.appendChild(ovToggleRow('mk_show', 'Show markers', 'Draw your tile markers into the game\'s 3D view'));
 
+    if (bridge() && bridge().menuMarkRows) {
+      const row = ovToggleRow('mk_menu', 'Right-click Mark tile', 'Adds Mark tile, or Unmark tile, under Walk here');
+      row.classList.toggle('on', mkMenuOn());
+      row.addEventListener('click', () => { prefSet('rtxMarkMenu', mkMenuOn() ? '0' : '1'); row.classList.toggle('on', mkMenuOn()); mkMenuTick(); });
+      wrap.appendChild(row);
+    }
+
     wrap.appendChild(mkGrp('Keys'));
     wrap.appendChild(mkKbRow('Add tile at cursor', 'mark'));
     wrap.appendChild(mkKbRow('Delete tile at cursor', 'remove'));
     const dcl = document.createElement('div'); dcl.className = 'mk-grp'; dcl.textContent = 'Default marker colour'; wrap.appendChild(dcl);
     wrap.appendChild(mkPalette('mk_defpal', col => { markerKb.color = col; saveMarkerKb(); paintDefPal(); }));
+
+    if (bridge() && bridge().markerSetStyle) {
+      wrap.appendChild(mkGrp('New markers are drawn'));
+      wrap.appendChild(mkChoiceRow('mk_defstyle', MK_STYLES, () => markerKb.style | 0, i => { markerKb.style = i; }));
+      wrap.appendChild(mkGrp('Outline thickness'));
+      wrap.appendChild(mkChoiceRow('mk_width', ['1', '2', '3', '4', '5'], () => (markerKb.width | 0) - 1, i => { markerKb.width = i + 1; }));
+      wrap.appendChild(mkGrp('Label size'));
+      wrap.appendChild(mkChoiceRow('mk_lblpx', ['Small', 'Medium', 'Large', 'Huge'], () => [12, 14, 18, 24].indexOf(markerKb.labelPx | 0), i => { markerKb.labelPx = [12, 14, 18, 24][i]; }));
+    }
 
     const lg = mkGrp('Markers'); lg.id = 'mk_lgrp'; wrap.appendChild(lg);
     const list = document.createElement('div'); list.className = 'mk-list'; list.id = 'mk_list'; wrap.appendChild(list);
@@ -196,6 +295,6 @@
     paintDefPal(); paintKbKeys(); paintMarkerList();
   }
 
-Object.assign(window, { fetchMarkers, loadMarkerKb, markersActive, mkHex, mkParseColor, paintKbKeys, saveMarkerKb });
+Object.assign(window, { mkMenuTick, mkMenuClick, fetchMarkers, loadMarkerKb, markersActive, mkHex, mkParseColor, paintKbKeys, saveMarkerKb });
 registerTab({ id: 'markers', render: renderMarkers });
 })();

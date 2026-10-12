@@ -8,7 +8,7 @@ namespace rtx::menu {
 
 inline constexpr wchar_t kSectionPrefix[] = L"Local\\RuneToolsXMenu_v1_";
 inline constexpr std::uint32_t kMagic   = 0x554E454D;   // 'MENU'
-inline constexpr std::uint32_t kVersion = 11;           // rows of our own: hideRows, hideClick*
+inline constexpr std::uint32_t kVersion = 12;           // rows of our own: hideRows, markRows, hideClick*
 
 inline constexpr std::uint32_t kPromoSrcNone       = 0;
 inline constexpr std::uint32_t kPromoSrcLearned    = 1;
@@ -54,7 +54,10 @@ struct Entry {
     std::int32_t  type;                 // kType*; -1 unknown
 };
 
-inline constexpr std::int32_t kHideClickShow = 0x100;
+inline constexpr std::int32_t kHideClickShow = 0x100;   // the row offered the opposite: "Show", "Unmark tile"
+inline constexpr std::int32_t kHideClickTile = 0x200;   // a tile row: hideClickActor holds (tile y << 32) | tile x
+inline constexpr std::int32_t kHideClickCustom = 0x400; // "Customize tile" on a marked tile
+inline constexpr int kMaxMarkTiles = 512;
 
 inline constexpr std::uint32_t kFlagHooked = 1u << 0;
 // Set when a reorder was withheld because the live records did not pass the structural check
@@ -98,6 +101,12 @@ struct Share {
     volatile std::uint32_t hideClickSeq;    // bumped after the two fields below are written
     std::int32_t           hideClickKind;   // kTypeNpc / kTypePlayer, | kHideClickShow on a "Show" row
     std::uint64_t          hideClickActor;
+
+    // A "Mark tile" row under "Walk here". The launcher lists the tiles already marked on the
+    // player's level, as (x << 16) | y: one of those gets "Unmark tile" and "Customize tile".
+    volatile std::uint32_t markRows;        // launcher -> companion
+    volatile std::uint32_t markCount;
+    std::uint32_t          markTiles[kMaxMarkTiles];
 };
 
 template <std::size_t N>

@@ -674,6 +674,7 @@
   .scene-trow .namet { display: flex; align-items: center; min-width: 0; }
 
   .ov-wrap { display: flex; flex-direction: column; padding: 6px 12px 6px 4px; gap: 2px; overflow-y: auto; flex: 1; min-height: 0; }
+  .ov-wrap > * { flex-shrink: 0; }   /* a long panel scrolls; its rows are not squeezed to fit */
   .ov-row { display: flex; align-items: center; justify-content: space-between; padding: 10px 12px; border-radius: 8px; transition: background 140ms, opacity 140ms; }
   .ov-row[role=button] { cursor: pointer; }
   .ov-row[role=button]:hover { background: var(--bg-elev); }
