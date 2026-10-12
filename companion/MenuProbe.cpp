@@ -239,6 +239,7 @@ constexpr std::int32_t  kPromoted = 1000;
 constexpr std::int32_t  kDemotedIface = 1007;   // interface demoted class: the only one with a proven promoted partner
 
 bool EntryTag(std::uint64_t rec, std::uint64_t& tag, std::int32_t& prio);
+bool OwnRowClass(std::uint64_t tag);
 int RuleOrder(std::uint64_t begin, int n, const int* rank, const bool* fixedSlot, int* order);
 
 rtx::menu::Share* MapShare() {
@@ -1055,13 +1056,15 @@ void RecordCheck(std::uint64_t mgr) {
         std::uint64_t obj = 0;
         std::uint32_t hdr[4] = { 0, 0, 0, 0 };
         if (!Rd(rec, &obj, 8) || !obj || !Rd(obj, hdr, sizeof(hdr)) || !hdr[2]) continue;   // mid-teardown rows are not judged
+        std::uint64_t tag = 0;
+        std::int32_t prio = 0, ord = -1;
+        const bool tagged = EntryTag(rec, tag, prio);
+        if (tagged && OwnRowClass(tag)) continue;   // a row we added says nothing about the game's layout
         ++g_rowsSeen;
         char verb[rtx::menu::kVerbLen];
         bool hp = false;
         if (ReadEastl(obj + kObjVerb, verb, sizeof(verb), &hp) > 0) ++g_rowsVerb;
-        std::uint64_t tag = 0;
-        std::int32_t prio = 0, ord = -1;
-        if (EntryTag(rec, tag, prio) && tag > g_base && tag < g_modEnd && prio >= 0 && prio < 5000 && Rd(tag + 0x44, &ord, 4) && ord >= 0 && ord < 32) ++g_rowsTag;
+        if (tagged && tag > g_base && tag < g_modEnd && prio >= 0 && prio < 5000 && Rd(tag + 0x44, &ord, 4) && ord >= 0 && ord < 32) ++g_rowsTag;
         else g_lastBadOrd = ord;
     }
     if (g_rowsSeen < 10) return;
@@ -1220,6 +1223,7 @@ RowClass g_rowClass[kRowClasses] = { { {}, &g_rowCall[0], kRowAction, rtx::menu:
                                      { {}, &g_rowCall[4], kRowAction, rtx::menu::kTypeGround, 0 }, { {}, &g_rowCall[5], kRowAction, rtx::menu::kTypeGround, 0 },
                                      { {}, &g_rowCall[6], kRowAction, rtx::menu::kTypeGround, 0 } };
 constexpr std::uint64_t kClassAction = 0x40;
+bool OwnRowClass(std::uint64_t tag) { return tag >= (std::uint64_t)&g_rowClass[0] && tag <= (std::uint64_t)&g_rowClass[kRowClasses - 1]; }
 constexpr std::int32_t kActionWalk = 23;        // the class of "Walk here"; its row's third and fourth ints are the tile
 
 typedef void(__fastcall* AddRow_t)(std::uint64_t mgr, const char* verb, const char* target, std::uint64_t cursor, std::uint64_t cls, std::uint64_t actorRef,

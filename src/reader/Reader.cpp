@@ -13259,6 +13259,12 @@ void health_live(HCtx& c, rtx::health::Run& run) {
             bool in = false;
             for (std::size_t p = j.find(v); p != std::string::npos && !in; p = j.find(v, p + 1)) in = p + v.size() < j.size() && (j[p + v.size()] == ',' || j[p + v.size()] == '}');
             if (!in) { ok = false; why = "not a value of enum " + std::to_string(e); }
+        } else if (check.rfind("follower", 0) == 0 && x != -1 && x != 0) {   // what follows the player: a pouch on the game's list, or a pet's item
+            const int e = std::atoi(check.c_str() + 8);
+            const std::string j = rtx::cache::EnumJson(e), v = ":" + std::to_string(x);
+            bool in = false;
+            for (std::size_t p = j.find(v); p != std::string::npos && !in; p = j.find(v, p + 1)) in = p + v.size() < j.size() && (j[p + v.size()] == ',' || j[p + v.size()] == '}');
+            if (!in && rtx::cache::ItemName((int)x).empty()) { ok = false; why = "not on the pouch list (enum " + std::to_string(e) + ") and not an item"; }
         } else if (check == "lpmax") {
             long long con = -1;
             for (const auto& s : SampleAll()) if (s.pid == c.pid && s.skills.size() > 3) con = s.skills[3].real;

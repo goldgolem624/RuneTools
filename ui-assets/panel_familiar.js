@@ -3,6 +3,7 @@
 
   let famData = null, famFetching = false, famSig = '';
   const FAM_NAMES = {};   // pouch item id -> cache name (memoised)
+  let famPouches = null;  // the items that summon a familiar
   async function fetchFamiliar() {
     if (!bridge() || famFetching) return; famFetching = true;
     try {
@@ -11,6 +12,9 @@
       const vb = await readVarbitValues([19034, 27403, 6055, 6054, 27747, 27749, 27750]);
       let items = null; try { items = JSON.parse(await rtxData.raw('state.container', 530)); } catch (e) {}
       let pouch = vp[pouchVp] | 0; if (pouch <= 0 || pouch >= 0x7FFFFFFF) pouch = 0;
+      // the var holds whatever follows you, a pet included: a familiar is an item on the game's own pouch list
+      if (!famPouches) { try { const e = JSON.parse(await rtxData.raw('cache.enumInfo', 1277) || 'null'); if (e) famPouches = new Set(Object.values(e).map(v => v | 0)); } catch (e) {} }
+      if (pouch && famPouches && famPouches.size && !famPouches.has(pouch)) pouch = 0;
       if (pouch && FAM_NAMES[pouch] === undefined) {
         try { FAM_NAMES[pouch] = (JSON.parse(await rtxData.raw('cache.itemInfo', pouch)).name) || ('Item #' + pouch); }
         catch (e) { FAM_NAMES[pouch] = 'Item #' + pouch; }

@@ -56,7 +56,7 @@ inline constexpr std::uint32_t kOptions      = 0x535D0;   // client options
 struct Entry { const char* name; std::uint32_t off; const char* rule; const char* features; };
 inline constexpr Entry kTable[] = {
     { "ClientClock",  kClientClock,  "kOffClientClock", "Tick timers, buff timers" },
-    { "Fps",          kFps,          nullptr,           "Player State FPS" },
+    { "Fps",          kFps,          "md::kFps",        "Player State FPS" },
     { "Configs",      kConfigs,      "md::kConfigs",      "Update check" },
     { "Display",      kDisplay,      "md::kDisplay",      "Update check" },
     { "Tracker",      kTracker,      "md::kTracker",      "Trackers (unsurfaced)" },
@@ -66,7 +66,7 @@ inline constexpr Entry kTable[] = {
     { "MapMgr",       kMapMgr,       "md::kMapMgr",       "Map base, loading, zone events" },
     { "InputReport",  kInputReport,  "md::kInputReport",  "Idle timer" },
     { "Connection",   kConnection,   "md::kConnection",   "Packet events" },
-    { "VarWatch",     kVarWatch,     nullptr,           "Update check" },   // the var ops read it past the rule window
+    { "VarWatch",     kVarWatch,     "md::kVarWatch",   "Update check" },
     { "WalkMgr",      kWalkMgr,      nullptr,           "Walk marker" },
     { "FriendsChat",  kFriendsChat,  "md::kFriendsChat",  "Update check" },
     { "ArrowMgr",     kArrowMgr,     nullptr,           "Engine markers, clue scan" },

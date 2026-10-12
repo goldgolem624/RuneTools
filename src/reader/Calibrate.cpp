@@ -26,7 +26,8 @@ namespace {
 // is set for a reference rule: an offset a compiled table carries, reported against that value and
 // never applied (the reader's own offsets take theirs through Use()).
 // `wrap`: the handler is a component setter wrapper and the shape sits in the callback it hands on.
-struct Rule { const char* name; const char* op; const char* head; std::uint32_t lo, hi; int nth; std::uint32_t compiled = 0; bool wrap = false; const char* what = nullptr; };
+// `span`: how far into the handler the instruction is looked for, for a handler that reads its field late.
+struct Rule { const char* name; const char* op; const char* head; std::uint32_t lo, hi; int nth; std::uint32_t compiled = 0; bool wrap = false; const char* what = nullptr; std::uint32_t span = 0x140; };
 constexpr std::uint32_t kMdLo = 0x18000, kMdHi = 0x60000, kInLo = 0x1000, kInHi = 0x10000;
 // The varp hash map sits inside the player var store: derived from md::kVarpMgr, never pinned alone.
 constexpr std::uint32_t kVarpHashFromMgr = rtx::md::kVarpHashFromMgr;
@@ -71,7 +72,7 @@ const Rule kRules[] = {
     { "md::kCountry",      "PLAYERCOUNTRY",                    "8B 91",    kMdLo, kMdHi, 0, rtx::md::kCountry },        // mov edx,[rcx+disp]
     { "md::kWorldInfo",    "REBOOTTIMER",                      "48 8B 81", kMdLo, kMdHi, 0, rtx::md::kWorldInfo },
     { "md::kFps",          "FPS_STATS",                        "F3 44 0F 2C 89", 0x100, 0x2000, 0, rtx::md::kFps },   // cvttss2si r9d,[rcx+disp]
-    { "md::kVarWatch",     "popvar",                           "49 8B 9E", kMdLo, kMdHi, 0, rtx::md::kVarWatch },      // mov rbx,[r14+disp]
+    { "md::kVarWatch",     "popvar",                           "49 8B 9E", kMdLo, kMdHi, 0, rtx::md::kVarWatch, false, nullptr, 0x280 },   // mov rbx,[r14+disp], after the var is looked up
     // references: offsets written out in the reader and the companion
     { "dbMgr",             "DB_FIND_GET",                      "48 8B B1", kMdLo, kMdHi, 0, 0x19980, false, "ScriptRunner" },
     { "dbOther",           "DB_LISTALL",                       "48 8B 89", kMdLo, kMdHi, 0, 0x198C0, false, "DbDatabase" },
@@ -174,7 +175,7 @@ int ParseHex(const char* pat, std::uint8_t* out, int cap) {
     return n;
 }
 
-// The instruction of shape `head` + disp32 in the first 0x140 bytes of the handler, never past
+// The instruction of shape `head` + disp32 in the first `span` bytes of the handler, never past
 // `endRva` (the next handler), with the displacement in range; `nth` skips earlier matches. 0 when
 // absent, or when a later match reads a different displacement (`ambiguous`): a guess would read
 // the wrong field with no sign of it, where a rule that finds nothing is reported and keeps the
@@ -185,7 +186,7 @@ std::uint32_t FindDisp(const Pe& pe, std::uint32_t handlerRva, std::uint32_t end
     const bool headRex = (head[0] & 0xF0) == 0x40;
     const std::uint8_t* p = pe.base + pe.textRaw + (handlerRva - pe.textRva);
     std::size_t len = pe.textSize - (handlerRva - pe.textRva);
-    if (len > 0x140) len = 0x140;
+    if (len > r.span) len = r.span;
     if (endRva > handlerRva && endRva - handlerRva < len) len = endRva - handlerRva;
     int seen = 0; bool have = false; std::uint32_t got = 0;
     for (std::size_t i = 0; i + hn + 4 <= len; ++i) {
