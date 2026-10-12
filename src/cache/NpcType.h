@@ -21,6 +21,7 @@ struct NpcDef {
     int                      varp   = -1;
     int                      varbit = -1;
     std::vector<int>         transform_to;  // varbit/varp morph targets
+    int                      pet_struct = -1;     // opcode 249 param kParamPetStruct: the pet's own record, absent = -1
 };
 
 // stop_op: 0 clean, 1..255 that opcode is unknown, kStop* (InputStream.h) the record did not end the way a

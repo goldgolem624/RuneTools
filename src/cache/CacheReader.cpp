@@ -816,6 +816,7 @@ NpcMeta GetNpc(int npc_id) {
             auto bytes = index->ReadFile(cur >> 7, cur & 0x7f);
             if (bytes.empty()) break;
             NpcDef def = DecodeNpc(cur, std::move(bytes));
+            if (cur == npc_id) meta.pet = def.pet_struct >= 0;
             if (meta.name.empty() && !def.name.empty()) meta.id = cur;   // this def supplies the name/model
             if (meta.name.empty())     meta.name = def.name;
             if (meta.combat_level < 0) meta.combat_level = def.combat_level;

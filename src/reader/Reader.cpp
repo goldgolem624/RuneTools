@@ -11955,8 +11955,8 @@ void health_scene(HCtx& c, rtx::health::Run& run) {
     if (!c.inWorld || !c.worker) return;
     std::vector<std::pair<std::uint64_t, std::uint64_t>> secs; scene_secs(c, secs);
     std::map<int, int> types;
-    int npcs = 0, npcNamed = 0, players = 0, playersOk = 0, motionOk = 0, motionN = 0, combatN = 0, combatOk = 0, combatStale = 0, ovN = 0, ovOk = 0;
-    int fxN = 0, fxOk = 0; std::string npcBad, fxBad, playerBad, combatBad;
+    int npcs = 0, npcNamed = 0, npcOwnName = 0, npcRenamed = 0, players = 0, playersOk = 0, motionOk = 0, motionN = 0, combatN = 0, combatOk = 0, combatStale = 0, ovN = 0, ovOk = 0;
+    int fxN = 0, fxOk = 0; std::string npcBad, npcOther, fxBad, playerBad, combatBad;
     const int cycleNow = (int)rpm<std::uint32_t>(h, c.root + kOffClientClock).value_or(0);
     int curOk = 0, curMorphed = 0, curBadN = 0; std::string curBad;
     int visN = 0, visOk = 0; std::string visBad;
@@ -12008,16 +12008,25 @@ void health_scene(HCtx& c, rtx::health::Run& run) {
                     match = la.size() > k && la.compare(la.size() - k, k, ca, 0, k) == 0;
                 }
             }
-            if (match || live.empty()) ++npcNamed;
-            else if (npcBad.size() < 80) npcBad += " " + std::to_string(cfg) + "='" + sec_name(h, sec) + "'";
+            bool curAgrees = false;
             {   // the current type id against the morph evaluation of the base id
                 const int cur = rpm<std::int32_t>(h, sec + rtx::scn::kNpcCur).value_or(-2);
                 bool hid = false;
                 const rtx::cache::NpcMeta rm = resolve_npc(h, c.root, cfg, &hid);
                 if (cur != cfg) ++curMorphed;
-                if (hid ? cur == -1 : cur == (rm.id >= 0 ? rm.id : cfg)) ++curOk;
+                curAgrees = hid ? cur == -1 : cur == (rm.id >= 0 ? rm.id : cfg);
+                if (curAgrees) ++curOk;
                 else if (curBadN < 4) { curBad += " " + std::to_string(cfg) + "->" + std::to_string(cur); ++curBadN; }
             }
+            // A pet carries the name its owner gave it. The cache marks pets, so that is no moved
+            // field when the second id field confirms the config id and the buffer holds a
+            // well-formed display name; a moved buffer reads bytes that are no name, or an internal one.
+            const std::string shown = sec_name(h, sec);
+            const bool renamed = !match && !live.empty() && m.pet && curAgrees && utf8_name(shown) && shown.find('_') == std::string::npos;
+            if (match) ++npcOwnName;
+            if (match || live.empty()) ++npcNamed;
+            else if (renamed) { ++npcRenamed; if (npcOther.size() < 80) npcOther += " " + std::to_string(cfg) + " " + m.name + "='" + shown + "'"; }
+            else if (npcBad.size() < 80) npcBad += " " + std::to_string(cfg) + "='" + shown + "'";
             const int lp = rpm<std::int32_t>(h, sec + rtx::scn::kLpCur).value_or(-1), lpMax = rpm<std::int32_t>(h, sec + rtx::scn::kLpMax).value_or(-1);
             const int target = rpm<std::int32_t>(h, sec + rtx::scn::kNpcTarget).value_or(-2);
             std::string sp; int bar = -1; actor_overhead_json(h, sec, sp, bar);
@@ -12092,10 +12101,15 @@ void health_scene(HCtx& c, rtx::health::Run& run) {
                 "Scene panel|Overlays|Plugins scene API", "type codes in 1..5 and 10..13, a player with the local uid", "types " + hist, "scene.offsets");
     }
     {
-        const int ok = npcs == 0 ? kUnchecked : (npcNamed * 10 >= npcs * 9 ? kPass : kFail);
+        // renamed NPCs are judged apart; with none under its cache name in view the buffer itself is
+        // unproven: unchecked for a few NPCs, a break from five on
+        const int judged = npcs - npcRenamed;
+        const bool unproven = npcRenamed > 0 && npcOwnName == 0;
+        const int ok = npcs == 0 ? kUnchecked : unproven ? (npcs < 5 ? kUnchecked : kFail) : (npcNamed * 10 >= judged * 9 ? kPass : kFail);
+        const std::string other = npcRenamed ? ", " + std::to_string(npcRenamed) + " under a name of " + (npcRenamed == 1 ? "its" : "their") + " own (a pet its owner named):" + npcOther : std::string();
         run.Add(G, "scene.npcs", "NPC names", ok,
-                npcs == 0 ? "no NPCs nearby" : std::string(ok == kFail ? "MOVED: " : "") + std::to_string(npcNamed) + "/" + std::to_string(npcs) + " config ids name the live NPC" + (ok == kFail ? " (the config id at sec+" + hx(rtx::scn::kConfig) + " or the name buffer moved)" : "") + (npcBad.empty() ? "" : "; e.g." + npcBad),
-                "NPC labels|Boss info|Slayer|Plugins", "90 % named", std::to_string(npcNamed) + "/" + std::to_string(npcs), "scene.types").need = npcs == 0 ? "an NPC nearby" : "";
+                npcs == 0 ? "no NPCs nearby" : std::string(ok == kFail ? "MOVED: " : ok == kUnchecked ? "UNVERIFIED: " : "") + std::to_string(npcNamed) + "/" + std::to_string(judged) + " config ids name the live NPC" + other + (ok == kFail ? " (the config id at sec+" + hx(rtx::scn::kConfig) + " or the name buffer moved)" : "") + (npcBad.empty() ? "" : "; e.g." + npcBad),
+                "NPC labels|Boss info|Slayer|Plugins", "90 % named", std::to_string(npcNamed) + "/" + std::to_string(judged), "scene.types").need = npcs == 0 ? "an NPC nearby" : ok == kUnchecked ? "an NPC under its own name nearby" : "";
     }
     {
         const bool curPass = curOk * 10 >= npcs * 9;

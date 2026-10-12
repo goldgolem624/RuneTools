@@ -7,7 +7,7 @@ namespace rtx::buffvars {
 // Var kinds: 1 varc (client), 2 varp (player), 3 varbit (player).
 struct Entry { std::int32_t structId; std::uint8_t kind; std::int32_t var; };
 
-// script 11073: struct -> var holding the buff's END in CLIENTCLOCK cycles (50/s). 476 entries.
+// script 11073: struct -> var holding the buff's END in CLIENTCLOCK cycles (50/s). 481 entries.
 inline constexpr Entry kTimer[] = {
     { 625, 1, 6872 },
     { 920, 1, 8258 },
@@ -485,6 +485,11 @@ inline constexpr Entry kTimer[] = {
     { 53441, 1, 8489 },
     { 53442, 1, 8490 },
     { 53443, 1, 8491 },
+    { 53505, 1, 8492 },
+    { 53506, 1, 8493 },
+    { 53537, 1, 8498 },
+    { 53538, 1, 8494 },
+    { 53542, 1, 8495 },
 };
 // Not lifted (needs script logic, left to the text fallback):
 //   31989: if ((script6667(7) == 1)) { return 0; return varclient_4982;

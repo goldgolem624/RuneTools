@@ -5,6 +5,8 @@ namespace rtx::cache {
 
 namespace {
 
+constexpr int kParamPetStruct = 5051;   // set on pets only; a familiar carries none
+
 // `misfit` receives the opcode of a length-prefixed block whose fields did not end where its length
 // said (the decoder re-aligns on the length and carries on; the sweep reports it as kStopMisfit).
 bool ReadOne(InputStream& s, NpcDef& d, int op, int& misfit) {
@@ -151,9 +153,9 @@ bool ReadOne(InputStream& s, NpcDef& d, int op, int& misfit) {
             int n = s.ReadUnsignedByte();
             for (int i = 0; i < n; ++i) {
                 bool is_str = s.ReadUnsignedByte() == 1;
-                s.Read24BitInt();
+                const int key = s.Read24BitInt();
                 if (is_str) (void)s.ReadString();
-                else        s.ReadInt();
+                else { const int v = s.ReadInt(); if (key == kParamPetStruct) d.pet_struct = v; }
             }
             return true;
         }

@@ -133,6 +133,7 @@ struct NpcMeta {
     int                      combat_level = -1;
     int                      size = 1;       // tile footprint from opcode 12; 2 = a 2x2 npc
     int                      id = -1;        // def that provided the name/model (resolved morph child for a morph base)
+    bool                     pet = false;    // the base def carries a pet record: its owner may have named it
 };
 
 NpcMeta GetNpc(int npc_id);

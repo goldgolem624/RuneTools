@@ -397,7 +397,7 @@ void CheckContent(rtx::health::Run& run, const std::string& runtimeJson, int nam
         const std::string err = Error();
         if (!err.empty()) { run.Add(G, "content.pins", "Content pins", kFail, std::string(err == "not a pins file" ? "FORMAT: " : "GONE: ") + err + ": every content row below is unchecked", "Update check", "rtx_pins.tsv", err); return; }
     }
-    struct Gen { int worst = kPass; std::vector<std::string> bad; std::set<std::string> panels; int total = 0; };
+    struct Gen { int worst = kPass; std::vector<std::string> bad; std::set<std::string> panels, badPanels; int total = 0; };
     Gen gen;
     const auto linesPtr = Lines();
     const auto& lines = *linesPtr;
@@ -425,7 +425,7 @@ void CheckContent(rtx::health::Run& run, const std::string& runtimeJson, int nam
         if (l.kind == "script" || l.kind == "archive") {   // a source of a shipped table
             ++gen.total;
             for (const auto& p : panels) gen.panels.insert(p);
-            if (fieldsOk != kPass && fieldsOk != kUnchecked) { gen.worst = kFail; gen.bad.push_back(r.text); }
+            if (fieldsOk != kPass && fieldsOk != kUnchecked) { gen.worst = kFail; gen.bad.push_back(r.text); for (const auto& p : panels) gen.badPanels.insert(p); }
             else if (fieldsOk == kUnchecked && gen.worst == kPass) gen.worst = kUnchecked;
         }
         for (const auto& p : panels) {
@@ -493,7 +493,8 @@ void CheckContent(rtx::health::Run& run, const std::string& runtimeJson, int nam
     // the tool runs again
     if (gen.total) {
         std::string feats;
-        for (const auto& p : gen.panels) feats += (feats.empty() ? "" : "|") + p;
+        // a changed source touches the panels its own table feeds, not every generated table's
+        for (const auto& p : gen.badPanels.empty() ? gen.panels : gen.badPanels) feats += (feats.empty() ? "" : "|") + p;
         std::string d;
         if (gen.worst == kUnchecked) d = "cache not readable";
         else if (gen.bad.empty()) d = std::to_string(gen.total) + " source scripts and archives unchanged since the tables were built";
