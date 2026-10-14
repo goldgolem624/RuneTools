@@ -153,16 +153,19 @@
   const npI8 = v => ((v & 0xFF) << 24 >> 24);
   const npNum = v => Number(v).toLocaleString('en-US');
   const npPos = v => '@(' + ((v >> 4) & 7) + ',' + (v & 7) + ')';   // zone-local position byte
-  // Item encoding shared by the container packets: [itemId+1: u24 BE][qty u8, or 0xFF then u32 BE][variant byte if flags&2].
-  function npReadItem(b, p, flags) {
+  // Item encoding shared by the container packets: [itemId+1: u24 BE][qty u8, or 0xFF then u32 BE][item vars if flags&2:
+  // a count byte, then count x (key u16 BE, value i32 BE)]. An update skips qty and vars for an empty slot; a full
+  // container (full = true) carries them on every slot, empty ones too.
+  function npReadItem(b, p, flags, full) {
     if (p + 3 > b.length) return null;
     const item1 = (b[p] << 16) | (b[p + 1] << 8) | b[p + 2]; p += 3;
-    if (item1 === 0) return { p: p, item: -1, qty: 0 };
+    if (item1 === 0 && !full) return { p: p, item: -1, qty: 0, vars: 0 };
     if (p >= b.length) return null;
     let qty = b[p++];
     if (qty === 0xFF) { if (p + 4 > b.length) return null; qty = npU32(b, p); p += 4; }
-    if (flags & 2) { if (p < b.length) p++; }
-    return { p: p, item: item1 - 1, qty: qty };
+    let vars = 0;
+    if (flags & 2) { if (p >= b.length) return null; vars = b[p++]; if (p + 6 * vars > b.length) return null; p += 6 * vars; }
+    return { p: p, item: item1 - 1, qty: item1 === 0 ? 0 : qty, vars: vars };
   }
   // Zone sub-packet body lengths (sub id -> bytes; -1 = one length byte then the body) and the top-level names of the same bodies.
   const NP_ZONE_SUB = { 0: 6, 1: 11, 2: 14, 3: 5, 4: 10, 5: 21, 6: 8, 7: -1, 8: -1, 9: 8, 10: 4, 11: 11, 12: 2, 13: 7, 14: -1, 15: 20, 16: 28, 17: 29 };
@@ -192,7 +195,7 @@
       const cont = npU16(b, 0), flags = b[2], count = npU16(b, 3);
       let p = 5, filled = 0; const slots = [];
       for (let slot = 0; slot < count; slot++) {
-        const it = npReadItem(b, p, flags); if (!it) break; p = it.p;
+        const it = npReadItem(b, p, flags, true); if (!it) break; p = it.p;
         if (it.item < 0) continue;
         filled++;
         if (slots.length < 24) slots.push('#' + slot + ' ' + npItemName(it.item) + ' x' + npNum(it.qty));

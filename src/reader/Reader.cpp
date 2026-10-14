@@ -3378,6 +3378,25 @@ void ev_tracker_ids(std::string& o, const TrackerDefs* trk, int g, int r, int c)
     if (c >= 0 && c < (int)d.cols.size()) { std::snprintf(t, sizeof(t), ",\"columnId\":%d", d.cols[(std::size_t)c]); o += t; }
 }
 
+// Item vars on a container slot, read when the container's flags have bit 1: a count byte, then that
+// many [key u16 BE][value i32 BE]. Appends ,"vars":[[key,value],...] to `out` when there are any.
+// False when the payload ends inside them. Same layout in the full and the update handler.
+static bool ev_item_vars(const std::uint8_t* b, std::uint32_t n, std::uint32_t& p, int flags, std::string& out) {
+    if (!(flags & 2)) return true;
+    if (p >= n) return false;
+    const int nv = b[p++];
+    if (!nv) return true;
+    if (p + 6u * (std::uint32_t)nv > n) return false;
+    out += ",\"vars\":[";
+    for (int v = 0; v < nv; ++v, p += 6) {
+        char t[48];
+        std::snprintf(t, sizeof(t), "%s[%u,%d]", v ? "," : "", (unsigned)((b[p] << 8) | b[p + 1]), (int)ev_u32be(b + p + 2));
+        out += t;
+    }
+    out += "]";
+    return true;
+}
+
 bool ev_decode(std::string& o, int op, const std::uint8_t* b, std::uint32_t n, int len, const TrackerDefs* trk = nullptr) {
     char t[128];
     {   // zone item bodies; a body without a decoder is tagged with its sub id instead of raw
@@ -3397,14 +3416,14 @@ bool ev_decode(std::string& o, int op, const std::uint8_t* b, std::uint32_t n, i
                       sk, sk < 29 ? kEvSkills[sk] : "", level, xp);
         o += t; return true;
     }
-    case rtx::sops::kContainerUpdate: {   // [container: u16 BE][flags: u8] then per slot [slot smart][itemId+1: u24 BE][qty u8 | 0xFF u32 BE][variant if flags&2]
+    case rtx::sops::kContainerUpdate: {   // [container: u16 BE][flags: u8] then per slot [slot smart][itemId+1: u24 BE]; a non-empty slot adds [qty u8 | 0xFF u32 BE][item vars if flags&2]
         if (n < 3) return false;
         std::uint32_t p = 0;
         const int cont = (b[0] << 8) | b[1]; p = 2;
         const int flags = b[p++];
         std::snprintf(t, sizeof(t), "\"kind\":\"container_update\",\"container\":%d,\"flags\":%d,\"slots\":[", cont, flags);
         o += t;
-        bool first = true; int count = 0; bool partial = false;
+        bool first = true; int count = 0; bool partial = false; std::string vars;
         while (p < n && count < 64) {
             int slot;
             if (b[p] < 0x80) { slot = b[p]; p += 1; }
@@ -3416,11 +3435,11 @@ bool ev_decode(std::string& o, int op, const std::uint8_t* b, std::uint32_t n, i
                 if (p >= n) { partial = true; break; }
                 qty = b[p++];
                 if (qty == 0xFF) { if (p + 4 > n) { partial = true; break; } qty = ev_u32be(b + p); p += 4; }
-                if (flags & 2) { if (p < n) p++; }
+                if (!ev_item_vars(b, n, p, flags, vars)) { partial = true; break; }
                 item = (int)item1 - 1;
             }
-            std::snprintf(t, sizeof(t), "%s{\"slot\":%d,\"item\":%d,\"qty\":%u}", first ? "" : ",", slot, item, qty);
-            o += t; first = false; ++count;
+            std::snprintf(t, sizeof(t), "%s{\"slot\":%d,\"item\":%d,\"qty\":%u", first ? "" : ",", slot, item, qty);
+            o += t; o += vars; o += "}"; vars.clear(); first = false; ++count;
         }
         o += "],\"partial\":"; o += (partial || (std::uint32_t)len > n) ? "true" : "false";
         return true;
@@ -3582,22 +3601,25 @@ bool ev_decode(std::string& o, int op, const std::uint8_t* b, std::uint32_t n, i
         std::snprintf(t, sizeof(t), "\"kind\":\"varc_set\",\"id\":%d,\"value\":%lld,\"long\":true", b[8] | (b[9] << 8), (long long)(((std::uint64_t)hi << 32) | lo));
         o += t; return true;
     }
-    case rtx::sops::kContainerFull: {  // [container: u16 BE][flags: u8][count: u16 BE] then count x [itemId+1: u24 BE][qty u8 | 0xFF u32 BE][variant if flags&2]; slot = running index; flags&1 = another player's
+    case rtx::sops::kContainerFull: {  // [container: u16 BE][flags: u8][count: u16 BE] then count x [itemId+1: u24 BE][qty u8 | 0xFF u32 BE][item vars if flags&2]; every slot, empty ones too, carries the qty and vars fields; slot = running index; flags&1 = another player's
         if (n < 5) return false;
         const int cont = (b[0] << 8) | b[1], flags = b[2], count = (b[3] << 8) | b[4];
         std::uint32_t p = 5;
         std::snprintf(t, sizeof(t), "\"kind\":\"container_full\",\"container\":%d,\"flags\":%d,\"other\":%s,\"count\":%d,\"slots\":[", cont, flags, (flags & 1) ? "true" : "false", count);
         o += t;
-        bool first = true, partial = false; int emitted = 0;
+        bool first = true, partial = false; int emitted = 0; std::string vars;
         for (int slot = 0; slot < count; ++slot) {
             if (p + 3 > n) { partial = true; break; }
             const std::uint32_t item1 = ((std::uint32_t)b[p] << 16) | ((std::uint32_t)b[p + 1] << 8) | b[p + 2]; p += 3;
-            if (item1 == 0) continue;
             if (p >= n) { partial = true; break; }
             std::uint32_t qty = b[p++];
             if (qty == 0xFF) { if (p + 4 > n) { partial = true; break; } qty = ev_u32be(b + p); p += 4; }
-            if (flags & 2) { if (p < n) p++; }
-            if (emitted < 512) { std::snprintf(t, sizeof(t), "%s{\"slot\":%d,\"item\":%d,\"qty\":%u}", first ? "" : ",", slot, (int)item1 - 1, qty); o += t; first = false; ++emitted; }
+            if (!ev_item_vars(b, n, p, flags, vars)) { partial = true; break; }
+            if (item1 != 0 && emitted < 512) {
+                std::snprintf(t, sizeof(t), "%s{\"slot\":%d,\"item\":%d,\"qty\":%u", first ? "" : ",", slot, (int)item1 - 1, qty);
+                o += t; o += vars; o += "}"; first = false; ++emitted;
+            }
+            vars.clear();
         }
         o += "],\"partial\":"; o += (partial || (std::uint32_t)len > n) ? "true" : "false";
         return true;
@@ -8890,6 +8912,9 @@ static bool comp_int_param(HANDLE h, std::uint64_t comp, int key, int& out) {
     }
     return false;
 }
+// The stack script's last arm: a buff struct that names its own stack var in this param, as a var
+// reference (a varbit when the top byte is 1, else a varp). Newer buffs use it in place of a case.
+constexpr int kParamBuffStackVar = 9486;
 // Value of a var named by a BuffVars entry (1 varc, 2 varp, 3 varbit). false when unreadable.
 static bool buff_var_value(HANDLE h, std::uint64_t root, const rtx::buffvars::Entry& e, int& out) {
     switch (e.kind) {
@@ -9053,6 +9078,14 @@ std::string BuffsJson(std::uint32_t pid) {
                            : ((kindStr[0] == '\0' || (knd & 1)) ? parse_buff_secs(timer) : 0);
             long long count = -1; bool haveCount = false;
             if (const auto* ce = rtx::buffvars::FindCount(structId)) { int cv = 0; if (buff_var_value(h, *root, *ce, cv)) { count = cv; haveCount = true; } }
+            else {
+                int ref = -1, cv = 0;
+                if (rtx::cache::StructIntParam(structId, kParamBuffStackVar, ref) && ref != -1) {
+                    const bool bit = (ref >> 24) == 1;
+                    const rtx::buffvars::Entry own{ structId, (std::uint8_t)(bit ? 3 : 2), bit ? (ref & 0xFFFFFF) : ref };
+                    if (buff_var_value(h, *root, own, cv)) { count = cv; haveCount = true; }
+                }
+            }
             out += first ? "" : ","; first = false;
             out += "{\"sprite\":" + std::to_string(itemBased ? 0 : sprite) +
                    ",\"item\":"   + std::to_string(itemBased ? item : 0) +
@@ -11307,9 +11340,10 @@ void health_calibration(HCtx& c, rtx::health::Run& run) {
     }
     // compiled copies the companion and the scene code still carry, against every offset the reader
     // applies: a pair that differs means the reader adopted a moved store the companion still reads
-    // at the old place
+    // at the old place. Built on every run: the scene's player data offset is the attached client's
+    // own, and a table kept from an earlier run would hold another client's.
     {
-        static const struct { const char* name; std::uint32_t copy; const std::uint32_t* live; } kPairs[] = {
+        const struct { const char* name; std::uint32_t copy; const std::uint32_t* live; } kPairs[] = {
             { "status", rtx::md::kStatus, &kOffStatus }, { "player data", (std::uint32_t)kScnPlayerData, &kOffAccount },
             { "world", rtx::md::kWorld, &kOffWorld }, { "containers", rtx::md::kContainers, &kOffInvData },
             { "chat store", rtx::md::kChatStore, &kOffChatStore }, { "clan settings", rtx::md::kClanSettings, &kOffClanSettings },
@@ -12756,7 +12790,7 @@ void health_packets_live(HCtx& c, rtx::health::Run& run) {
     const int locCap = rtx::cache::MaxId("loc") > 0 ? rtx::cache::MaxId("loc") + 1 : 0;
     const int gfxCap = rtx::cache::IndexInfo(21).maxArchive >= 0 ? (rtx::cache::IndexInfo(21).maxArchive + 1) * 256 : 0;
     const int scriptCap = rtx::cache::IndexInfo(12).open ? rtx::cache::IndexInfo(12).archives : 0;
-    struct Stat { int seen = 0, decoded = 0, bad = 0; std::string first, features; bool rawOk = false; std::uint32_t lastWall = 0; std::vector<int> gaps; };
+    struct Stat { int seen = 0, decoded = 0, bad = 0, aside = 0; std::string first, features, asideWhy; bool rawOk = false; std::uint32_t lastWall = 0; std::vector<int> gaps; };
     std::map<std::string, Stat> st;
     auto nameOf = [](int op) -> const char* { for (const auto& e : rtx::sops::kExpected) if (e.op == op) return e.name; return nullptr; };
     auto featOf = [](int op) -> const char* {
@@ -12872,13 +12906,21 @@ void health_packets_live(HCtx& c, rtx::health::Run& run) {
             case rtx::sops::kTrackerGroup:
                 if (j.num("slot", -1) < 0 || j.num("slot", -1) > 32 || j.num("groupId", -1) < 0) bad(s, "slot " + j.str("slot") + " group " + j.str("groupId"));
                 break;
-            case rtx::sops::kTrackerValues: {   // every cell indexes the live group definitions
+            case rtx::sops::kTrackerValues: {
+                // The layout is judged by the record itself: every level ends on its 0xFF and the last one
+                // ends the payload. The group definitions are read now, while the ring holds minutes of
+                // records, and the rows change whenever a tracked skill or item is added or removed, so a
+                // cell outside today's definitions is counted aside, not as a broken record.
+                if (j.str("partial") == "true") { bad(s, "not consumed to its length"); break; }
                 if (!trkOk) break;
                 if (const rtx::health::JVal* cells = j.get("cells"))
                     for (const auto& cl : cells->a) {
                         const long long g = cl.num("group", -1), rw = cl.num("row", -1), col = cl.num("column", -1);
                         const bool okg = g >= 0 && g < (long long)trk.groups.size();
-                        if (!okg || rw < 0 || rw >= (long long)trk.groups[(std::size_t)g].rows.size() || col < 0 || col >= (long long)trk.groups[(std::size_t)g].cols.size()) { bad(s, "cell " + std::to_string(g) + "," + std::to_string(rw) + "," + std::to_string(col) + " outside the group definitions"); break; }
+                        if (!okg || rw < 0 || rw >= (long long)trk.groups[(std::size_t)g].rows.size() || col < 0 || col >= (long long)trk.groups[(std::size_t)g].cols.size()) {
+                            if (!s.aside++) s.asideWhy = "cell " + std::to_string(g) + "," + std::to_string(rw) + "," + std::to_string(col);
+                            break;
+                        }
                     }
                 break;
             }
@@ -12981,9 +13023,10 @@ void health_packets_live(HCtx& c, rtx::health::Run& run) {
         if (s.bad * 20 > s.seen) { ok = kFail; d = "FORMAT: " + std::to_string(pct) + " % of " + e.name + " records implausible (" + s.first + "); " + d; }
         else if (!s.rawOk && s.decoded * 4 < s.seen * 3) { ok = kWarn; d = "FORMAT: " + std::to_string(s.seen - s.decoded) + " of " + std::to_string(s.seen) + " " + e.name + " records did not decode; " + d; }
         else if (s.bad) d += " (" + s.first + ")";
+        if (s.aside) d += "; " + std::to_string(s.aside) + " outside the trackers shown now (" + s.asideWhy + "), from before a tracker change";
         run.Add(G, std::string("pkt.live.") + e.name, std::string("Live: ") + e.name, ok, d, s.features, "< 5 % implausible", std::to_string(s.bad) + "/" + std::to_string(s.seen), "pkt.opcodes");
         run.Fact(std::string("op.") + e.name + ".live", std::to_string(s.seen) + "/" + std::to_string(s.decoded) + "/" + std::to_string(s.bad));
-        s.seen = 0;
+        s.seen = 0; s.aside = 0;
     }
     if (!rows) run.Add(G, "pkt.live", "Live layouts", kUnchecked, "fewer than 20 records of any expected opcode in the ring (" + std::to_string(records) + " seen)", kFeat, "", "", "pkt.events").need = "a few minutes in the world with skilling, containers and movement";
 }

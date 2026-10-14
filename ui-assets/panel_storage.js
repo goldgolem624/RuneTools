@@ -68,7 +68,11 @@
     nexus:  { container: 953 },   // Necromancy nexus: Bone/Miasma/Flesh/Spirit rune + Ectoplasm (generic container read)
     brooch: { container: 891 },   // Brooch of the Gods: decorated/exquisite urns + effigies (generic container read)
     money:  { container: 623 },   // Money pouch: Coins (995) split across slots; total = remainder gp + billions*1e9
-    sandy:  { vb: [['Sandy Sand', 61090]] },  // Sandy Sand currency: count lives in varbit 61090 (no container; item 61835 is the icon)
+    // Seasonal currencies: each count lives in a varbit (no container). Names, icons and varbits are the
+    // game's own currency registry rows: Sandy sand 61090 (icon 61835), Spooky tokens 56081 (icon 50890),
+    // Spring tokens 55169 (icon 51395), Christmas spirit 54788 and Egg points 55275. The last two have no item in
+    // their row, only a sprite (19607 and 33616), drawn through STOR_SPRITE.
+    sandy:  { vb: [['Sandy Sand', 61090], ['Spooky tokens', 56081], ['Spring tokens', 55169], ['Christmas spirit', 54788], ['Egg points', 55275]] },
     // Fenmoor totem deposit pile (varp 13668), confirmed in game.
     totem:  { vb: [['Petrified roots', 61968, 63888, ''], ['Petrified bark', 61969, 63889, ''],
                    ['Petrified logs', 61970, 63890, '']] }
@@ -89,10 +93,27 @@
     'Cosmic rune': 564, 'Chaos rune': 562, 'Nature rune': 561, 'Law rune': 563, 'Death rune': 560, 'Astral rune': 9075,
     'Blood rune': 565, 'Soul rune': 566, 'Wrath rune': 21773, 'Time rune': 58450,
     'Small pouch': 5509, 'Medium pouch': 5510, 'Large pouch': 5512, 'Giant pouch': 5514, 'Expansive pouch': 58451,
-    'Coins': 995, 'Sandy Sand': 61835,
+    'Coins': 995, 'Sandy Sand': 61835, 'Spooky tokens': 50890, 'Spring tokens': 51395,
     'Easy clue': 42006, 'Medium clue': 42007, 'Hard clue': 42008, 'Elite clue': 42009, 'Master clue': 42010,
     'Easy casket': 42001, 'Medium casket': 42002, 'Hard casket': 42003, 'Elite casket': 42004, 'Master casket': 42005
   };
+  // Rows whose icon is a sprite rather than an item: name -> sprite id.
+  const STOR_SPRITE = { 'Christmas spirit': 19607, 'Egg points': 33616 };
+  const storSprites = {};        // sprite id -> url, '' while loading, 'x' when it has no image
+  function storSpriteInto(ico, gid, onNone) {
+    const have = storSprites[gid];
+    if (have && have !== 'x') { setIconBg(ico, have); return; }
+    if (have === 'x' || !bridge() || !bridge().sprite) { onNone(); return; }
+    ico.dataset.spr = String(gid);
+    if (have === '') return;      // already loading: the first request fills every waiting cell
+    storSprites[gid] = '';
+    (async () => {
+      let url = '';
+      try { url = await bridge().sprite(gid, 44); } catch (e) {}
+      storSprites[gid] = url || 'x';
+      document.querySelectorAll('.stor-cell .bank-icon[data-spr="' + gid + '"]').forEach(n => { if (url) setIconBg(n, url); else { n.className = 'stor-tn'; n.textContent = n.dataset.name || ''; } });
+    })();
+  }
   const AMMO_TYPE = {
     1: 'Abyssalbane arrow', 2: 'Abyssalbane bolt', 3: 'Adamant arrow', 4: 'Adamant bolts', 5: 'Adamant brutal', 6: 'Araxyte arrow',
     7: 'Ascendri bolts', 8: 'Ascendri bolts (e)', 9: 'Ascension bolts', 10: 'Bakriminel bolts', 11: 'Barbed bolts', 12: 'Basiliskbane arrow',
@@ -383,7 +404,7 @@
     add('Clue carrier', d && d.clue); many('Rune pouch', d && d.rune); many('Quiver', d && d.quiver);
     add('Nexus', d && d.nexus); add('Brooch of the Gods', d && d.brooch); add('Money pouch', d && d.money);
     add('Currency pouch', d && d.currency);
-    add('Sandy Sand', d && d.sandy);
+    add('Seasonal currencies', d && d.sandy);
     add('Totem deposit pile', d && d.totem);
     add('Passage of the abyss', d && d.passage);
     const boxItems = (b) => b.items || [];
@@ -399,6 +420,10 @@
       const cell = document.createElement('div'); cell.className = 'bank-cell stor-cell';
       cell.dataset.tip = name + '\n' + count.toLocaleString() + (icap ? ' / ' + icap : '') + (extra ? '\n' + extra : '') + (src ? '\n' + src : '');  // -> #global-tip
       if (url) { const ico = document.createElement('div'); ico.className = 'bank-icon'; ico.dataset.itemId = String(id); setIconBg(ico, url); cell.appendChild(ico); }
+      else if (STOR_SPRITE[name]) {
+        const ico = document.createElement('div'); ico.className = 'bank-icon'; ico.dataset.name = name; cell.appendChild(ico);
+        storSpriteInto(ico, STOR_SPRITE[name], () => { ico.className = 'stor-tn'; ico.textContent = name; });
+      }
       else { const tn = document.createElement('div'); tn.className = 'stor-tn'; tn.textContent = name; cell.appendChild(tn); }
       const fa = fmtAmt(count);
       const amt = document.createElement('span'); amt.className = 'bank-amt' + (fa.c ? ' ' + fa.c : ''); amt.textContent = fa.t || count; cell.appendChild(amt);
