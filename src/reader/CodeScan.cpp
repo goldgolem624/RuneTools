@@ -1,3 +1,4 @@
+#include "../../companion/PacketRefTable.h"
 #include "CodeScan.h"
 #include "Calibrate.h"
 #include "Pins.h"
@@ -635,35 +636,41 @@ void Check(const std::wstring& exePath, rtx::health::Run& run) {
             run.Fact("anchor.tick.global", Hex(g));
             if (!g || !InWritableData(I, g)) { ok = kFail; d += "; the tick owner global is not decoded"; Word("FORMAT", d); }
         } else if (nm == "scene-blank") {
-            const std::uint8_t* b = Bytes(I, fn + 0x266, 1);
-            const int op = b ? *b : -1;
-            run.Fact("sig.scene-blank.jcc", Hex((std::uint32_t)op));
-            if (op != 0x74 && op != 0x75) { ok = kFail; d += "; byte at +0x266 is " + Hex((std::uint32_t)op) + ", not a Jcc"; Word("FORMAT", d); }
+            const std::uint8_t* b = Bytes(I, fn, 0x800);
+            const int off = b ? rtx::sig::SceneSwitch(b, 0x800) : -1;
+            run.Fact("sig.scene-blank.jcc", off >= 0 ? "+" + Hex((std::uint32_t)off) + "=" + Hex((std::uint32_t)b[off]) : std::string("none"));
+            if (off < 0) { ok = kFail; d += "; the scene switch (test al,al ; jcc ; cmp byte ; je far after a vtable call) is not in the function once"; Word("FORMAT", d); }
+            else d += ", switch at +" + Hex((std::uint32_t)off);
         } else if (nm == "menu-clear") {
             // the targets vector the left-click lift walks: end at +10, begin at +20 of the hit
             const std::uint32_t end = U32(I, at + 10), begin = U32(I, at + 20);
             run.Fact("sig.menu-clear.disp", Hex(begin) + "," + Hex(end));
             exp = "targets vector " + Hex(kMenuTargetsBegin) + "/" + Hex(kMenuTargetsEnd);
-            if (begin != kMenuTargetsBegin || end != kMenuTargetsEnd) { ok = kWarn; d += "; targets vector disp " + Hex(kMenuTargetsBegin) + "/" + Hex(kMenuTargetsEnd) + " compiled, " + Hex(begin) + "/" + Hex(end) + " in the hit"; Word("MOVED", d); }
-            else d += ", targets vector " + Hex(begin) + "/" + Hex(end);
+            // the menu probe takes the vector from this hit when end follows begin: a move is a fact then
+            if (end != begin + 8) { ok = kWarn; d += "; targets vector " + Hex(begin) + "/" + Hex(end) + " in the hit is no begin/end pair, the compiled " + Hex(kMenuTargetsBegin) + "/" + Hex(kMenuTargetsEnd) + " in use"; Word("FORMAT", d); }
+            else d += ", targets vector " + Hex(begin) + "/" + Hex(end) + (begin != kMenuTargetsBegin ? " (compiled " + Hex(kMenuTargetsBegin) + "/" + Hex(kMenuTargetsEnd) + ", the hit's in use)" : "");
         } else if (nm == "menu-exec") {
             const std::uint32_t disp = U32(I, at + 15);   // cmp dword [rax+status],0x28
             run.Fact("sig.menu-exec.disp", Hex(disp));
             exp = "status " + Hex(rtx::md::kStatus);
-            if (disp != rtx::md::kStatus) { ok = kWarn; d += "; status compare reads MainData+" + Hex(disp) + ", compiled " + Hex(rtx::md::kStatus); Word("MOVED", d); }
-            else d += ", status " + Hex(disp);
+            // the companion and the reader read the state through the kOffStatus rule: a move is a fact,
+            // the hit and the rule naming different fields is not
+            std::uint32_t rule = 0;
+            for (const auto& f : rtx::calib::Results()) if (std::strcmp(f.name, "kOffStatus") == 0) rule = f.found;
+            if (rule && disp != rule) { ok = kWarn; d += "; status compare reads MainData+" + Hex(disp) + ", the rule names " + Hex(rule); Word("MOVED", d); }
+            else d += ", status " + Hex(disp) + (disp != rtx::md::kStatus ? " (compiled " + Hex(rtx::md::kStatus) + ", the rule's in use)" : "");
         } else if (nm == "menu-init") {
             const std::uint32_t disp = U32(I, at + 35);   // mov rdx,[rax+language]
             run.Fact("sig.menu-init.disp", Hex(disp));
             exp = "language " + Hex(rtx::md::kLanguage);
-            if (disp != rtx::md::kLanguage) { ok = kWarn; d += "; language index at MainData+" + Hex(disp) + ", compiled " + Hex(rtx::md::kLanguage); Word("MOVED", d); }
-            else d += ", language " + Hex(disp);
+            // the menu hooks never read the language index themselves: a move is a fact
+            d += ", language " + Hex(disp) + (disp != rtx::md::kLanguage ? " (compiled " + Hex(rtx::md::kLanguage) + ", not read by the hooks)" : "");
         } else if (nm == "player-display") {
             const std::uint32_t disp = U32(I, at + 3);    // mov rax,[rcx+field]
             run.Fact("sig.player-display.disp", Hex(disp));
             exp = "actor field " + Hex(kPlayerDisplayField);
-            if (disp != kPlayerDisplayField) { ok = kWarn; d += "; actor field at +" + Hex(disp) + ", compiled " + Hex(kPlayerDisplayField); Word("MOVED", d); }
-            else d += ", actor field " + Hex(disp);
+            // the pattern leaves this byte open and the hook never reads the field: a move is a fact
+            d += ", actor field " + Hex(disp) + (disp != kPlayerDisplayField ? " (compiled " + Hex(kPlayerDisplayField) + ", not read by the hook)" : "");
         } else if (nm == "menu-snap") {
             // the left-click slot assigns in the snapshot body, found as the companion finds them
             const std::uint8_t* body = Bytes(I, where, rtx::sig::kMenuSnapSpan + 12);
@@ -687,19 +694,19 @@ void Check(const std::wstring& exePath, rtx::health::Run& run) {
             exp = "manager " + Hex(rtx::md::kArrowMgr);
             if (!disp) { ok = kFail; d += "; the arrow manager load is not there"; Word("GONE", d); }
             else if (arrowSite.ok && disp != arrowSite.arrow) { ok = kFail; d += "; arrow manager at MainData+" + Hex(disp) + ", the frame call site names " + Hex(arrowSite.arrow); Word("MOVED", d); }
-            else if (disp != rtx::md::kArrowMgr) { ok = kWarn; d += "; arrow manager at MainData+" + Hex(disp) + ", compiled " + Hex(rtx::md::kArrowMgr); Word("MOVED", d); }
-            else d += ", manager MainData+" + Hex(disp);
+            // the markers and the reader take the manager from the frame call site, which agrees
+            else d += ", manager MainData+" + Hex(disp) + (disp != rtx::md::kArrowMgr ? " (compiled " + Hex(rtx::md::kArrowMgr) + ", the frame site's in use)" : "");
         } else if (nm == "trail-message") {
             auto mgr = FindNear(I, at + (std::uint32_t)s.len, 0xA0 - s.len, PatternOf(rtx::sig::kTrailManager, sizeof(rtx::sig::kTrailManager) / sizeof(int)));
             const std::uint32_t disp = mgr ? U32(I, mgr + 3) : 0;
             run.Fact("markers.trailMgr", Hex(disp));
             if (!mgr) { ok = kFail; d += "; the trail manager load is not there"; Word("GONE", d); }
             else if (arrowSite.ok && disp != arrowSite.trail) { ok = kFail; d += "; trail manager at MainData+" + Hex(disp) + ", the frame call site names " + Hex(arrowSite.trail); Word("MOVED", d); }
-            else if (disp != rtx::md::kTrailMgr) { ok = kWarn; d += "; trail manager at MainData+" + Hex(disp) + ", compiled " + Hex(rtx::md::kTrailMgr); Word("MOVED", d); }
-            else d += ", manager MainData+" + Hex(disp);
+            else d += ", manager MainData+" + Hex(disp) + (disp != rtx::md::kTrailMgr ? " (compiled " + Hex(rtx::md::kTrailMgr) + ", the frame site's in use)" : "");
         } else if (nm == "arrow-frame") {
             run.Fact("markers.slotSize", std::to_string(arrowSite.slot));
-            if (arrowSite.slot != rtx::sig::kArrowSlotSize) { ok = kWarn; d += "; manager slots are " + std::to_string(arrowSite.slot) + " bytes, the markers know " + std::to_string(rtx::sig::kArrowSlotSize) + " (markers off, the frame hook stays)"; Word("FORMAT", d); }
+            if (arrowSite.slot != 8 && arrowSite.slot != 16) { ok = kWarn; d += "; manager slots are " + std::to_string(arrowSite.slot) + " bytes, the markers know 8 and 16 (markers off, the frame hook stays)"; Word("FORMAT", d); }
+            else d += ", " + std::to_string(arrowSite.slot) + "-byte slots";
             auto r = FindNear(I, where, 0x200, PatternOf(rtx::sig::kArrowRefresh, sizeof(rtx::sig::kArrowRefresh) / sizeof(int)));
             std::uint32_t t = 0;
             if (r) {
@@ -722,7 +729,8 @@ void Check(const std::wstring& exePath, rtx::health::Run& run) {
             run.Fact("sig.sound-synth.disp", Hex(ctx));
             if (!synthRva) { ok = kFail; d += "; the play call after it is gone"; Word("GONE", d); }
             else d += ", play routine " + Hex(synthRva);
-            if (ctx != rtx::md::kSoundCtx) { if (ok == kPass) ok = kWarn; d += "; sound context at MainData+" + Hex(ctx) + ", compiled " + Hex(rtx::md::kSoundCtx); Word("MOVED", d); }
+            // the sound hook calls the play routine and never reads the context field: a move is a fact
+            if (ctx != rtx::md::kSoundCtx) d += ", sound context MainData+" + Hex(ctx) + " (compiled " + Hex(rtx::md::kSoundCtx) + ", not read by the hook)";
         } else if (nm == "framer") {
             framerRva = at;
         }
@@ -756,34 +764,42 @@ void Check(const std::wstring& exePath, rtx::health::Run& run) {
                 d = "opcodes 0.." + Hex((std::uint32_t)bound) + ", table global " + Hex(tbl);
                 const DescTable dt = ReadDescTable(I, tbl);
                 if (dt.ok) { run.Fact("packets.descriptors", std::to_string(dt.count)); got += ", " + std::to_string(dt.count) + " descriptors"; }
-                if (bound != rtx::sops::kOpMax) { ok = kFail; d += "; compiled bound " + Hex((std::uint32_t)rtx::sops::kOpMax) + " (opcodes reshuffled: re-pin ServerOps.h)"; Word("FORMAT", d); }
+                if (bound != rtx::sops::kOpMax) d += "; the reference build bounds 0.." + Hex((std::uint32_t)rtx::sops::kOpMax) + " (packets go by identity, PacketIds.h)";
                 if (!dt.ok) { if (ok == kPass) ok = kWarn; d += "; the table global is not an inline-buffer vector (begin != self+0x28)"; Word("FORMAT", d); }
-                else if ((int)dt.count != bound + 1) { ok = kFail; d += "; descriptor vector holds " + std::to_string(dt.count) + ", compiled bound " + Hex((std::uint32_t)rtx::sops::kOpMax); Word("FORMAT", d); }
+                else if ((int)dt.count != bound + 1) { ok = kFail; d += "; descriptor vector holds " + std::to_string(dt.count) + ", the framer bounds 0.." + Hex((std::uint32_t)bound); Word("FORMAT", d); }
                 else d += ", " + std::to_string(dt.count) + " descriptors";
                 if (tbl == kCompiledOpTable) d += " (compiled)";
                 else if (pinned == tbl) d += " (pinned for this exe)";
-                else { if (ok == kPass) ok = kWarn; d += pinned ? "; the pinned " + Hex(pinned) + " is stale" : "; not the compiled " + Hex(kCompiledOpTable) + ": packet reads fall back to a scan"; Word("MOVED", d); }
+                else if (pinned) { if (ok == kPass) ok = kWarn; d += "; the pinned " + Hex(pinned) + " is stale"; Word("MOVED", d); }
+                else d += " (read from the framer)";
             }
         }
-        run.Add(G, "code.packets", "Packet framer bound and table", ok, d, "Packet decoders|Server opcodes|Events channel", "max " + Hex((std::uint32_t)rtx::sops::kOpMax), got, "code.sig.framer");
+        run.Add(G, "code.packets", "Packet framer bound and table", ok, d, "Packet decoders|Server opcodes|Events channel", "a bound equal to the table", got, "code.sig.framer");
         // the lengths on disk against the compiled expectations
         if (tblRva) {
             const std::map<int, int> lens = StaticPacketLengths(I, tblRva, FunctionOf(I, framerRva));
+            // the reference build's packets found in this exe (PacketIds.h): every expected packet is
+            // looked up at the opcode it carries here
+            std::vector<rtx::pktid::Row> live; std::string pwhy;
+            const bool idOk = rtx::pktid::Table(I.file.data(), I.file.size(), live, &pwhy);
+            const rtx::pktid::Carried cy = idOk ? rtx::pktid::Carry(rtx::pktid::kRef, rtx::pktid::kRefCount, live) : rtx::pktid::Carried{};
+            auto liveOf = [&](int ref) { return !idOk ? ref : (ref >= 0 && ref < 512 ? cy.toLive[ref] : -1); };
+            run.Fact("packets.identity", idOk ? std::to_string(cy.byName) + " by name, " + std::to_string(cy.byOrder) + " by order, " + std::to_string(cy.byLength) + " by length of " + std::to_string(cy.refCount) : "not read: " + pwhy);
             int ok2 = kPass; std::string d2, bad; int good = 0, total = 0;
             if (lens.size() < 100) { ok2 = kUnchecked; d2 = "UNVERIFIED: descriptor initializers not recognised (" + std::to_string(lens.size()) + " decoded)"; }
             else {
                 for (const auto& kv : lens) run.Fact("pktlen." + Hex((std::uint32_t)kv.first), std::to_string(kv.second));
                 for (const auto& e : rtx::sops::kExpected) {
                     ++total;
-                    auto it = lens.find(e.op);
+                    const int lo = liveOf(e.op);
+                    if (lo < 0) { bad += std::string(bad.empty() ? "" : "; ") + e.name + " " + Hex((std::uint32_t)e.op) + ": not found in this exe by name, order or length"; continue; }
+                    auto it = lens.find(lo);
                     if (it != lens.end() && it->second == e.len) { ++good; continue; }
-                    std::string cands;
-                    for (const auto& kv : lens) if (kv.second == e.len && kv.first != e.op) { if (!cands.empty()) cands += ","; cands += Hex((std::uint32_t)kv.first); if (cands.size() > 40) { cands += ",.."; break; } }
-                    bad += std::string(bad.empty() ? "" : "; ") + e.name + " " + Hex((std::uint32_t)e.op) + ": " +
-                           (it == lens.end() ? std::string("no initializer") : "length " + std::to_string(it->second) + ", expected " + std::to_string(e.len)) +
-                           (cands.empty() ? "" : " (that length sits on " + cands + ")");
+                    bad += std::string(bad.empty() ? "" : "; ") + e.name + " " + Hex((std::uint32_t)e.op) + " at " + Hex((std::uint32_t)lo) + ": " +
+                           (it == lens.end() ? std::string("no initializer") : "length " + std::to_string(it->second) + ", expected " + std::to_string(e.len));
                 }
-                d2 = std::to_string(lens.size()) + " descriptors decoded from the file, " + std::to_string(good) + "/" + std::to_string(total) + " expected opcodes carry their wire length";
+                d2 = std::to_string(lens.size()) + " descriptors decoded from the file, " + std::to_string(good) + "/" + std::to_string(total) + " expected packets carry their wire length" +
+                     (idOk ? " at the opcode they carry here (" + std::to_string(cy.byName) + " of " + std::to_string(cy.refCount) + " reference packets by name, " + std::to_string(cy.byOrder) + " by order, " + std::to_string(cy.byLength) + " by length)" : "; packet identity not read: " + pwhy);
                 if (good != total) { ok2 = kFail; d2 += "; " + bad; Word(good * 2 < total ? "MOVED" : "FORMAT", d2); }
             }
             run.Add(G, "code.pktlens", "Packet lengths on disk", ok2, d2, "Packet decoders|Server opcodes|Events channel|Zone events", std::to_string(total) + " lengths", std::to_string(good), "code.packets").kind =
@@ -791,7 +807,8 @@ void Check(const std::wstring& exePath, rtx::health::Run& run) {
             if (lens.size() >= 100) {   // every opcode against the compiled table, so a resized packet is named with the game closed
                 const int all = rtx::sops::kOpMax + 1; int agree = 0, missing = 0; std::string diff, none;
                 for (int op = 0; op < all; ++op) {
-                    auto it = lens.find(op);
+                    const int lo = liveOf(op);
+                    auto it = lo < 0 ? lens.end() : lens.find(lo);
                     if (it == lens.end()) { ++missing; if (none.size() < 80) none += std::string(none.empty() ? "" : ", ") + Hex((std::uint32_t)op); continue; }   // an initializer shape the decode does not read: the live row pkt.lengths covers it
                     if (it->second == rtx::sops::kAllLengths[op]) { ++agree; continue; }
                     if (diff.size() < 240) diff += std::string(diff.empty() ? "" : ", ") + Hex((std::uint32_t)op) + " " + std::to_string(it->second) + "/" + std::to_string(rtx::sops::kAllLengths[op]);
@@ -808,23 +825,31 @@ void Check(const std::wstring& exePath, rtx::health::Run& run) {
     if (I.handlers.empty()) {
         run.Add(G, "code.ops", "Engine op registrar", kFail, "GONE: registrar not recognised (no routine registers a dense run of operation numbers)", "Engine ops|Calibration|In-frame labels", "", "", "code.exe");
     } else {
+        const std::map<std::string, std::uint32_t> named = rtx::calib::OpNames();
         for (const auto& oh : rtx::sig::kOpHeads) {
+            // the handler by its code name where the name resolves, else every handler with the head
             std::vector<std::uint32_t> carriers;
+            const auto nm = oh.codeName ? named.find(oh.codeName) : named.end();
+            const bool byName = nm != named.end();
             for (const auto& kv : I.handlers) {
+                if (byName && kv.first != nm->second) continue;
                 const std::uint8_t* b = Bytes(I, kv.second, oh.len);
-                if (b && std::memcmp(b, oh.head, oh.len) == 0) carriers.push_back(kv.first);
+                if (!b || !rtx::sig::HeadMatches(b, oh)) continue;
+                if (oh.kindThree && !rtx::sig::StoresKindThree([&](std::uint64_t a, int n) { return Bytes(I, (std::uint32_t)a, (std::size_t)n); }, kv.second)) continue;
+                carriers.push_back(kv.first);
             }
             int ok = kPass; std::string d;
-            const bool atNumber = std::find(carriers.begin(), carriers.end(), oh.op) != carriers.end();
-            if (carriers.size() == 1 && atNumber) d = "op " + std::to_string(oh.op);
-            else if (carriers.empty()) { ok = kFail; d = "GONE: no handler starts with this head (op " + std::to_string(oh.op) + " changed)"; }
-            else if (!atNumber) { ok = kFail; d = "MOVED: head now carried by op " + std::to_string(carriers[0]) + ", compiled " + std::to_string(oh.op); }
-            else { ok = kWarn; d = "NEW: " + std::to_string(carriers.size()) + " ops share this head"; }
+            if (carriers.size() == 1) d = "op " + std::to_string(carriers[0]) + (byName ? std::string(" (") + oh.codeName + " by its code)" : std::string(" (the one handler with this head)")) +
+                                          (carriers[0] != oh.op ? "; " + std::to_string(oh.op) + " on 950-1" : std::string());
+            else if (carriers.empty()) { ok = kFail; d = byName ? std::string("FORMAT: ") + oh.codeName + " no longer starts with this head"
+                                                         : oh.kindThree ? "GONE: no handler starts with this head and keeps a position slot in place; the feature is off"
+                                                                        : "GONE: no handler starts with this head (it changed); the feature is off"; }
+            else { ok = kFail; d = "NEW: " + std::to_string(carriers.size()) + " ops share this head and none is named by its code; the feature is off"; }
             if (oh.op == rtx::sig::kOpProject && ok == kPass) {
-                const std::uint32_t h = I.handlers.at(oh.op);
+                const std::uint32_t h = I.handlers.at(carriers[0]);
                 const bool k3 = FindNear(I, h, 0x90, PatternOf(rtx::sig::kOpProjectKind3, sizeof(rtx::sig::kOpProjectKind3))) != 0;
-                const bool vw = FindNear(I, h, 0x90, PatternOf(rtx::sig::kOpProjectView, sizeof(rtx::sig::kOpProjectView))) != 0;
-                if (!k3 || !vw) { ok = kFail; d += vw ? "; position kind test gone" : "; no longer reads MainData+0x199D0"; Word("FORMAT", d); }
+                const bool vw = FindNear(I, h, 0x90, { 0x48, 0x8B, 0x89, -1, -1, 0x01, 0x00 }) != 0;
+                if (!k3 || !vw) { ok = kFail; d += vw ? "; position kind test gone" : "; no longer reads the root's scene views"; Word("FORMAT", d); }
             }
             run.Fact(std::string("op.") + oh.name, carriers.empty() ? std::string("none") : std::to_string(carriers[0]));
             run.Add(G, std::string("code.op.") + oh.name, std::string("Engine op ") + oh.name, ok, d, oh.features,
@@ -944,16 +969,47 @@ void Check(const std::wstring& exePath, rtx::health::Run& run) {
                         explained += best;
                     }
                     if (!shifts.empty()) {
-                        ok = kFail;
+                        // A field with a calibration rule is read where the client's own code says, so a
+                        // move under it is followed. A rule that found nothing leaves its field compiled;
+                        // the shift names those whose compiled place is gone or now another field's. The
+                        // rows that read each field judge it (Compiled offsets, the signatures), so the
+                        // layout itself is a warning.
+                        std::map<std::string, std::uint32_t> client;
+                        for (const auto& f : rtx::calib::Results()) if (f.found) client[f.name] = f.found;
+                        for (const auto& f : rtx::calib::References()) if (f.found) client[f.name] = f.found;
+                        std::set<std::uint32_t> taken;   // where the found fields sit now
+                        for (const auto& e : rtx::md::kTable) {
+                            const auto it = e.rule ? client.find(e.rule) : client.end();
+                            if (it != client.end()) taken.insert(it->second);
+                        }
+                        int followed = 0, moved = 0;
+                        std::string lost;
+                        for (const auto& e : rtx::md::kTable) {
+                            if (!e.rule) continue;
+                            const auto it = client.find(e.rule);
+                            if (it != client.end()) { ++followed; if (it->second != e.off) ++moved; continue; }
+                            bool inShift = false;
+                            for (const auto& sh : shifts) inShift = inShift || (e.off >= sh.first.first && e.off <= sh.first.second);
+                            if (inShift && (!now.count(e.off) || taken.count(e.off))) lost += std::string(lost.empty() ? "" : ", ") + e.name;
+                        }
+                        ok = kWarn;
                         for (const auto& sh : shifts) {
+                            // the fields this delta moved: found there by their rule, or (no rule) their
+                            // displacement gone and present at the moved place, where no found field sits
                             std::string names; int n = 0;
+                            const std::uint32_t lo = sh.first.first, hi = sh.first.second;
+                            const std::int32_t delta = sh.second;
                             for (const auto& e : rtx::md::kTable) {
-                                if (e.off < sh.first.first || e.off > sh.first.second) continue;
+                                if (e.off < lo || e.off > hi) continue;
+                                const auto it = e.rule ? client.find(e.rule) : client.end();
+                                const bool movedHere = it != client.end() ? it->second == e.off + delta
+                                                                          : (!now.count(e.off) && now.count(e.off + delta) && !taken.count(e.off + delta));
+                                if (!movedHere) continue;
                                 ++n;
-                                if (n <= 6) names += std::string(names.empty() ? "" : ", ") + e.name;
+                                if (n <= 8) names += std::string(names.empty() ? "" : ", ") + e.name;
                             }
                             for (const auto& e : kRootFields) {
-                                if (e.off < sh.first.first || e.off > sh.first.second) continue;
+                                if (e.off < lo || e.off > hi || now.count(e.off) || !now.count(e.off + delta) || taken.count(e.off + delta)) continue;
                                 ++n;
                                 if (n <= 8) names += std::string(names.empty() ? "" : ", ") + e.name;
                             }
@@ -961,9 +1017,11 @@ void Check(const std::wstring& exePath, rtx::health::Run& run) {
                             std::snprintf(b, sizeof(b), "%s0x%X..0x%X moved %s0x%X", d.empty() ? "" : "; ", sh.first.first, sh.first.second,
                                           sh.second < 0 ? "-" : "+", (unsigned)(sh.second < 0 ? -sh.second : sh.second));
                             d += b;
-                            d += ", " + std::to_string(n) + " known fields affected" + (names.empty() ? std::string() : " (" + names + (n > 8 ? ", ..." : "") + ")");
+                            d += ", " + std::to_string(n) + " known fields with it" + (names.empty() ? std::string() : " (" + names + (n > 8 ? ", ..." : "") + ")");
                             run.Fact("disp.shift." + Hex(sh.first.first), (sh.second < 0 ? "-" : "+") + Hex((std::uint32_t)(sh.second < 0 ? -sh.second : sh.second)));
                         }
+                        d += "; " + std::to_string(followed) + " fields with a rule read from the client (" + std::to_string(moved) + " moved)";
+                        if (!lost.empty()) d += "; not found by their rule, compiled and likely moved: " + lost;
                         Word("MOVED", d);
                     }
                     const std::size_t unexplained = missing.size() - explained;

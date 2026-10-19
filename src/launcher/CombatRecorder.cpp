@@ -2,6 +2,7 @@
 #include "BossMechanics.h"
 #include "../reader/BuffVars.h"
 #include "../reader/Hitmarks.h"
+#include "../reader/EventZone.h"   // zone update head and items in the reference build's form
 #include "../../companion/ServerOps.h"
 
 #include <algorithm>
@@ -170,16 +171,16 @@ void NetDecoder::Decode(int op, const std::uint8_t* b, std::uint32_t n, long lon
             if (cleared_.size() > 512) for (auto it = cleared_.begin(); it != cleared_.end();) it = wallMs - it->second > 60000 ? cleared_.erase(it) : std::next(it);
         }
         return;
-    case s::kZoneUpdate: {  // 0x80 - plane, -x offset, y offset, then [sub id][body] items
-        if (n < 3) return;
-        zone(baseX_ - (int)(std::int8_t)b[1] * 8, baseY_ + (int)(std::int8_t)b[2] * 8, (0x80 - b[0]) & 0xFF);
+    case s::kZoneUpdate: {  // 0x80 - plane, -x offset, y offset, then [sub id][body] items, in the reference form
+        std::uint8_t h[3];
+        if (!rtx::evzone::zoneHead(b, n, h)) return;   // a head this build's handler was not read for: left alone
+        zone(baseX_ - (int)(std::int8_t)h[1] * 8, baseY_ + (int)(std::int8_t)h[2] * 8, (0x80 - h[0]) & 0xFF);
         std::uint32_t p = 3;
         while (p < n) {
-            const int sub = b[p++]; int len = itemLen(sub);
-            if (len == -1) { if (p >= n) break; len = b[p++]; }
-            if (len < 0 || p + (std::uint32_t)len > n) break;    // an unknown sub id or a short body ends the walk
-            item(sub, b + p, (std::uint32_t)len, wallMs, out);
-            p += (std::uint32_t)len;
+            rtx::evzone::ZoneItem it; std::uint8_t tb[96];
+            if (!rtx::evzone::zoneItem(b, n, p, it, tb, sizeof(tb))) break;   // an unknown sub or a body not read ends the walk
+            item(it.sub, it.body, it.len, wallMs, out);
+            p += 1 + it.len;
         }
         return;
     }
@@ -236,10 +237,10 @@ void NetDecoder::Decode(int op, const std::uint8_t* b, std::uint32_t n, long lon
         out.push_back(e);
         return;
     }
-    case s::kAreaSoundAbs: {    // id b2 b1 b3 b0, packed tile b7 b8 b5 b6
+    case s::kAreaSoundAbs: {    // id u32 LE, packed tile b7 b8 b5 b6
         if (n < 11) return;
         NetEv e; e.kind = NetEv::Sound; e.wallMs = wallMs;
-        e.id = (int)(((std::uint32_t)b[2] << 24) | ((std::uint32_t)b[1] << 16) | ((std::uint32_t)b[3] << 8) | b[0]);
+        e.id = (int)(((std::uint32_t)b[3] << 24) | ((std::uint32_t)b[2] << 16) | ((std::uint32_t)b[1] << 8) | b[0]);
         const std::uint32_t pk = ((std::uint32_t)b[7] << 24) | ((std::uint32_t)b[8] << 16) | ((std::uint32_t)b[5] << 8) | b[6];
         e.tile = true;
         if (pk == 0xFFFFFFFFu) e.x = e.y = e.plane = -1;

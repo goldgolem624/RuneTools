@@ -91,8 +91,10 @@
     on: function (evt, cb) {
       if (listeners[evt] && typeof cb === 'function') listeners[evt].push(cb);
     },
-    // Game events (requires state.read). kind: skill_update, container_update, runclientscript, ge_offer,
-    // run_energy, run_weight, ping, raw, gameTick; '*' for all. Batched on the host push cadence, one callback per event, capture order.
+    // Game events (requires state.read), named like the official client API's: SkillTransmit, VarTransmit,
+    // InventoryAdded/Updated/Removed, ObjStackEntityAdded/Removed/Changed, LocAdded/Removed, RunEnergyTransmit,
+    // RunWeightTransmit, GrandExchangeOfferUpdated, ServerLogic, plus RuneTools events (SpotAnimAdded,
+    // ProjectileAdded, ClientScriptRun, ...); '*' for all. Batched on the host push cadence, one callback per event, capture order.
     events: {
       on:  function (kind, cb) { if (typeof cb !== 'function') return; (eventSubs[kind] = eventSubs[kind] || []).push(cb); },
       off: function (kind, cb) { var a = eventSubs[kind]; if (!a) return; var i = a.indexOf(cb); if (i !== -1) a.splice(i, 1); }

@@ -15,6 +15,9 @@
 #include "SceneOffsets.h"
 #include "Signatures.h"
 #include "MainDataOffsets.h"
+#include "CompOffsets.h"
+#include "VarStoreCode.h"
+#include "PacketIds.h"
 #include "CodeFind.h"
 #include "SceneHover.h"
 #include "ScenePlayer.h"
@@ -36,6 +39,7 @@
 #include "GroundShare.h"
 #include "NetShare.h"       // raw inbound socket bytes
 #include "NetProbeShare.h"  // decoded server->client packets from the inbound framer
+#include "OutboundShare.h"  // decoded client->server packets from the outbound builder
 #include "EventShare.h"
 #include "ServerOps.h"
 #include "Present.h"
@@ -217,16 +221,33 @@ std::uint64_t g_rootGlobal = 0;   // address of the global; deref for the root
 std::uint32_t g_rootMethod = 0;   // 0 = unresolved, 1 = byte anchor, 2 = structural scan
 
 // ---- the root's layout, validated by anchor rather than trusted from the compiled offsets ----
-// The player var store is embedded in the root: its vtable pointer sits at md::kVarpMgr, and its
-// second hash map (the varp values) at kVarpHashFromMgr past it. A MainData shift moves the whole
-// block from +0x18D18 up by one delta (950-1 did +0x40), so when the compiled chain fails and the
-// store is found at another offset, that delta is adopted for every root field this module reads.
+// The root fields are the ones the client's own code reads (CompOffsets.h, from the calibration
+// rules at boot). The player var store is embedded in the root at coff::varpMgr; its var map is
+// where the store's own lookup reads it (VarStoreCode.h). When the chain still fails and the store
+// is found at another offset, that delta is adopted for every root field this module reads (the
+// fallback for a build whose rules found nothing).
 std::int64_t g_mdShift = 0;
-std::uint64_t OffPlayerData() { return rtx::scn::kPlayerData + g_mdShift; }
-std::uint64_t OffContainer()  { return rtx::scn::kContainer + g_mdShift; }
-std::uint64_t OffPlayers()    { return rtx::md::kPlayers + g_mdShift; }
-std::uint64_t OffStatus()     { return rtx::md::kStatus + g_mdShift; }
-std::uint64_t OffVarpMgr()    { return rtx::md::kVarpMgr + g_mdShift; }
+std::uint64_t OffPlayerData() { return rtx::coff::account + g_mdShift; }
+std::uint64_t OffContainer()  { return rtx::coff::sceneViews + g_mdShift; }
+std::uint64_t OffPlayers()    { return rtx::coff::players + g_mdShift; }
+std::uint64_t OffStatus()     { return rtx::coff::status + g_mdShift; }
+std::uint64_t OffVarpMgr()    { return rtx::coff::varpMgr + g_mdShift; }
+// The var map's bucket offset in a store of class `vt`, from the class's own lookup; 0 when it is not
+// a var store. Classes are few; the answer is kept per vtable.
+std::uint32_t StoreBuckets(std::uint64_t vt) {
+    static std::uint64_t s_vt[16]; static std::uint32_t s_b[16]; static int s_n = 0;
+    for (int i = 0; i < s_n; ++i) if (s_vt[i] == vt) return s_b[i];
+    auto read = [](std::uint64_t a, void* out, std::size_t n) {
+        if (!InModule(a) || !InModule(a + n - 1)) return false;
+        std::memcpy(out, reinterpret_cast<const void*>(a), n);
+        return true;
+    };
+    std::uint32_t b = 0, next = 0;
+    __try { if (!rtx::varcode::StoreMaps(read, vt, b, next) || next != 0x28) b = 0; }
+    __except (EXCEPTION_EXECUTE_HANDLER) { b = 0; }
+    if (s_n < 16) { s_vt[s_n] = vt; s_b[s_n] = b; ++s_n; }
+    return b;
+}
 // How many vtables in .rdata share `fn` in one slot (the four var store classes share GetVarbit).
 int VtableSlotUsers(std::uint64_t fn) {
     if (!g_imOk) return -1;
@@ -243,7 +264,9 @@ int VarStoreAt(std::uint64_t root, std::uint64_t off, int* countOut = nullptr, i
     if (!InModule(vt) || !g_imOk || !g_im.InRdata(vt)) return 0;
     const std::uint64_t slot3 = R64(vt + 24);
     if (!g_im.InText(slot3)) return 0;
-    const std::uint64_t hash = root + off + rtx::md::kVarpHashFromMgr;
+    const std::uint32_t mapAt = StoreBuckets(vt);
+    if (mapAt < 8) return 0;
+    const std::uint64_t hash = root + off + mapAt - 8;
     const std::uint64_t buckets = R64(hash + 8);
     const std::int32_t divisor = R32(hash + 0x10), count = R32(hash + 0x18);
     int score = 0;
@@ -359,9 +382,9 @@ std::uint64_t ScanRootGlobal() {
             const std::uint64_t at = FindVarStore(root, &found);
             if (at && at != OffVarpMgr()) {
                 const std::int64_t was = g_mdShift;
-                g_mdShift = (std::int64_t)at - (std::int64_t)rtx::md::kVarpMgr;
+                g_mdShift = (std::int64_t)at - (std::int64_t)rtx::coff::varpMgr;
                 if (RootGlobalValid(g_anchorGlobal, true)) {
-                    RingLog("scene root: player vars at +0x%llx, compiled +0x%x: MainData shift %+lld adopted", (unsigned long long)at, rtx::md::kVarpMgr, (long long)g_mdShift);
+                    RingLog("scene root: player vars at +0x%llx, expected +0x%x: MainData shift %+lld adopted", (unsigned long long)at, rtx::coff::varpMgr, (long long)g_mdShift);
                     g_rootMethod = 1;
                     return g_anchorGlobal;
                 }
@@ -1340,15 +1363,17 @@ void ResolveRenderHooks() {
     const bool knownBuild = rtx::scn::KnownBuild(g_base);
     std::uint64_t pRender = knownBuild ? FindVarOp(kRenderBody, sizeof(kRenderBody)) : 0;
     if (pRender) {
-        std::uint64_t spot = pRender + 0x266;
-        std::uint8_t op = R8(spot);
+        // the switch by its shape in the function, never a fixed place in it
+        const int off = rtx::sig::SceneSwitch(reinterpret_cast<const unsigned char*>(pRender), 0x800);
+        const std::uint64_t spot = off >= 0 ? pRender + (std::uint64_t)off : 0;
+        const std::uint8_t op = spot ? R8(spot) : 0;
         if (op == 0x74 || op == 0x75) {     // only ever patch a real Jcc
             g_sceneBlankAddr = spot; g_sceneBlankOrig = op;
             if (g_renderShare) g_renderShare->installed |= 4;
         }
     }
     if (!knownBuild) RingLog("hook: scene-blank REFUSED build not validated");
-    else if (pRender && !g_sceneBlankAddr) RingLog("hook: scene-blank REFUSED no Jcc at +0x266");
+    else if (pRender && !g_sceneBlankAddr) RingLog("hook: scene-blank REFUSED the scene switch not found in the render function");
     else HookLine("scene-blank", pRender, g_sceneBlankAddr != 0);
 }
 
@@ -1704,6 +1729,7 @@ static void EventRecord(std::int32_t op, std::int32_t len, const std::uint8_t* p
     if (!ev) return;
     ev->inbound++;
     if (op == kOpMessageGame) return;                         // chat ring owns message_game
+    if (op < 0 || op > 0xFF) return;                          // no reference id: nothing asks for it
     if (!((ev->mask[(op >> 5) & 7] >> (op & 31)) & 1u)) return;
     const std::uint64_t i = ev->written;
     rtx::events::Record& r = ev->recs[i % rtx::events::kMaxRecords];
@@ -1760,10 +1786,12 @@ static void NetProbeRecord(std::uint64_t conn, std::uint64_t* out) {
         s_lastRx = rx; s_lastOp = op;
         const std::uint8_t* p =
             len > 0 ? *(const std::uint8_t* const*)(conn + rtx::sops::kConnPayload) : nullptr;
+        // from here on the packet goes by its reference id (ServerOps.h numbering, PacketIds.h)
+        const std::int32_t ref = rtx::pktid::RefOf(op);
 
-        EventRecord(op, len, p);
+        EventRecord(ref, len, p);
 
-        if (op == kOpMessageGame) {
+        if (ref == kOpMessageGame) {
             rtx::netprobe::ChatRecord& c =
                 sh->chat[sh->chatWritten % rtx::netprobe::kChatRecords];
             c.tick   = GetTickCount64();
@@ -1785,7 +1813,7 @@ static void NetProbeRecord(std::uint64_t conn, std::uint64_t* out) {
         rtx::netprobe::Record& r = sh->recs[sh->written % rtx::netprobe::kMaxRecords];
         r.tick   = GetTickCount64();
         r.seq    = sh->written + 1;
-        r.opcode = op;
+        r.opcode = ref;
         r.length = len;
         r.gtick  = 0;
         std::uint32_t kept = 0;
@@ -1806,6 +1834,126 @@ static std::uint64_t* Detour_Framer(std::uint64_t conn, std::uint64_t* out) {
     return r;
 }
 
+// ---- outbound (client->server) capture at the packet builder (MakePacket) ----
+// MakePacket returns a 16-byte SharedRef<OutPacket> by hidden pointer: rcx = return slot, then the
+// three argument references. The payload is written by the caller AFTER MakePacket returns, so each
+// call records the PREVIOUS packet, whose pool block is still intact (the pool reallocates it only
+// inside this same call, after the flush). OutPacket: +0x00 opcode, +0x18 buffer.data, +0x20 buffer.pos.
+rtx::outbound::Share* g_outboundShare = nullptr;
+typedef void* (*MakePacket_t)(void* retSlot, void* descRef, void* sizeRef, void* isaacRef);
+// The game and lobby packet builders are the same OutPacket template over different pools, so the
+// prologue signature hits both. Each needs its own trampoline; both feed one capture. Up to 4 slots.
+static constexpr int kMaxBuilders = 4;
+static MakePacket_t g_origMakePacket[kMaxBuilders] = {};
+// The payload is written by the caller AFTER MakePacket returns, so we record the PREVIOUS packet on
+// the next build. To keep it alive and complete across that gap (the caller's SharedRef is released
+// when its scope ends, which would reset/free the packet) we hold our own reference and release it
+// after reading. RefCount: uses @ +0x08, weaks @ +0x0C; vtable Dispose @ +0x08, Destroy @ +0x10.
+static volatile LONG64 g_pendingObj = 0;   // OutPacket* we hold a ref to
+static volatile LONG64 g_pendingCtr = 0;   // its PacketRefCount* (to release our held ref)
+static std::uint64_t g_outHits[kMaxBuilders] = {};   // resolved builder entries (attached lazily)
+static int  g_outCount = 0;
+static bool g_outboundAttached = false;    // off by default; the toggle (share->enable) drives attach/detach
+
+static inline void RefRelease(void* counter) {   // mirror RefCount::Release
+    if (!counter) return;
+    __try {
+        if (_InterlockedDecrement((long*)((char*)counter + 0x08)) == 0) {
+            void** vt = *(void***)counter;
+            ((void (*)(void*))vt[1])(counter);                    // Dispose (vtable + 0x08)
+            if (_InterlockedDecrement((long*)((char*)counter + 0x0C)) == 0)
+                ((void (*)(void*))vt[2])(counter);                // Destroy (vtable + 0x10)
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {}
+}
+
+static void OutboundFlush() {
+    auto* sh = g_outboundShare;
+    LONG64 obj = InterlockedExchange64(&g_pendingObj, 0);
+    LONG64 ctr = InterlockedExchange64(&g_pendingCtr, 0);
+    if (!obj) return;
+    if (sh && sh->enable) {
+        sh->diag[3]++;                                                             // had a pending packet to flush
+        __try {
+            const std::uint64_t base = (std::uint64_t)obj;
+            const std::int32_t  opcode = *(const std::int32_t*)(base + 0x00);
+            const std::uint8_t* data   = *(const std::uint8_t* const*)(base + 0x18);   // buffer.data
+            // Send finalises the wire length at OutPacket+0x28 and zeroes buffer.pos (+0x20), so by the
+            // deferred read the length lives at +0x28, not pos.
+            const std::int32_t  len    = *(const std::int32_t*)(base + 0x28);          // total wire bytes (opcode + payload)
+            if (data && len > 0 && len <= 0x10000) {
+                const std::uint32_t payload = (std::uint32_t)(len - 1);                // after the opcode byte
+                rtx::outbound::Record& r = sh->recs[sh->written % rtx::outbound::kMaxRecords];
+                r.seq    = sh->written + 1;
+                r.tick   = GetTickCount64();
+                r.opcode = opcode;
+                r.length = (std::int32_t)payload;
+                std::uint32_t kept = payload < (std::uint32_t)rtx::outbound::kSnip ? payload : (std::uint32_t)rtx::outbound::kSnip;
+                if (kept) std::memcpy(r.data, data + 1, kept);
+                r.kept = kept;
+                sh->seen++;
+                ++sh->written;                                                         // publish last
+                sh->diag[0]++;
+            } else { sh->diag[4]++; sh->diag[5] = (std::uint32_t)len; }
+        } __except (EXCEPTION_EXECUTE_HANDLER) { sh->diag[4]++; }
+    }
+    RefRelease((void*)ctr);                                                        // drop our held ref
+}
+
+static inline void* MakePacketCommon(int idx, void* retSlot, void* descRef, void* sizeRef, void* isaacRef) {
+    if (g_outboundShare) g_outboundShare->diag[2]++;                               // detour fired
+    OutboundFlush();                                                               // record + release the previous
+    void* ret = g_origMakePacket[idx](retSlot, descRef, sizeRef, isaacRef);
+    __try {
+        void* ctr = *(void* const*)((const char*)retSlot + 0x00);                  // SharedRef.counter
+        void* obj = *(void* const*)((const char*)retSlot + 0x08);                  // SharedRef.object (OutPacket*)
+        if (obj && ctr) {
+            _InterlockedIncrement((long*)((char*)ctr + 0x08));                     // hold a ref until the next flush
+            g_pendingCtr = (LONG64)ctr;
+            g_pendingObj = (LONG64)obj;
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) { g_pendingObj = 0; g_pendingCtr = 0; }
+    return ret;
+}
+static void* Detour_MakePacket0(void* r, void* d, void* s, void* i) { return MakePacketCommon(0, r, d, s, i); }
+static void* Detour_MakePacket1(void* r, void* d, void* s, void* i) { return MakePacketCommon(1, r, d, s, i); }
+static void* Detour_MakePacket2(void* r, void* d, void* s, void* i) { return MakePacketCommon(2, r, d, s, i); }
+static void* Detour_MakePacket3(void* r, void* d, void* s, void* i) { return MakePacketCommon(3, r, d, s, i); }
+static void* (*const g_makePacketDetours[kMaxBuilders])(void*, void*, void*, void*) = {
+    Detour_MakePacket0, Detour_MakePacket1, Detour_MakePacket2, Detour_MakePacket3 };
+
+// Every .text match of the builder prologue, mapped to its .pdata entry (up to kMaxBuilders).
+static int FindMakePacketAll(std::uint64_t* out) {
+    auto dos = (const IMAGE_DOS_HEADER*)g_base;
+    auto nt  = (const IMAGE_NT_HEADERS*)(g_base + dos->e_lfanew);
+    auto sec = IMAGE_FIRST_SECTION(nt);
+    std::uint64_t tb = 0, ts = 0;
+    for (int s = 0; s < nt->FileHeader.NumberOfSections; ++s)
+        if (sec[s].Characteristics & IMAGE_SCN_MEM_EXECUTE) { tb = g_base + sec[s].VirtualAddress; ts = sec[s].Misc.VirtualSize; break; }
+    if (!tb || !ts) return 0;
+    const unsigned char* body = rtx::sig::kMakePacketBody;
+    const unsigned char* mask = rtx::sig::kMakePacketMask;
+    const std::size_t blen = sizeof(rtx::sig::kMakePacketBody);
+    auto& dir = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXCEPTION];
+    const RUNTIME_FUNCTION* rf = (dir.VirtualAddress && dir.Size) ? (const RUNTIME_FUNCTION*)(g_base + dir.VirtualAddress) : nullptr;
+    const std::uint32_t rfn = rf ? dir.Size / sizeof(RUNTIME_FUNCTION) : 0;
+    int n = 0;
+    __try {
+        const unsigned char* b = (const unsigned char*)tb;
+        for (std::uint64_t i = 0; i + blen < ts && n < kMaxBuilders; ++i) {
+            bool ok = true;
+            for (std::uint64_t j = 0; j < blen; ++j) if (mask[j] && b[i + j] != body[j]) { ok = false; break; }
+            if (!ok) continue;
+            std::uint64_t entry = tb + i;
+            std::uint32_t rva = (std::uint32_t)(entry - g_base);
+            for (std::uint32_t k = 0; k < rfn; ++k)
+                if (rf[k].BeginAddress <= rva && rva < rf[k].EndAddress) { entry = g_base + rf[k].BeginAddress; break; }
+            out[n++] = entry;
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return 0; }
+    return n;
+}
+
 // The wire lengths ServerOps.h compiles against the descriptors this image carries, once at boot.
 void PacketsCheck() {
     const char* F = "Chat capture|Events channel|Zone events|Var updates|GE offers|Engine markers";
@@ -1814,30 +1962,34 @@ void PacketsCheck() {
                   "UNVERIFIED: descriptor vector not found in the image, wire lengths not compared");
         return;
     }
-    char detail[600]; std::size_t at = 0; int n = 0, bad = 0;
-    auto one = [&](int op, int want, const char* name) {
+    // each packet the decoders know, at the opcode it carries in this exe (PacketIds.h)
+    const auto& P = rtx::pktid::Current();
+    char detail[600]; std::size_t at = 0; int n = 0, bad = 0, lost = 0;
+    auto one = [&](int ref, int want, const char* name) {
         ++n;
+        const int op = rtx::pktid::LiveOf(ref);
+        if (op < 0) {
+            ++lost;
+            if (at < sizeof(detail) - 64)
+                at += (std::size_t)std::snprintf(detail + at, sizeof(detail) - at, "%s%s (0x%02x on the reference build) not found in this exe", at ? "; " : "GONE: ", name, ref);
+            return;
+        }
         const int dl = rtx::codefind::ProtLength(g_im, g_prot, op);
         if (dl == want) return;
         ++bad;
         if (at < sizeof(detail) - 64)
-            at += (std::size_t)std::snprintf(detail + at, sizeof(detail) - at, "%s%s 0x%02x length %d, compiled %d", at ? "; " : "FORMAT: ", name, op, dl, want);
+            at += (std::size_t)std::snprintf(detail + at, sizeof(detail) - at, "%s%s 0x%02x length %d, expected %d", at ? "; " : "FORMAT: ", name, op, dl, want);
     };
     for (const auto& e : rtx::sops::kExpected) one(e.op, e.len, e.name);
     one(rtx::sops::kTileTrail, -2, "tile_trail");
     char exp[32], got[32];
-    std::snprintf(exp, sizeof(exp), "%d/%d", n, rtx::sops::kOpMax + 1);
-    std::snprintf(got, sizeof(got), "%d/%d", n - bad, g_prot.count);
-    if (bad) { CheckLine("packets", "FAIL", "format", exp, got, F, "", detail); return; }
-    if (g_prot.count != rtx::sops::kOpMax + 1) {
-        const bool more = g_prot.count > rtx::sops::kOpMax + 1;
-        std::snprintf(detail, sizeof(detail), "%s: %d descriptors in the image, compiled bound 0x%x; the %d known lengths agree",
-                      more ? "NEW" : "GONE", g_prot.count, rtx::sops::kOpMax, n);
-        CheckLine("packets", "OK", more ? "new" : "gone", exp, got, F, "", detail);
-        return;
-    }
-    std::snprintf(detail, sizeof(detail), "%d descriptors, %d wire lengths agree with the compiled table", g_prot.count, n);
-    CheckLine("packets", "OK", "", exp, got, F, "", detail);
+    std::snprintf(exp, sizeof(exp), "%d", n);
+    std::snprintf(got, sizeof(got), "%d/%d", n - bad - lost, g_prot.count);
+    if (bad || lost) { CheckLine("packets", "FAIL", bad ? "format" : "gone", exp, got, F, "", detail); return; }
+    if (P.ok) std::snprintf(detail, sizeof(detail), "%d descriptors; the %d known packets found by identity (%d of %d reference packets: %d by name, %d by order, %d by length) and their wire lengths agree",
+                            g_prot.count, n, P.c.byName + P.c.byOrder + P.c.byLength, P.c.refCount, P.c.byName, P.c.byOrder, P.c.byLength);
+    else std::snprintf(detail, sizeof(detail), "%d descriptors, %d wire lengths agree with the compiled numbering (packet identity not read: %s)", g_prot.count, n, P.why.c_str());
+    CheckLine("packets", "OK", P.ok ? "" : "fallback", exp, got, F, "", detail);
 }
 
 static rtx::events::Share* MapEventShare() {
@@ -1858,6 +2010,67 @@ static rtx::netprobe::Share* MapNetProbeShare() {
     if (!h) return nullptr;
     return (rtx::netprobe::Share*)MapViewOfFile(h, FILE_MAP_ALL_ACCESS, 0, 0,
                                                 sizeof(rtx::netprobe::Share));
+}
+
+static rtx::outbound::Share* MapOutboundShare() {
+    wchar_t name[rtx::ipc::kNameChars];
+    rtx::outbound::MakeSectionName(GetCurrentProcessId(), name);
+    HANDLE h = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0,
+                                  sizeof(rtx::outbound::Share), name);
+    if (!h) return nullptr;
+    return (rtx::outbound::Share*)MapViewOfFile(h, FILE_MAP_ALL_ACCESS, 0, 0,
+                                                sizeof(rtx::outbound::Share));
+}
+
+// Resolve MakePacket by signature and attach the outbound capture detour. Self-calibrating (no fixed
+// offset); a miss leaves the feature off and records a hook line. Called from ResolveNetProbe.
+void ResolveOutbound() {
+    g_outboundShare = MapOutboundShare();
+    if (!g_outboundShare) { RingLog("outbound: share map FAILED"); return; }
+    auto* os = g_outboundShare;
+    os->magic = rtx::outbound::kMagic; os->version = rtx::outbound::kVersion;
+    os->pid = GetCurrentProcessId(); os->enable = 0; os->written = 0; os->seen = 0;
+    os->flags = 0; os->builderRva = 0;
+    for (int i = 0; i < 8; ++i) os->diag[i] = 0;
+    // Resolve both outbound builders (game + lobby) but DO NOT attach: the hook is off by default and
+    // installed only when the developer panel toggles it on (share->enable), via OutboundPoll below.
+    g_outCount = FindMakePacketAll(g_outHits);
+    g_outboundAttached = false;
+    if (g_outCount <= 0) { RingLog("outbound: builder NOT FOUND (hook unavailable)"); return; }
+    os->builderRva = (std::uint32_t)(g_outHits[0] - g_base);
+    os->diag[1] = (std::uint32_t)g_outCount;
+    RingLog("outbound: builder resolved (%d site(s)) rva=0x%llx; hook OFF by default (toggle in dev panel)",
+            g_outCount, (unsigned long long)(g_outHits[0] - g_base));
+}
+
+// Attach/detach the outbound capture to match the toggle (share->enable). Called from the Worker poll
+// loop. Attaches the deferred capture to every resolved builder when first enabled; detaches when off.
+void OutboundPoll() {
+    auto* sh = g_outboundShare;
+    if (!sh || g_outCount <= 0) return;
+    const bool want = sh->enable != 0;
+    if (want == g_outboundAttached) return;
+    int done = 0;
+    DetourTransactionBegin();
+    DetourUpdateThread(GetCurrentThread());
+    for (int i = 0; i < g_outCount; ++i) {
+        if (want) {
+            g_origMakePacket[i] = (MakePacket_t)g_outHits[i];
+            if (DetourAttach(&(PVOID&)g_origMakePacket[i], (PVOID)g_makePacketDetours[i]) == NO_ERROR) ++done;
+        } else {
+            if (DetourDetach(&(PVOID&)g_origMakePacket[i], (PVOID)g_makePacketDetours[i]) == NO_ERROR) ++done;
+        }
+    }
+    const bool ok = (DetourTransactionCommit() == NO_ERROR) && done == g_outCount;
+    if (want) {
+        g_outboundAttached = ok;
+        if (ok) { sh->flags |= 1; RingLog("outbound: hook attached (%d site(s)) on toggle", g_outCount); }
+        else    { sh->flags &= ~1u; RingLog("outbound: hook attach FAILED on toggle (%d/%d)", done, g_outCount); }
+    } else {
+        // Leave any held ref in place: it is released on the packet-build thread by the first flush of
+        // the next capture session, avoiding a cross-thread Dispose from the Worker here.
+        if (ok) { g_outboundAttached = false; sh->flags &= ~1u; RingLog("outbound: hook detached on toggle"); }
+    }
 }
 
 void ResolveNetProbe() {
@@ -1897,6 +2110,8 @@ void ResolveNetProbe() {
         if (g_eventShare) g_eventShare->flags |= 1;
     }
     HookLineL("framer", lf, framerOk);
+
+    ResolveOutbound();
 }
 
 void ResolveSpecialObserver() {
@@ -2018,7 +2233,7 @@ void RootCheck() {
     static ULONGLONG s_objectSince = 0;
     const char* F = "Scene objects|Ground items|Specials|Hover outline|In-frame labels|Overhead anchors";
     char exp[24], got[24], detail[400];
-    std::snprintf(exp, sizeof(exp), "0x%x", rtx::md::kVarpMgr);
+    std::snprintf(exp, sizeof(exp), "0x%x", rtx::coff::varpMgr);
     std::snprintf(got, sizeof(got), "0x%llx", (unsigned long long)OffVarpMgr());
     const std::uint64_t global = g_rootGlobal ? g_rootGlobal : g_anchorGlobal;
     const std::uint64_t root = global ? R64(global) : 0;
@@ -2037,13 +2252,13 @@ void RootCheck() {
     if (g_rootGlobal && g_rootMethod == 1 && store) {
         if (g_mdShift) {
             if (Transition(s, 2)) {
-                std::snprintf(detail, sizeof(detail), "MOVED: player vars at 0x%llx, compiled 0x%x, adopted (shift %+lld for every root field; status %d, %d vars, store vtable shared by %d classes)",
-                              (unsigned long long)OffVarpMgr(), rtx::md::kVarpMgr, (long long)g_mdShift, status, count, shared);
+                std::snprintf(detail, sizeof(detail), "MOVED: player vars at 0x%llx, the client's code 0x%x, adopted (shift %+lld for every root field; status %d, %d vars, store vtable shared by %d classes)",
+                              (unsigned long long)OffVarpMgr(), rtx::coff::varpMgr, (long long)g_mdShift, status, count, shared);
                 CheckLine("scene-root", "OK", "moved", exp, got, F, "", detail);
             }
         } else if (Transition(s, 1)) {
             std::snprintf(detail, sizeof(detail), "player vars at 0x%x (store vtable shared by %d classes, %d vars), status %d, player data and scene view on the heap",
-                          rtx::md::kVarpMgr, shared, count, status);
+                          rtx::coff::varpMgr, shared, count, status);
             CheckLine("scene-root", "OK", "", exp, got, F, "", detail);
         }
         return;
@@ -2398,6 +2613,9 @@ DWORD WINAPI Worker(LPVOID) {
         auto nt  = (const IMAGE_NT_HEADERS*)(g_base + dos->e_lfanew);
         g_size = nt->OptionalHeader.SizeOfImage;
     }
+    // the root and script state offsets from the client's own code, before anything reads them
+    rtx::coff::Load();
+    RingLog("%s", rtx::coff::Summary().c_str());
 
     Share* sh = MapShare();
     if (!sh) return 0;
@@ -2512,6 +2730,7 @@ DWORD WINAPI Worker(LPVOID) {
         PruneInvalid();
         rtx::menuprobe::Poll();
         rtx::present::Poll();
+        OutboundPoll();                      // attach/detach the outbound hook to match the dev-panel toggle
         const float kMoveArm = 32.f * 512.f;
         const bool moved = havePos && haveScanPos &&
             (std::fabs(cpx - scanPx) > kMoveArm || std::fabs(cpy - scanPy) > kMoveArm);

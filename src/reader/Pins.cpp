@@ -200,8 +200,14 @@ PinResult Compare(const Line& l, const std::string& now) {
     if (now == "?") { r.ok = rtx::health::kUnchecked; r.text = "UNVERIFIED: " + label + ": cache not readable"; return r; }
     if (now.empty()) { r.ok = rtx::health::kFail; r.text = "GONE: " + label + " is gone (was " + Readable(l.kind, l.expect) + ")"; return r; }
     if (l.expect == "exists") return r;
-    const auto want = Fields(l.expect), got = Fields(now);
+    auto want = Fields(l.expect);
+    const auto got = Fields(now);
     std::map<std::string, std::string> gm(got.begin(), got.end());
+    if (l.kind == "script") {   // the canonical hash when both sides have it (the raw one moves with every renumbering), else the raw one
+        const bool wantC = std::any_of(want.begin(), want.end(), [](const auto& kv) { return kv.first == "c"; });
+        const char* drop = wantC && gm.count("c") ? "h" : "c";
+        want.erase(std::remove_if(want.begin(), want.end(), [&](const auto& kv) { return kv.first == drop; }), want.end());
+    }
     std::string was, is;
     int worst = rtx::health::kPass;
     for (const auto& kv : want) {
@@ -625,7 +631,7 @@ void CheckCacheFormat(rtx::health::Run& run) {
             std::string d;
             if (!gone.empty()) { ok = kFail; d = "MOVED: opcode " + gone + " gone from " + type + ": the field moved to another opcode"; }
             if (!low.empty()) { if (ok == kPass) ok = kWarn; d += (d.empty() ? "MOVED: " : "; ") + std::string("under half the baseline: ") + low; }
-            if (extraN) { if (ok == kPass) ok = kWarn; d += (d.empty() ? "NEW: " : "; ") + std::to_string(extraN) + " opcodes not in the decoder's table: " + extra; }
+            if (extraN) { if (ok == kPass) ok = kWarn; d += (d.empty() ? "NEW: " : "; ") + std::to_string(extraN) + " opcodes not in the recorded baseline: " + extra; }
             if (d.empty()) d = std::to_string(kv.second.ops.size()) + " baseline opcodes present, none new";
             run.Add(G, rid, "Opcodes: " + type, ok, d, kv.second.features, std::to_string(kv.second.ops.size()) + " opcodes", std::to_string(it->second.size()) + " opcodes");
         }

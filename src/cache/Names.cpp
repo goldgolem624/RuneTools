@@ -1050,6 +1050,30 @@ std::string Name(const std::string& kind, int id) {
     return s ? std::string(s) : std::string();
 }
 
+int Id(const std::string& kind, const std::string& name) {
+    const auto n = Current();
+    if (!n) return -1;
+    const Names::K* k = n->Kind(kind);
+    if (!k) return -1;
+    static std::mutex mu;
+    static std::shared_ptr<const Names> of;                                 // the table the index was built from
+    static std::unordered_map<std::string, std::unordered_map<std::string, int>> byKind;
+    std::lock_guard<std::mutex> lk(mu);
+    if (of != n) { of = n; byKind.clear(); }
+    auto it = byKind.find(kind);
+    if (it == byKind.end()) {
+        auto& m = byKind[kind];
+        m.reserve(k->rows.size());
+        for (const auto& r : k->rows) {
+            auto ins = m.emplace(std::string(n->pool.c_str() + r.second), r.first);
+            if (!ins.second && ins.first->second != r.first) ins.first->second = -2;   // the name is not unique in this kind
+        }
+        it = byKind.find(kind);
+    }
+    const auto f = it->second.find(name);
+    return f == it->second.end() ? -1 : f->second;
+}
+
 State Status(int wait_ms) {
     auto n = Current();
     if (wait_ms > 0) {

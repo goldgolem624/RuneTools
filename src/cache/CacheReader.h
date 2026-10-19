@@ -2,6 +2,7 @@
 
 #include "MapLocations.h"
 
+#include <cstdint>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -99,6 +100,10 @@ std::string CacheProbeUnknownOps();
 // item/npc/loc: "name=..;ops=<hash of the opcodes the record carries>;f=<hash of the fields the readers use>";
 // struct adds "h=<hash of every param>".
 std::string PinFingerprint(const std::string& kind, const std::string& key, const std::string& want);
+// script: "c=<canonical hash>;h=<raw hash>;n=<size>". c ignores the opcode renumbering each build
+// does and is there once UseScriptOperands has the client's operand widths (1 or 4 bytes by
+// opcode, 0 unregistered) and the scripts parse with them.
+void UseScriptOperands(std::vector<std::uint8_t> widths);
 // flags: the reference table's flags byte (-1 unread); exact: its decode consumed the table to the
 // last byte (false = the table layout is not the one this code expects, leftover says by how much);
 // firstFail: why the first archive that failed to decode did ("container type 4 at archive 12").
@@ -242,6 +247,9 @@ std::string MapLocNamesJson();
 std::string MapCategoriesJson();
 
 std::string MapSymbolsJson();
+
+// World tiles where a loc id (and its morph variants) is placed, from the live map cache.
+std::string LocTilesJson(int loc_id);
 
 int PanelMountComp(int group_id);
 

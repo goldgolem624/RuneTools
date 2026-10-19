@@ -3720,6 +3720,57 @@ std::string MapSymbolsJson() {
     return cached;
 }
 
+// World tiles where a loc id is placed, from the live map cache (index 5 LOCATIONS, all regions).
+// Follows the loc's morph group so a multiloc parent or any variant resolves to the same spots.
+// Result cached per id. { "tiles": [ [x,y,plane], ... ] }  (up to 64).
+std::string LocTilesJson(int loc_id) {
+    std::lock_guard<std::mutex> lk(g_mu);
+    EnsureInit();
+    static std::unordered_map<int, std::string> s_cache;
+    auto it = s_cache.find(loc_id);
+    if (it != s_cache.end()) return it->second;
+
+    // Match the id plus its forward morph variants, so a multiloc parent resolves to its spots.
+    // Inlined (no GetLocMorph: it re-locks g_mu, which we already hold).
+    std::set<int> want;
+    want.insert(loc_id);
+    if (auto* locIndex = g_store ? g_store->Get(kIndexLocations) : nullptr) {
+        auto db = locIndex->ReadFile(loc_id >> 8, loc_id & 0xff);
+        if (!db.empty()) {
+            LocDef def = DecodeLoc(loc_id, std::move(db));
+            for (int v : def.morph_variants) if (v >= 0) want.insert(v);
+        }
+    }
+
+    std::string out = "{\"tiles\":[";
+    int n = 0;
+    auto* index = g_store ? g_store->Get(kIndexMaps) : nullptr;
+    if (index && index->ready()) {
+        const auto& entries = index->ref().entries();
+        for (int archive = 0; archive < (int)entries.size() && n < 64; ++archive) {
+            if (entries[archive].valid_file_ids.empty()) continue;
+            const int rx = archive & 127, ry = archive >> 7;
+            if (rx < 0 || rx > 127 || ry < 0 || ry > 255) continue;
+            for (int file : {0, 1}) {
+                auto bytes = index->ReadFile(archive, file);
+                if (bytes.empty()) continue;
+                for (const auto& p : DecodeMapLocations(std::move(bytes))) {
+                    if (!want.count(p.id)) continue;
+                    const int gx = rx * 64 + p.x, gy = ry * 64 + p.y;
+                    if (gx < 0 || gy < 0 || gx > 65535 || gy > 65535) continue;
+                    out += (n ? "," : "");
+                    out += "[" + std::to_string(gx) + "," + std::to_string(gy) + "," + std::to_string(p.plane) + "]";
+                    if (++n >= 64) break;
+                }
+                if (n >= 64) break;
+            }
+        }
+    }
+    out += "]}";
+    s_cache[loc_id] = out;
+    return out;
+}
+
 std::string MapLocNamesJson() {
     MapSymbolsJson();
     std::lock_guard<std::mutex> lk(g_mu);
@@ -5109,6 +5160,7 @@ int DecodeInvConfig(std::vector<std::uint8_t> bytes, int& size, std::vector<int>
         probe::note(op);
         if (op == 2) size = s.ReadUnsignedShort();
         else if (op == 21) { int n = s.ReadUnsignedByte(); for (int i = 0; i < n; ++i) { items.push_back(s.Read24BitInt()); s.ReadUnsignedShort(); } }
+        else if (op == 24) {}   // a flag with no payload (9 inventories since 951-1; meaning not established)
         else return false;
         return true;
     });
@@ -5830,12 +5882,105 @@ std::string PinSpriteLocked(int id) {
     return "w=" + std::to_string(w) + ";h=" + std::to_string(h) + ";f=" + std::to_string(frames);
 }
 
+// A script is its name, its instructions (a u16 opcode, then the operand the opcode decides) and a
+// trailer: the instruction count, six u16 and the switch tables. Every update renumbers the opcodes
+// and leaves each operand byte as it was, so a raw hash changes on every script. The canonical form
+// replaces each opcode by the order it first appears in the script: a script the update only
+// renumbered keeps it. Operand widths are the client's own (UseScriptOperands); the typed constant
+// push (a type byte, then 0 an int, 1 a long, 2 a string) is the wide operation that lets the
+// most scripts parse to their last byte.
+std::vector<std::uint8_t> g_opWidth;   // by opcode: 0 not registered, 1 or 4
+int g_constOp = -2;                    // -2 not derived yet, -1 none found
+
+struct ScriptParts { const std::uint8_t* code = nullptr; std::size_t len = 0; std::uint32_t count = 0; };
+bool SplitScript(const std::vector<std::uint8_t>& b, ScriptParts& s) {
+    if (b.size() < 21) return false;
+    const std::size_t sw = ((std::size_t)b[b.size() - 2] << 8) | b[b.size() - 1];
+    if (b.size() < 2 + sw + 16 + 1) return false;
+    const std::size_t t = b.size() - 2 - sw - 16;
+    const std::uint8_t* z = (const std::uint8_t*)std::memchr(b.data(), 0, t);
+    if (!z) return false;
+    s.code = z + 1; s.len = (std::size_t)(b.data() + t - s.code);
+    s.count = ((std::uint32_t)b[t] << 24) | ((std::uint32_t)b[t + 1] << 16) | ((std::uint32_t)b[t + 2] << 8) | b[t + 3];
+    return true;
+}
+
+// Walks the instructions; with `canon`, appends the canonical form. False when they do not end
+// exactly at the trailer with the count it gives.
+bool WalkScript(const ScriptParts& s, int constOp, std::vector<std::uint8_t>* canon) {
+    std::unordered_map<std::uint16_t, std::uint16_t> order;
+    std::size_t p = 0; std::uint32_t c = 0;
+    while (p < s.len && c < s.count) {
+        if (p + 2 > s.len) return false;
+        const std::uint16_t op = (std::uint16_t)((s.code[p] << 8) | s.code[p + 1]);
+        const int w = op < g_opWidth.size() ? g_opWidth[op] : 0;
+        if (!w) return false;
+        std::size_t q = p + 2;
+        if (op == constOp) {
+            if (q >= s.len) return false;
+            const std::uint8_t type = s.code[q++];
+            if (type == 2) {
+                const void* e = std::memchr(s.code + q, 0, s.len - q);
+                if (!e) return false;
+                q = (std::size_t)((const std::uint8_t*)e - s.code) + 1;
+            } else if (type <= 1) q += type ? 8 : 4;
+            else return false;
+        } else q += (std::size_t)w;
+        if (q > s.len) return false;
+        if (canon) {
+            const std::uint16_t ord = order.emplace(op, (std::uint16_t)order.size()).first->second;
+            canon->push_back((std::uint8_t)(ord >> 8)); canon->push_back((std::uint8_t)ord);
+            canon->insert(canon->end(), s.code + p + 2, s.code + q);
+        }
+        p = q; ++c;
+    }
+    return p == s.len && c == s.count;
+}
+
+// The constant push over a sample of the scripts: the one wide operation that parses nearly all of
+// them, clearly ahead of the next.
+int ConstOpLocked(SqliteIndexFile& index) {
+    if (g_constOp != -2) return g_constOp;
+    g_constOp = -1;
+    std::vector<std::vector<std::uint8_t>> sample;
+    const auto& entries = index.ref().entries();
+    for (std::size_t a = 0; a < entries.size() && sample.size() < 1500; ++a) {
+        if (entries[a].valid_file_ids.empty()) continue;
+        auto b = index.ReadFile((int)a, 0);
+        ScriptParts s;
+        if (SplitScript(b, s) && s.count > 0) sample.push_back(std::move(b));
+    }
+    if (sample.size() < 200) return g_constOp;
+    int best = -1, bestN = 0, nextN = 0;
+    for (std::size_t op = 0; op < g_opWidth.size(); ++op) {
+        if (g_opWidth[op] != 4) continue;
+        int n = 0;
+        for (const auto& b : sample) { ScriptParts s; SplitScript(b, s); n += WalkScript(s, (int)op, nullptr) ? 1 : 0; }
+        if (n > bestN) { nextN = bestN; bestN = n; best = (int)op; }
+        else if (n > nextN) nextN = n;
+    }
+    if (best >= 0 && (std::size_t)bestN * 100 >= sample.size() * 98 && nextN * 2 < bestN) g_constOp = best;
+    rtx::log::Launcher("cache: script constant push " + (g_constOp >= 0 ? "0x" + Hex8((std::uint32_t)g_constOp).substr(4) : std::string("not found")) +
+                       " (" + std::to_string(bestN) + " of " + std::to_string(sample.size()) + " sample scripts parse, next best " + std::to_string(nextN) + ")");
+    return g_constOp;
+}
+
 std::string PinScriptLocked(int id) {
     auto* index = g_store ? g_store->Get(kIndexClientScript) : nullptr;
     if (!index || !index->ready()) return "?";
     auto bytes = index->ReadFile(id, 0);
     if (bytes.empty()) return {};
-    return "h=" + Hex8(Fnv32(bytes.data(), bytes.size())) + ";n=" + std::to_string(bytes.size());
+    std::string out;
+    ScriptParts s;
+    if (!g_opWidth.empty() && ConstOpLocked(*index) >= 0 && SplitScript(bytes, s)) {
+        const std::uint8_t* b = bytes.data();
+        std::vector<std::uint8_t> canon(b, s.code);
+        if (WalkScript(s, g_constOp, &canon)) {
+            canon.insert(canon.end(), s.code + s.len, b + bytes.size());
+            out = "c=" + Hex8(Fnv32(canon.data(), canon.size())) + ";";
+        }
+    }
+    return out + "h=" + Hex8(Fnv32(bytes.data(), bytes.size())) + ";n=" + std::to_string(bytes.size());
 }
 
 std::string PinArchiveLocked(int idx, int archive) {
@@ -5895,6 +6040,12 @@ std::string PinFingerprint(const std::string& kind, const std::string& key, cons
         return PinArchiveLocked(std::atoi(key.c_str()), std::atoi(key.c_str() + c + 1));
     }
     return "?";
+}
+
+void UseScriptOperands(std::vector<std::uint8_t> widths) {
+    std::lock_guard<std::mutex> lk(g_mu);
+    g_opWidth = std::move(widths);
+    g_constOp = -2;
 }
 
 IndexFacts IndexInfo(int index) {

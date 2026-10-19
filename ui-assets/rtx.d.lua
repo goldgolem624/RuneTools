@@ -101,7 +101,7 @@ function state.encounter() end
 ---@return table|nil  # asynchronous
 function state.hideyHoles() end
 ---@param sinceSeq? integer
----@return table|nil events  # {seq,tick,events:[{seq,t,wall,op,len,kind,...}]}
+---@return table|nil events  # {seq,tick,events:[{kind,seq,...}]}, kinds as rtx.events
 function state.events(sinceSeq) end
 ---@return table|nil  # {cutscene,inCutscene,systemUpdateTicks,membersWorld,loginReply,lobbyReply,fov,varSeq,options:[44 ints],optionsNamed:[{id,name,value,label,min,max}],windowMode,preset}
 function state.clientState() end
@@ -371,7 +371,7 @@ function settings.on(fn) end
 
 ---@class rtx.events
 local events = {}
----@param kind string  # "skill_update", "obj_add", ..., "*"
+---@param kind string  # "SkillTransmit", "VarTransmit", "ObjStackEntityAdded", ..., "*"
 ---@param fn fun(ev: table)
 ---@return fun(ev: table)
 function events.on(kind, fn) end

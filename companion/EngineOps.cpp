@@ -2,6 +2,7 @@
 #include "Signatures.h"
 #include "MainDataOffsets.h"
 #include "OpPrintsTable.h"
+#include "CompOffsets.h"
 
 #include "MarkerShare.h"
 #include "FrameShare.h"
@@ -28,12 +29,13 @@ namespace {
 constexpr std::size_t kStateSize = 0x20000;
 constexpr std::size_t kIntStack  = 0x100;    // 1000 ints
 constexpr std::size_t kIntSp     = 0x10A0;
-constexpr std::size_t kStrStack  = 0x10A8;   // 1000 entries of 0x20
-constexpr std::size_t kStrSp     = 0x8DA8;
-constexpr std::size_t kEntityRef = 0xC3B0;   // the character the state holds: reference, then the character
-constexpr std::size_t kEntityObj = 0xC3B8;
-constexpr std::size_t kOffPlayers = rtx::md::kPlayers;
-constexpr std::size_t kOffStatusByte = rtx::md::kStatus;   // 30 = in the world
+// The fields the client's own handlers read (CompOffsets.h, set at boot before any op is called).
+const std::uint32_t& kStrStack  = rtx::coff::strStack;    // 1000 entries of 0x20
+const std::uint32_t& kStrSp     = rtx::coff::strSp;
+const std::uint32_t& kEntityRef = rtx::coff::entityRef;   // the character the state holds: reference, then the character
+const std::uint32_t& kEntityObj = rtx::coff::entityObj;
+const std::uint32_t& kOffPlayers = rtx::coff::players;
+const std::uint32_t& kOffStatusByte = rtx::coff::status;  // 30 = in the world
 // The MainData shift the scene module adopted, applied to the two root fields read here.
 std::atomic<std::int64_t> g_rootShift{ 0 };
 // Status byte off the client's root: 30 is in the world. Calling the engine's own operations while
@@ -291,10 +293,10 @@ bool NamesMatchBuild(std::string& running, std::string& table, std::string& why)
         int checked = 0;
         const int bad = SpotDisagreements(checked);
         if (bad > 0 || (checked < 3 && (tableStamp == 0 || runningStamp == 0 || tableStamp != runningStamp))) {
-            Say("engine ops: the operation table is from another exe of build %s (%d of %d self-naming handlers disagree, stamp %08x, this is %08x); named operations are off until the tables are extracted again",
+            Say("engine ops: the script export is from another exe of build %s (%d of %d self-naming handlers disagree, stamp %08x, this is %08x); export not used, names from the handlers' own code",
                 running.c_str(), bad, checked, tableStamp, runningStamp);
             char w[160];
-            std::snprintf(w, sizeof(w), "op names are from another exe of build %s (%d of %d self-naming handlers disagree, stamp %08x vs %08x); named ops off", running.c_str(), bad, checked, tableStamp, runningStamp);
+            std::snprintf(w, sizeof(w), "script export from another exe of build %s (%d of %d self-naming handlers disagree, stamp %08x vs %08x); export not used", running.c_str(), bad, checked, tableStamp, runningStamp);
             why = w;
             return false;
         }
@@ -308,14 +310,14 @@ bool NamesMatchBuild(std::string& running, std::string& table, std::string& why)
         if (GetFileAttributesExW(ops.c_str(), GetFileExInfoStandard, &t) &&
             GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &v) &&
             CompareFileTime(&t.ftLastWriteTime, &v.ftLastWriteTime) >= 0) return true;
-        Say("engine ops: the operation table was not extracted from game build %s; named operations are off until the tables are extracted again",
+        Say("engine ops: the script export was written before the last extraction of build %s; export not used, names from the handlers' own code",
             running.c_str());
-        why = "the operation table was not extracted from build " + running + "; named ops off";
+        why = "the script export was written before the last extraction of build " + running + "; export not used";
         return false;
     }
-    Say("engine ops: operation names are from game build %s, this is %s; named operations are off until the tables are extracted again",
+    Say("engine ops: script export of game build %s, this is %s; export not used, names from the handlers' own code",
         table.empty() ? "(unknown)" : table.c_str(), running.empty() ? "(unknown)" : running.c_str());
-    why = "op names are from build " + (table.empty() ? std::string("(unknown)") : table) + ", this is " + (running.empty() ? std::string("(unknown)") : running) + "; named ops off";
+    why = "script export of build " + (table.empty() ? std::string("(unknown)") : table) + ", this is " + (running.empty() ? std::string("(unknown)") : running) + "; export not used";
     return false;
 }
 
@@ -444,14 +446,42 @@ namespace {
 // The projection operation, recognised by its own shape rather than trusted by number: it pops the
 // terrain flag, takes a position value from the string stack (kind 3) and reads the game view. A
 // build that changes that shape loses the feature instead of calling something else by accident.
-constexpr std::uint32_t kOpProject = rtx::sig::kOpProject;
-constexpr const auto& kProjHead = rtx::sig::kOpProjectHead;
 constexpr const auto& kProjKind3 = rtx::sig::kOpProjectKind3;          // cmp byte [rsi+0x18], 3
-constexpr const auto& kProjView = rtx::sig::kOpProjectView;   // mov rcx, [rcx+0x199d0]
+constexpr const auto& kProjView = rtx::sig::kOpProjectView;   // mov rcx, [rcx+<scene views>]
 
 bool Contains(const std::uint8_t* p, std::size_t n, const std::uint8_t* pat, std::size_t len) {
     for (std::size_t i = 0; i + len <= n; ++i) if (std::memcmp(p + i, pat, len) == 0) return true;
     return false;
+}
+
+// The handler for one of the heads in Signatures.h: by its code name when that resolves, else the one
+// handler that starts with the head (its moving field left open). Null when none or several.
+OpFn ByHead(const rtx::sig::OpHead& h) {
+    {   // the handlers are in the image's code, readable as they are
+        const auto own = [](std::uint64_t a, int) { return reinterpret_cast<const std::uint8_t*>(a); };
+        const auto fits = [&](OpFn f) {
+            return rtx::sig::HeadMatches(reinterpret_cast<const std::uint8_t*>(f), h) &&
+                   (!h.kindThree || rtx::sig::StoresKindThree(own, reinterpret_cast<std::uint64_t>(f)));
+        };
+        if (h.codeName) {
+            const auto nm = g_byName.find(h.codeName);
+            if (nm != g_byName.end()) {
+                const auto it = g_byNumber.find(nm->second);
+                if (it != g_byNumber.end() && fits(it->second)) return it->second;
+                return nullptr;
+            }
+        }
+        OpFn hit = nullptr; int n = 0;
+        for (const auto& kv : g_byNumber)
+            if (fits(kv.second)) { hit = kv.second; ++n; }
+        return n == 1 ? hit : nullptr;
+    }
+}
+// Each head looked up once: 0 unchecked, 1 found, -1 not in this build.
+OpFn g_heads[5] = {}; int g_headState[5] = {};
+OpFn Head(int i) {
+    if (!g_headState[i]) { g_heads[i] = ByHead(rtx::sig::kOpHeads[i]); g_headState[i] = g_heads[i] ? 1 : -1; }
+    return g_heads[i];
 }
 
 // Checked once and remembered: a repeated byte comparison has no place in a frame.
@@ -459,13 +489,17 @@ OpFn g_proj = nullptr; int g_projState = 0;   // 0 unchecked, 1 good, -1 not thi
 OpFn Projector() {
     if (g_projState) return g_proj;
     g_projState = -1;
-    auto it = g_byNumber.find(kOpProject);
-    if (it == g_byNumber.end()) return nullptr;
-    const auto* p = reinterpret_cast<const std::uint8_t*>(it->second);
-    if (std::memcmp(p, kProjHead, sizeof(kProjHead)) != 0) return nullptr;
+    const OpFn fn = Head(rtx::sig::kHeadProject);
+    if (!fn) return nullptr;
+    const auto* p = reinterpret_cast<const std::uint8_t*>(fn);
     if (!Contains(p, 0x90, kProjKind3, sizeof(kProjKind3))) return nullptr;
-    if (!Contains(p, 0x90, kProjView, sizeof(kProjView))) return nullptr;
-    g_proj = it->second; g_projState = 1;
+    // the game view it reads: the root's scene views, at the offset the client's code gives today
+    std::uint8_t view[sizeof(kProjView)];
+    std::memcpy(view, kProjView, 3);
+    const std::uint32_t sv = rtx::coff::sceneViews;
+    std::memcpy(view + 3, &sv, 4);
+    if (!Contains(p, 0x90, view, sizeof(view))) return nullptr;
+    g_proj = fn; g_projState = 1;
     return g_proj;
 }
 
@@ -474,24 +508,12 @@ bool g_poisoned = false;
 
 // The operation that puts the local player's position on the stack, recognised the same way: it
 // reads the account block, then the player registry, and leaves one position value.
-constexpr std::uint32_t kOpSelfPos = rtx::sig::kOpSelfPos;
-constexpr const auto& kSelfHead = rtx::sig::kOpSelfPosHead;
 
 // The three operations that answer for a character: put the one with this index in the state's
 // hands, ask how high the game hangs its own overheads on it, and project its position lifted by
 // that much. Each is recognised by the first bytes of its own handler, the same in both clients and
 // shared with no other operation.
-constexpr std::uint32_t kOpBindEntity = rtx::sig::kOpBindEntity, kOpOverlayHeight = rtx::sig::kOpOverlayHeight, kOpEntityScreen = rtx::sig::kOpEntityScreen;
-constexpr const auto& kBindHead = rtx::sig::kOpBindHead;
-constexpr const auto& kHeightHead = rtx::sig::kOpHeightHead;
-constexpr const auto& kEntScrHead = rtx::sig::kOpEntityScreenHead;
 
-OpFn Verified(std::uint32_t op, const std::uint8_t* head, std::size_t len) {
-    auto it = g_byNumber.find(op);
-    if (it == g_byNumber.end()) return nullptr;
-    if (std::memcmp(reinterpret_cast<const std::uint8_t*>(it->second), head, len) != 0) return nullptr;
-    return it->second;
-}
 
 // A position as the engine passes them between operations: plane, then x, height and y as floats in
 // fine units. The kind byte at +0x18 marks the entry a position rather than a string.
@@ -542,7 +564,7 @@ bool Project(std::uint8_t* root, int plane, float x, float height, float y, int 
 // operation leaves a counted reference there, which the next binding gives back. So that pair is
 // set aside for the call and put back after it, rather than lost with its count still held.
 bool HeightHeld(std::uint8_t* root, std::uint8_t* entity, std::int32_t& lift) {
-    const OpFn high = Verified(kOpOverlayHeight, kHeightHead, sizeof(kHeightHead));
+    const OpFn high = Head(rtx::sig::kHeadHeight);
     if (!high || !entity) return false;
     auto* slotObj = reinterpret_cast<std::uint8_t**>(g_state + kEntityObj);
     auto* slotRef = reinterpret_cast<std::uint8_t**>(g_state + kEntityRef);
@@ -590,8 +612,8 @@ bool PlayerOverheadHeight(std::uint8_t* root, int index, std::int32_t& lift) {
 bool NpcOverheadHeight(std::uint8_t* root, int index, std::int32_t& lift) {
     if (g_poisoned || !Ready() || !root) return false;
     std::lock_guard<std::mutex> lk(g_mu);
-    const OpFn bind = Verified(kOpBindEntity, kBindHead, sizeof(kBindHead));
-    const OpFn high = Verified(kOpOverlayHeight, kHeightHead, sizeof(kHeightHead));
+    const OpFn bind = Head(rtx::sig::kHeadBind);
+    const OpFn high = Head(rtx::sig::kHeadHeight);
     if (!bind || !high) return false;
     std::uint32_t& isp = *reinterpret_cast<std::uint32_t*>(g_state + kIntSp);
     std::uint32_t& ssp = *reinterpret_cast<std::uint32_t*>(g_state + kStrSp);
@@ -611,9 +633,8 @@ bool ProjectSelf(std::uint8_t* root, int heightOffset, Point& out) {
     if (g_poisoned || !Ready() || !root) return false;
     std::lock_guard<std::mutex> lk(g_mu);
     const OpFn proj = Projector();
-    auto self = g_byNumber.find(kOpSelfPos);
-    if (!proj || self == g_byNumber.end()) return false;
-    if (std::memcmp(reinterpret_cast<const std::uint8_t*>(self->second), kSelfHead, sizeof(kSelfHead)) != 0) return false;
+    const OpFn self = Head(rtx::sig::kHeadSelfPos);
+    if (!proj || !self) return false;
     std::uint32_t& isp = *reinterpret_cast<std::uint32_t*>(g_state + kIntSp);
     std::uint32_t& ssp = *reinterpret_cast<std::uint32_t*>(g_state + kStrSp);
     isp = 0; ssp = 0; g_state[0x20] = 0;
@@ -622,7 +643,7 @@ bool ProjectSelf(std::uint8_t* root, int heightOffset, Point& out) {
     // without releasing, so it never looks at a pointer we did not put there.
     std::memset(g_state + kStrStack, 0, 0x20);
     g_state[kStrStack + 0x18] = 3;
-    if (CallGuarded(self->second, root) == reinterpret_cast<void*>(~0ull)) { g_poisoned = true; Say("engine ops: own position faulted, stopped"); return false; }
+    if (CallGuarded(self, root) == reinterpret_cast<void*>(~0ull)) { g_poisoned = true; Say("engine ops: own position faulted, stopped"); return false; }
     if (ssp < 1) return false;
     *reinterpret_cast<std::int32_t*>(g_state + kIntStack + 0) = heightOffset;
     *reinterpret_cast<std::int32_t*>(g_state + kIntStack + 4) = 0;   // the position already carries its height

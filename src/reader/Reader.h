@@ -302,6 +302,8 @@ bool VarsWatch(std::uint32_t pid, bool on);
 std::string ServerPacketsJson(std::uint32_t pid);
 std::string ServerPacketFeedJson(std::uint32_t pid, std::uint64_t since);
 bool ServerPacketFeedEnable(std::uint32_t pid, bool on);
+std::string OutboundPacketFeedJson(std::uint32_t pid, std::uint64_t since);
+bool OutboundPacketFeedEnable(std::uint32_t pid, bool on);
 std::string EventsJson(std::uint32_t pid, std::uint64_t since);
 bool EventsMaskSet(std::uint32_t pid, const std::uint32_t mask[8]);
 

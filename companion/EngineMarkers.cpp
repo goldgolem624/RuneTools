@@ -1,6 +1,7 @@
 #include "EngineMarkers.h"
 #include "Signatures.h"
 #include "MainDataOffsets.h"
+#include "PacketIds.h"
 #include "EngineComponents.h"
 #include "EngineOps.h"
 #include "EngineIface.h"
@@ -45,12 +46,15 @@ constexpr std::size_t kFrameLen = sizeof(kFrameSig) / sizeof(kFrameSig[0]);
 // Both managers: the root at +8, eight object slots from +0x10. The arrow manager also keeps one
 // request per slot from +0x90 whose first field is the slot, or -1 when there is none waiting.
 constexpr std::size_t kMgrRoot = 0x08, kMgrSlots = 0x10;
-constexpr std::size_t kArrowRequests = 0x90, kArrowRequestSize = 0x2C;
+// Each manager keeps eight slots from kMgrSlots, then (the arrow manager) eight for the arrows at the
+// player's feet, then the request records. A slot is the object (8 bytes) or a {control block,
+// object} pair (16); the slot size comes from the frame site, the records from the arrow routine.
+std::size_t g_slotSize = 8, g_slotObject = 0, g_pointerSlots = 0x50;
+std::size_t g_requests = 0x90, g_requestSize = 0x2C;
 constexpr int kSlot = 7;                       // the last one; the server fills from the first
 constexpr int kPathSlot = 6;                   // a second trail, for the way to the target
 constexpr std::int32_t kPathReach = 120;       // a trail's points travel as signed bytes from its first
 constexpr std::int32_t kTileReach = 48;        // tiles from the player within which anything is asked of the game
-constexpr std::size_t kPointerSlots = 0x50;    // the arrows at the player's feet, same eight slots
 // The arrow styles the game has loaded: root -> settings (the field before the arrow manager)
 // -> a table whose count sits at +8. Null until the first arrow of a session.
 constexpr std::size_t kStyleTable = 0x1A8 + 0x10, kStyleCount = 0x08;
@@ -64,7 +68,8 @@ constexpr std::size_t kTrailMaxTiles = 640;
 // Each tile of a trail is an entity of its own: what it draws with at +0x70, and at +0x80 where
 // to read its height above the ground from. All of them read one number in the trail manager
 // that the game swings up and down, which takes a flat model under the ground half the time.
-constexpr std::size_t kTileRender = 0x70, kTileLift = 0x80, kMgrSwing = 0x50;
+constexpr std::size_t kTileRender = 0x70, kTileLift = 0x80;
+constexpr std::size_t kMgrSpan = 0x200;        // a trail manager's own fields: its swinging number is one of them
 constexpr std::size_t kEntityNode = 0x18, kNodePosition = 0xD0, kNodeTurn = 0xE0, kNodeScale = 0x100;
 constexpr std::uint32_t kMaxReach = 1024;
 constexpr std::uint32_t kMaxRange = 90;        // the game squares range * 512 in 32 bits
@@ -231,7 +236,9 @@ bool SendPath(void* root, bool on, const Want& w) {
         m[n++] = 0; m[n++] = 0;
         m[n++] = (std::uint8_t)(std::int8_t)dx; m[n++] = (std::uint8_t)(std::int8_t)dy;
     }
-    void* self[2] = { nullptr, root };
+    // the trail routine reads the root through its context: the second field on 950-1, the first
+    // on 951-1; both hold it
+    void* self[2] = { root, root };
     return Send(g_trail, self, m);
 }
 
@@ -252,7 +259,9 @@ bool SendTrail(void* root, bool on, const Want& w) {
         m[n++] = 0; m[n++] = 0;                 // each point as an offset from that base
         m[n++] = 1; m[n++] = 0;
     }
-    void* self[2] = { nullptr, root };          // this one keeps the root in its second field
+    // the trail routine reads the root through its context: the second field on 950-1, the first
+    // on 951-1; both hold it
+    void* self[2] = { root, root };
     return Send(g_trail, self, m);
 }
 
@@ -271,8 +280,8 @@ bool SamePath(const Want& a, const Want& b) {
            a.path_y1 == b.path_y1 && a.path_model == b.path_model;
 }
 
-void* SlotObject(const std::uint8_t* manager, int slot = kSlot) {
-    return *reinterpret_cast<void* const*>(manager + kMgrSlots + slot * sizeof(void*));
+void* SlotObject(const std::uint8_t* manager, int slot = kSlot, std::size_t first = kMgrSlots) {
+    return *reinterpret_cast<void* const*>(manager + first + (std::size_t)slot * g_slotSize + g_slotObject);
 }
 
 // Gives one render object the game's outline, or takes it away. Anything that does not look like
@@ -353,11 +362,11 @@ void Raise(std::uint8_t* node, std::uint32_t height) {
 // but a model arrives some frames after its marker and each new one starts without.
 void TendOurs(std::uint8_t* manager, std::uint8_t* trails) {
     if (g_ownArrow && g_done.arrow_npc >= 0) {
-        std::uint8_t* arrow = At(manager, kMgrSlots + kSlot * sizeof(void*));
+        std::uint8_t* arrow = static_cast<std::uint8_t*>(SlotObject(manager));
         if (InImage(arrow)) Raise(At(arrow, kEntityNode), g_done.arrow_height);
     }
     if (g_ownArrow) {
-        std::uint8_t* pointer = At(manager, kPointerSlots + kSlot * sizeof(void*));
+        std::uint8_t* pointer = static_cast<std::uint8_t*>(SlotObject(manager, kSlot, g_pointerSlots));
         if (InImage(pointer)) {
             Outline(At(pointer, kPointerRender), g_done.arrow_rgb, g_done.arrow_width);
             Scale(At(pointer, kEntityNode), g_done.pointer_scale);   // the game refreshes this node every frame
@@ -365,7 +374,7 @@ void TendOurs(std::uint8_t* manager, std::uint8_t* trails) {
         }
     }
     if (g_ownTrail) {
-        const std::uint8_t* trail = At(trails, kMgrSlots + kSlot * sizeof(void*));
+        const std::uint8_t* trail = static_cast<const std::uint8_t*>(SlotObject(trails));
         if (!trail) return;
         const std::uint8_t* tile = At(trail, kTrailTiles);
         const std::uint8_t* end = At(trail, kTrailTiles + sizeof(void*));
@@ -373,9 +382,11 @@ void TendOurs(std::uint8_t* manager, std::uint8_t* trails) {
         for (; tile + kTrailTileSize <= end; tile += kTrailTileSize) {
             std::uint8_t* entity = At(tile, kTrailTileEntity);
             if (!InImage(entity)) continue;
-            // only an entity that reads the manager's swinging number is one of these
+            // only an entity that reads the manager's swinging number is one of these: a float the
+            // manager itself holds, wherever the build keeps it among its fields
             float** lift = reinterpret_cast<float**>(entity + kTileLift);
-            if (g_done.tile_steady && *lift == reinterpret_cast<float*>(trails + kMgrSwing)) *lift = &g_lift;
+            const std::uint8_t* reads = reinterpret_cast<const std::uint8_t*>(*lift);
+            if (g_done.tile_steady && reads >= trails + kMgrSlots + 8 * g_slotSize && reads < trails + kMgrSpan) *lift = &g_lift;
             if (*lift != &g_lift) continue;
             Outline(At(entity, kTileRender), g_done.tile_rgb, g_done.tile_width);
         }
@@ -389,9 +400,9 @@ bool SelfCheck(std::uint8_t* manager, std::uint8_t* root, std::uint8_t* trails) 
     char why[240];
     for (int s = 0; s < 8; ++s) {
         std::int32_t waiting;
-        std::memcpy(&waiting, manager + kArrowRequests + (std::size_t)s * kArrowRequestSize, sizeof(waiting));
+        std::memcpy(&waiting, manager + g_requests + (std::size_t)s * g_requestSize, sizeof(waiting));
         if (waiting != -1 && (waiting < 0 || waiting > 7)) {
-            std::snprintf(why, sizeof(why), "FORMAT: arrow request record %d at +0x%zx reads slot %d (expected -1 or 0..7); markers off", s, kArrowRequests + (std::size_t)s * kArrowRequestSize, waiting);
+            std::snprintf(why, sizeof(why), "FORMAT: arrow request record %d at +0x%zx reads slot %d (expected -1 or 0..7); markers off", s, g_requests + (std::size_t)s * g_requestSize, waiting);
             SayCheck("FAIL", "format", g_exp, g_got, "", why);
             return false;
         }
@@ -434,7 +445,7 @@ void ApplyUnguarded(std::uint8_t* manager) {
     const ULONGLONG now = GetTickCount64();
     // the game drops its markers when it rebuilds the scene: ask again, but not every frame
     std::int32_t waiting;
-    std::memcpy(&waiting, manager + kArrowRequests + kSlot * kArrowRequestSize, sizeof(waiting));
+    std::memcpy(&waiting, manager + g_requests + kSlot * g_requestSize, sizeof(waiting));
     const bool lostArrow = g_ownArrow && !SlotObject(manager) && waiting == -1;
     const bool lostTrail = g_ownTrail && !SlotObject(trails);
     const bool lostPath = g_ownPath && !SlotObject(trails, kPathSlot);
@@ -646,8 +657,8 @@ bool Install() {
         if (rtx::codefind::OpenImage(reinterpret_cast<std::uint64_t>(im.base), reinterpret_cast<std::uint64_t>(im.base), cim) &&
             rtx::codefind::FindProtTable(cim, pt) && pt.count > 0) {
             tableOk = true;
-            arrowAnchor = reinterpret_cast<const std::uint8_t*>(rtx::codefind::ProtHandler(cim, pt, rtx::sops::kHintArrow));
-            trailAnchor = reinterpret_cast<const std::uint8_t*>(rtx::codefind::ProtHandler(cim, pt, rtx::sops::kTileTrail));
+            arrowAnchor = reinterpret_cast<const std::uint8_t*>(rtx::codefind::ProtHandler(cim, pt, rtx::pktid::LiveOf(rtx::sops::kHintArrow)));
+            trailAnchor = reinterpret_cast<const std::uint8_t*>(rtx::codefind::ProtHandler(cim, pt, rtx::pktid::LiveOf(rtx::sops::kTileTrail)));
         }
     }
     std::snprintf(g_exp, sizeof(g_exp), "0x%x/0x%x/%u", rtx::md::kArrowMgr, rtx::md::kTrailMgr, rtx::sig::kArrowSlotSize);
@@ -696,10 +707,21 @@ bool Install() {
             if (!named) { on = false; kind = "format"; std::snprintf(why, sizeof(why), "FORMAT: the trail routine does not name its manager where expected; markers off"); }
             else if (trailNamed != g_trailDisp) { on = false; kind = "moved"; std::snprintf(why, sizeof(why), "MOVED: the trail routine reads the manager at 0x%x, the frame site 0x%x; markers off", trailNamed, g_trailDisp); }
         }
-        if (on && slotSize != rtx::sig::kArrowSlotSize) {
+        // the slots: the object alone (8 bytes) or after its control block (16); the request records
+        // from the arrow routine, after both sets of slots
+        std::uint32_t reqBase = 0, reqSize = 0;
+        const bool reqs = rtx::sig::ArrowRequests(arrow, 0x640, reqBase, reqSize);
+        if (on && slotSize != 8 && slotSize != 16) {
             on = false; kind = "format";
-            std::snprintf(why, sizeof(why), "FORMAT: manager slots are %u bytes on this client, compiled %u; markers off", slotSize, rtx::sig::kArrowSlotSize);
+            std::snprintf(why, sizeof(why), "FORMAT: manager slots are %u bytes on this client, the markers know 8 and 16; markers off", slotSize);
             Say("markers: manager slots are %u bytes on this client, markers off", slotSize);
+        } else if (on && (!reqs || reqBase < kMgrSlots + 16 * slotSize || reqSize < 0x2C)) {
+            on = false; kind = "format";
+            std::snprintf(why, sizeof(why), "FORMAT: the arrow routine does not say where its request records sit (read 0x%x, %u bytes); markers off", reqBase, reqSize);
+        } else if (on) {
+            g_slotSize = slotSize; g_slotObject = slotSize - 8; g_pointerSlots = kMgrSlots + 8 * slotSize;
+            g_requests = reqBase; g_requestSize = reqSize;
+            if (slotSize != rtx::sig::kArrowSlotSize || reqBase != 0x90 || reqSize != 0x2C) g_checkKind = "moved";
         }
     }
     g_markersOn = on;
@@ -716,11 +738,11 @@ bool Install() {
     else if (!on) SayCheck("FAIL", kind, g_exp, g_got, "", why);
     else {
         char d[400];
-        std::snprintf(d, sizeof(d), "%sarrow routine 0x%llx (%s), trail routine 0x%llx (%s), managers at 0x%x/0x%x%s, %u-byte slots; the round trip is reported on the first request",
+        std::snprintf(d, sizeof(d), "%sarrow routine 0x%llx (%s), trail routine 0x%llx (%s), managers at 0x%x/0x%x%s, %u-byte slots, requests +0x%zx by 0x%zx; the round trip is reported on the first request",
                       g_checkKind[0] ? "MOVED: " : "",
                       (unsigned long long)(arrow - im.base), arrowAt ? (arrowAnchor == arrow ? "signature, descriptor 0x62 agrees" : arrowAnchor ? "signature, descriptor 0x62 differs" : "signature") : "descriptor 0x62, signature missed",
                       (unsigned long long)(trail - im.base), trailAt ? (trailAnchor == trail ? "signature, descriptor 0x3a agrees" : trailAnchor ? "signature, descriptor 0x3a differs" : "signature") : "descriptor 0x3a, signature missed",
-                      g_arrowDisp, g_trailDisp, (g_arrowDisp != rtx::md::kArrowMgr || g_trailDisp != rtx::md::kTrailMgr) ? " (compiled 0x198f0/0x198f8, the frame site's in use)" : "", slotSize);
+                      g_arrowDisp, g_trailDisp, (g_arrowDisp != rtx::md::kArrowMgr || g_trailDisp != rtx::md::kTrailMgr) ? " (compiled 0x198f0/0x198f8, the frame site's in use)" : "", slotSize, g_requests, g_requestSize);
         SayCheck("SKIP", g_checkKind, g_exp, g_got, "a marker request from the launcher", d);
     }
     // how the game has a moved node show it: read out of the frame routine, an extra as well

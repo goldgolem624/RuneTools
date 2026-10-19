@@ -33,6 +33,19 @@
   function bridge() {
     return (typeof window.rtx === 'object') ? window.rtx : null;
   }
+  // The id of a content name from Jagex's own table (cache index 67), e.g. officialId('varbit', 'POF_...').
+  // -1 when no id carries it or the table is still building (asked again next time), -2 when several do.
+  const _officialIds = new Map();
+  function officialId(kind, name) {
+    const k = kind + ':' + name;
+    if (_officialIds.has(k)) return _officialIds.get(k);
+    const b = bridge();
+    let id = -1;
+    try { if (b && b.officialId) id = Number(b.officialId(String(kind), String(name))); } catch (e) { id = -1; }
+    if (!Number.isFinite(id)) id = -1;
+    if (id !== -1) _officialIds.set(k, id);
+    return id;
+  }
   const _bjErrAt = new Map();
   async function bridgeJson(method, ...args) {
     const b = bridge();

@@ -1188,7 +1188,8 @@ int SelfTest(const std::filesystem::path& pluginDir, std::string& report) {
     r << "load: " << res << "\n";
     bool ok = res.find("\"ok\":true") != std::string::npos;
     for (int i = 0; i < 3 && ok; ++i) {
-        res = Tick(id, "[{\"kind\":\"gameTick\",\"tick\":" + std::to_string(100 + i) + ",\"dtMs\":600},{\"kind\":\"skill_update\",\"skill\":0,\"name\":\"Attack\",\"level\":99,\"xp\":13034431}]",
+        res = Tick(id, "[{\"kind\":\"ServerLogic\",\"tick\":" + std::to_string(100 + i) + ",\"dtMs\":600},{\"kind\":\"SkillTransmit\",\"skill\":0,\"skillName\":\"ATTACK\","
+                       "\"oldXP\":13034000,\"newXP\":13034431,\"oldGameplayLevel\":99,\"newGameplayLevel\":99}]",
                    "{\"in_world\":true,\"display_name\":\"Tester\"}");
         r << "tick " << i << ": " << res << "\n";
         ok = res.find("\"ok\":true") != std::string::npos;

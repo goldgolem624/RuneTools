@@ -85,6 +85,7 @@ std::filesystem::path page_path(const std::string& s) {
 // checked against for files that have gone missing, see UiAssetFiles().
 const char* const kCoreFiles[] = {
     "core/rtx-shim.js",       // window.onerror first, then the localStorage shim
+    "core/rtx-official.js",   // generated: the official client API enumerations (OFFICIAL, officialName)
     "core/rtx-prefs.js",      // durable prefs: prefGet/prefSet/prefsInit
     "core/rtx-ui.js",         // rtxUi preferences blob, uiApply, number format, bar chips
     "core/rtx-registry.js",   // TABS, RTX + registerTab, CAT_META, TAB_GROUPS, XP tables
@@ -101,6 +102,7 @@ const char* const kCoreFiles[] = {
     "core/rtx-layout.js",     // layout persistence, openTab, tabEntryKicks
     "core/rtx-menubar.js",    // menu bar, wiki pane, fullscreen, tab search
     "core/rtx-pane.js",       // renderPane / renderHeader
+    "core/rtx-gameevents.js", // captured packets -> game events under the official API's names (rtxGameEvents)
     "core/rtx-plugin-api.js", // plugin SDK method table, clamps, rate limiter, SDK shim
     "core/rtx-plugin-hud.js", // host-rendered plugin ability HUD strip
     "core/rtx-plugins.js",    // plugin SDK host broker: mounts, grants, sandbox, windows

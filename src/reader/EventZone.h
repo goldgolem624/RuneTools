@@ -8,8 +8,10 @@
 #pragma once
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <string>
 #include <utility>
+#include "../../companion/PacketReads.h"   // zone item bodies through the live build's layouts
 
 namespace rtx::evzone {
 
@@ -55,7 +57,8 @@ enum Sub { kObjAdd = 0x00, kAreaSound2 = 0x01, kSpotAnim2 = 0x02, kSub03 = 0x03,
            kProjectile = 0x05, kObjCount = 0x06, kLocVar1 = 0x07, kLocVar2 = 0x08, kObjAddOwned = 0x09,
            kObjDel = 0x0A, kSpotAnim = 0x0B, kLocDel = 0x0C, kLocAdd = 0x0D, kSub0E = 0x0E,
            kProjectile20 = 0x0F, kProjectile28 = 0x10, kProjectile29 = 0x11 };
-// -1: a var-byte item (subs 7, 8 and 0xE: one length byte, then that many bytes of body).
+// The descriptor lengths of the zone table (-1 for subs 7, 8 and 0xE). The table is matched against
+// these; walking a zone update uses itemLen below, since a descriptor of -1 carries no length byte.
 inline int subLen(int sub) {
     switch (sub) { case 0x00: return 6; case 0x01: return 11; case 0x02: return 14; case 0x03: return 5; case 0x04: return 10;
                    case 0x05: return 21; case 0x06: return 8; case 0x07: return -1; case 0x08: return -1; case 0x09: return 8;
@@ -66,12 +69,100 @@ inline int subLen(int sub) {
 inline constexpr int kSubCount = 0x12;   // descriptors in the zone table
 inline bool subKnown(int sub) { return sub >= 0 && sub < kSubCount; }
 
+// Bytes of the transform that follows a loc change whose type byte has bit 7 set (exe+0x10D0A0): a flag
+// byte, four i16 for bit 0, one i16 each for bits 1..3, then one i16 for bit 4 (uniform scale) or one
+// i16 each for bits 5..7. -1 when the body is short.
+inline int locTransformLen(const std::uint8_t* b, std::uint32_t n) {
+    if (n < 1) return -1;
+    const unsigned f = b[0];
+    int len = 1 + ((f & 1) ? 8 : 0) + ((f & 2) ? 2 : 0) + ((f & 4) ? 2 : 0) + ((f & 8) ? 2 : 0);
+    if (f & 0x10) len += 2;
+    else len += ((f & 0x20) ? 2 : 0) + ((f & 0x40) ? 2 : 0) + ((f & 0x80) ? 2 : 0);
+    return (std::uint32_t)len <= n ? len : -1;
+}
+
+// Bytes one item body takes, read the way the game's handler reads it: every handler consumes its own
+// bytes, so loc changes with a transform run past their descriptor length, subs 7 and 8 (descriptor -1)
+// parse fields and counted lists, and sub 0xE runs the 5-byte handler of sub 3. -1: short body, -2:
+// unknown sub id.
+inline int itemLen(int sub, const std::uint8_t* b, std::uint32_t n) {
+    int len = 0; bool transform = false;
+    switch (sub) {
+    case kLocVar1:   // exe+0x1136A0: -b0 type (bit 7 = transform), position b1, id b2..b5, flags b6
+        if (n < 7) return -1;
+        len = 7; transform = ((std::uint8_t)(0 - b[0]) >> 7) != 0; break;
+    case kLocVar2:   // exe+0x113170: position b0, id b1..b4, b5+0x80 type (bit 7 = transform)
+        if (n < 6) return -1;
+        len = 6; transform = ((std::uint8_t)(b[5] + 0x80) >> 7) != 0; break;
+    case kLocAdd:    // exe+0x114510: -b0 type (bit 7 = transform), then 6 more bytes
+        if (n < 7) return -1;
+        len = 7; transform = ((std::uint8_t)(0 - b[0]) >> 7) != 0; break;
+    case kSub0E: return n >= 5 ? 5 : -1;
+    default: { const int need = subLen(sub); if (need < 0) return -2; return (std::uint32_t)need <= n ? need : -1; }
+    }
+    if (transform) { const int t = locTransformLen(b + len, n - (std::uint32_t)len); if (t < 0) return -1; len += t; }
+    if (sub == kLocVar1 && !(b[6] & 1)) {   // unless flags bit 0: counted lists for bits 1 (u32), 2 and 3 (u16)
+        static const int kEntry[3] = {4, 2, 2};
+        for (int i = 0; i < 3; ++i) {
+            if (!(b[6] & (2u << i))) continue;
+            if ((std::uint32_t)len >= n) return -1;
+            len += 1 + b[len] * kEntry[i];
+            if ((std::uint32_t)len > n) return -1;
+        }
+    }
+    return len;
+}
+
 // Decode one zone item body (standalone opcode or 0x31 sub-packet). Emits `"kind":...,fields` without
 // braces. Returns false when the body is unknown or short.
+// A zone update's head in the reference build's form: [0x80 - plane][-x offset][y offset] in
+// eighths of the map base. The running build's head is read from the update's handler (PacketReads
+// kHeads); false when it was not, and the update is left raw.
+inline bool zoneHead(const std::uint8_t* b, std::uint32_t n, std::uint8_t out[3]) {
+    if (n < 3) return false;
+    const int prog = rtx::pktid::kHead + 0x31;
+    switch (rtx::preads::StateOf(prog)) {
+    case rtx::preads::kPaired: return rtx::preads::Translate(prog, b, 3, out, 3);
+    case rtx::preads::kOff: return false;
+    default: std::memcpy(out, b, 3); return true;   // the reference build's own form
+    }
+}
+
+// One item of a zone update at b[p]: [live sub id][body]. sub is the reference build's id and body
+// the item in its wire form (translated into tb when the build re-encoded it; what follows the
+// fixed part, a loc change's transform, is copied as it is), len the bytes it takes after the id.
+// False ends the walk: a sub the reference build has none for (liveSub says which), a layout not
+// read (its length is not known either), or a short body.
+struct ZoneItem { int sub = -1, liveSub = -1; const std::uint8_t* body = nullptr; std::uint32_t len = 0; };
+inline bool zoneItem(const std::uint8_t* b, std::uint32_t n, std::uint32_t p, ZoneItem& it, std::uint8_t* tb, std::uint32_t tbCap) {
+    if (p >= n) return false;
+    it.liveSub = b[p];
+    it.sub = rtx::pktid::ZoneRefOf(it.liveSub);
+    if (it.sub < 0) return false;
+    const std::uint8_t* q = b + p + 1; std::uint32_t avail = n - p - 1;
+    const int twin = rtx::pktid::ZoneTwinRef(it.sub);
+    const int prog = twin >= 0 ? twin : rtx::pktid::kZoneOwn + it.sub;
+    const rtx::preads::State st = rtx::preads::StateOf(prog);
+    if (st == rtx::preads::kOff) return false;
+    if (st == rtx::preads::kPaired) {
+        const rtx::preads::Layout* L = rtx::preads::Of(prog);
+        const std::uint32_t fixed = L ? (std::uint32_t)L->prog.len : 0;
+        if (!fixed || fixed > avail || fixed > tbCap) return false;
+        const std::uint32_t copy = avail < tbCap ? avail : tbCap;
+        std::memcpy(tb, q, copy);
+        if (!rtx::preads::Translate(prog, q, fixed, tb, tbCap)) return false;
+        q = tb; avail = copy;
+    }
+    const int len = itemLen(it.sub, q, avail);
+    if (len < 0) return false;
+    it.body = q; it.len = (std::uint32_t)len;
+    return true;
+}
+
 inline bool subJson(std::string& o, int sub, const std::uint8_t* b, std::uint32_t n) {
     char t[200];
-    const int need = subLen(sub);
-    if (need < 0 || (int)n < need) return false;
+    const int need = itemLen(sub, b, n);
+    if (need < 0) return false;
     switch (sub) {
     case kObjAdd: {          // exe+0x140C60: item id 24-bit (b0 low), position 0x80-b3, quantity u16 BE
         const int id = (b[2] << 16) | (b[1] << 8) | b[0];
@@ -123,7 +214,19 @@ inline bool subJson(std::string& o, int sub, const std::uint8_t* b, std::uint32_
         if (sub == kAreaSound2) { std::snprintf(t, sizeof(t), ",\"mode\":%u", b[10]); o += t; }
         return true;
     }
-    case kLocAdd: {          // exe+0x140E80: -b0: type bits 2-6, rotation bits 0-1, bit 7 = extra data follows; id = b3 b4 b1 b2; b5 raw; position -b6
+    case kLocVar1: {         // exe+0x1136A0: loc add with recolour lists. -b0: type bits 2-6, rotation bits 0-1, bit 7 = transform; position b1; id = b4 b5 b2 b3; flags b6 (bit 0: no lists)
+        const std::uint8_t k = (std::uint8_t)(0 - b[0]);
+        const std::uint32_t id = ((std::uint32_t)b[4] << 24) | ((std::uint32_t)b[5] << 16) | ((std::uint32_t)b[2] << 8) | b[3];
+        o += "\"kind\":\"loc_add\",\"form\":7,"; tileJson(o, b[1]);
+        std::snprintf(t, sizeof(t), ",\"loc\":%u,\"type\":%u,\"rot\":%u,\"extra\":%u,\"flags\":%u", id, (k >> 2) & 0x1F, k & 3, k >> 7, b[6]); o += t; return true;
+    }
+    case kLocVar2: {         // exe+0x113170: position b0; id = b2 b1 b4 b3; b5+0x80: type bits 2-6, rotation bits 0-1, bit 7 = transform
+        const std::uint8_t k = (std::uint8_t)(b[5] + 0x80);
+        const std::uint32_t id = ((std::uint32_t)b[2] << 24) | ((std::uint32_t)b[1] << 16) | ((std::uint32_t)b[4] << 8) | b[3];
+        o += "\"kind\":\"loc_add\",\"form\":8,"; tileJson(o, b[0]);
+        std::snprintf(t, sizeof(t), ",\"loc\":%u,\"type\":%u,\"rot\":%u,\"extra\":%u", id, (k >> 2) & 0x1F, k & 3, k >> 7); o += t; return true;
+    }
+    case kLocAdd: {          // exe+0x140E80: -b0: type bits 2-6, rotation bits 0-1, bit 7 = transform follows (itemLen counts it); id = b3 b4 b1 b2; b5 raw; position -b6
         const std::uint8_t k = (std::uint8_t)(0 - b[0]);
         const std::uint32_t id = ((std::uint32_t)b[3] << 24) | ((std::uint32_t)b[4] << 16) | ((std::uint32_t)b[1] << 8) | b[2];
         o += "\"kind\":\"loc_add\","; tileJson(o, (std::uint8_t)(0 - b[6]));
@@ -180,18 +283,26 @@ inline bool topJson(std::string& o, int op, const std::uint8_t* b, std::uint32_t
         g_zone.plane = (b[0] + 0x80) & 0xFF; g_zone.x = g_mapBaseX + (int)(std::int8_t)b[1] * 8; g_zone.y = g_mapBaseY + (int)(std::int8_t)b[2] * 8; g_zone.set = true;
         std::snprintf(t, sizeof(t), "\"kind\":\"zone_clear\",\"x\":%d,\"y\":%d,\"plane\":%d", g_zone.x, g_zone.y, g_zone.plane); o += t; return true;
     }
-    case 0x31: {   // exe+0x140F80: zone update. plane = 0x80 - b0, x = mapBase - b1*8, y = mapBase + b2*8, then [sub id][body]... from the 18-entry table
-        if (n < 3) return false;
-        g_zone.plane = (0x80 - b[0]) & 0xFF; g_zone.x = g_mapBaseX - (int)(std::int8_t)b[1] * 8; g_zone.y = g_mapBaseY + (int)(std::int8_t)b[2] * 8; g_zone.set = true;
+    case 0x31: {   // zone update: plane, x and y offsets from the map base, then [sub id][body]... (zoneHead, zoneItem)
+        std::uint8_t h[3];
+        if (!zoneHead(b, n, h)) return false;
+        g_zone.plane = (0x80 - h[0]) & 0xFF; g_zone.x = g_mapBaseX - (int)(std::int8_t)h[1] * 8; g_zone.y = g_mapBaseY + (int)(std::int8_t)h[2] * 8; g_zone.set = true;
         std::snprintf(t, sizeof(t), "\"kind\":\"zone_update\",\"x\":%d,\"y\":%d,\"plane\":%d,\"items\":[", g_zone.x, g_zone.y, g_zone.plane); o += t;
         std::uint32_t p = 3; bool first = true, partial = false;
         while (p < n) {
-            const int sub = b[p++]; int len = subLen(sub);
-            if (len == -1) { if (p >= n) { partial = true; break; } len = b[p++]; }   // var-byte item: its length byte
-            if (len < 0 || p + (std::uint32_t)len > n) { partial = true; break; }     // an unknown sub id or a short body ends the walk
+            ZoneItem it; std::uint8_t tb[96];
+            if (!zoneItem(b, n, p, it, tb, sizeof(tb))) {
+                partial = true;
+                if (it.sub < 0 && it.liveSub >= 0) {   // tagged with its live id, the bytes after it as they came
+                    std::snprintf(t, sizeof(t), "%s{\"kind\":\"zone_sub\",\"sub\":-1,\"liveSub\":%d,\"hex\":\"", first ? "" : ",", it.liveSub); o += t;
+                    for (std::uint32_t i = p + 1; i < n && i < p + 65; ++i) { std::snprintf(t, sizeof(t), "%02x", b[i]); o += t; }
+                    o += "\"}"; first = false;
+                }
+                break;
+            }
             o += first ? "{" : ",{"; first = false;
-            if (!subJson(o, sub, b + p, (std::uint32_t)len)) { std::snprintf(t, sizeof(t), "\"kind\":\"zone_sub\",\"sub\":%d,\"hex\":\"", sub); o += t; for (int i = 0; i < len; ++i) { std::snprintf(t, sizeof(t), "%02x", b[p + i]); o += t; } o += "\""; }
-            o += "}"; p += (std::uint32_t)len;
+            if (!subJson(o, it.sub, it.body, it.len)) { std::snprintf(t, sizeof(t), "\"kind\":\"zone_sub\",\"sub\":%d,\"hex\":\"", it.sub); o += t; for (std::uint32_t i = 0; i < it.len; ++i) { std::snprintf(t, sizeof(t), "%02x", it.body[i]); o += t; } o += "\""; }
+            o += "}"; p += 1 + it.len;
         }
         o += "],\"partial\":"; o += partial ? "true" : "false"; return true;
     }
@@ -219,9 +330,9 @@ inline bool topJson(std::string& o, int op, const std::uint8_t* b, std::uint32_t
         if (n < 8) return false;
         std::snprintf(t, sizeof(t), "\"kind\":\"sound\",\"id\":%u,\"a\":%u,\"b\":%u,\"c\":%u", u32be(b), b[4], u16be(b + 5), b[7]); o += t; return true;
     }
-    case 0x5F: {   // exe+0x10A560: sound at a world tile. id = b2 b1 b3 b0, b4 raw, packed tile = b7 b8 b5 b6, volume = -128 - (int8)b9, b10 raw
+    case 0x5F: {   // sound at a world tile. id u32 LE, b4 raw, packed tile = b7 b8 b5 b6, volume = -128 - (int8)b9, b10 raw
         if (n < 11) return false;
-        const std::uint32_t id = ((std::uint32_t)b[2] << 24) | ((std::uint32_t)b[1] << 16) | ((std::uint32_t)b[3] << 8) | b[0];
+        const std::uint32_t id = ((std::uint32_t)b[3] << 24) | ((std::uint32_t)b[2] << 16) | ((std::uint32_t)b[1] << 8) | b[0];
         const std::uint32_t pk = ((std::uint32_t)b[7] << 24) | ((std::uint32_t)b[8] << 16) | ((std::uint32_t)b[5] << 8) | b[6];
         o += "\"kind\":\"area_sound\","; packedJson(o, pk);
         std::snprintf(t, sizeof(t), ",\"id\":%u,\"a\":%u,\"volume\":%d,\"b\":%u", id, b[4], (int)(-128 - (int)(std::int8_t)b[9]), b[10]); o += t; return true;

@@ -14,11 +14,16 @@
 #include "../../companion/GpuTimeShare.h"
 #include "../../companion/SpecialShare.h" // shared layout for transient render-pass highlights
 #include "../../companion/NetProbeShare.h" // decoded server->client packet feed (companion framer hook)
+#include "../../companion/OutboundShare.h"  // decoded client->server packet feed (companion builder hook)
 #include "../../companion/EventShare.h"    // opcode-filtered event ring (the event channel)
 #include "../../companion/ServerOps.h"     // per-build server opcodes (single source, see the header)
 #include "../../companion/FrameShare.h"
 #include "../../companion/MainDataOffsets.h"
 #include "../../companion/Signatures.h"
+#include "../../companion/VarStoreCode.h"
+#include "../../companion/ActorCode.h"
+#include "../../companion/PacketRefTable.h"  // server packets by identity (PacketIds.h)  // var store hash maps read off the stores' own lookups
+#include "../../companion/PacketReadsRef.h"  // fixed-length packet layouts read from the handlers (PacketReads.h)
 #include "HealthRun.h"
 #include "CodeScan.h"
 #include "Pins.h"
@@ -116,10 +121,20 @@ static int container_count(std::uint64_t cstart, std::uint64_t cend) {
 std::uint32_t kOffVarpHash               = rtx::md::kVarpHash;   // 0x36080 = varp manager + 0x1C0C8, derived at attach
 
 // Varc (int + string) hashmap at store + kVarcHashOff, store = *(MainData + kOffVarcStore);
-// same node layout as the varp map.
+// same node layout as the varp map. kVarcHashOff, kOffVarpHash and the stamp map below are read off
+// the stores' own lookup routines once the root is set (var_layout_for); the values here stand until
+// then.
 std::uint32_t kOffVarcStore    = 0x19920;
-constexpr std::uint32_t kVarcHashOff     = 0x7630;
+std::uint32_t kVarcStoreObj    = 0x7620;   // input state -> the embedded client var store
+std::uint32_t kVarcHashOff     = 0x7630;   // input state -> the client var map header (buckets +8)
 constexpr std::uint32_t kVarNodeNext     = 0x28;
+std::uint32_t kStampBuckets    = 0x38178;  // player var store -> change-stamp buckets (count +8)
+std::uint32_t kStampNext       = 0x18;     // change-stamp node -> next
+// Input state fields the client's own handlers name (rules varcMouseX/Y, varcButtons, varcClan).
+std::uint32_t kVarcMouseX      = 0x46D8;
+std::uint32_t kVarcMouseY      = 0x46DC;
+std::uint32_t kVarcButtons     = 0x46E8;
+std::uint32_t kVarcClan        = 0x77B0;   // input state -> the clan var store pointer
 
 // The other MainData stores the reader walks, each the companion table's value until the client
 // proves another through the calibration rule of the same name (kCalibrated below), so a store that
@@ -128,7 +143,11 @@ std::uint32_t kOffChatStore     = rtx::md::kChatStore;      // 0x19880
 std::uint32_t kOffClanSettings  = rtx::md::kClanSettings;   // 0x19888
 std::uint32_t kOffMapMgr        = rtx::md::kMapMgr;         // 0x19898
 std::uint32_t kOffInputReporter = rtx::md::kInputReport;    // 0x198B0, MainData -> input reporter
-std::uint32_t kOffArrowMgr      = rtx::md::kArrowMgr;       // 0x198F0
+// The arrow manager, its slot size and its request records, from the arrow-frame site and the arrow
+// message routine at attach (0: not found, the scan clue ring read is off).
+std::uint32_t kOffArrowMgr      = 0;
+std::uint32_t kArrowSlotBytes   = 0;
+std::uint32_t kArrowRequests    = 0, kArrowRequestSize = 0;
 std::uint32_t kOffIfaceOwner    = rtx::md::kIfaceOwner;     // 0x19900
 std::uint32_t kOffInputProc     = rtx::md::kInputProc;      // 0x19928 (0x198E8 through 949-5)
 std::uint32_t kOffPlayerGroup   = rtx::md::kPlayerGroup;    // 0x19948
@@ -148,6 +167,49 @@ std::uint64_t kScnPlane      = rtx::scn::kPlane;
 std::uint64_t kScnUid        = rtx::scn::kUid;
 std::uint64_t kScnPlayerData = rtx::scn::kPlayerData;
 std::uint64_t kScnLocalUid   = rtx::scn::kLocalUid;
+// Root and actor fields named by the calibration rules of the same name; the ones after them follow
+// from them inside one record (the current NPC type sits beside the base one, life points are stat 3).
+std::uint32_t kScnContainer  = (std::uint32_t)rtx::scn::kContainer;   // md::kSceneViews
+std::uint32_t kScnMiniMap    = (std::uint32_t)rtx::scn::kMiniMap;     // md::kMiniMap
+std::uint32_t kScnConfig     = (std::uint32_t)rtx::scn::kConfig;      // scn::kConfig
+std::uint32_t kScnCombat     = (std::uint32_t)rtx::scn::kCombat;      // scn::kCombat
+// The actor's overhead object, from the head-bar code at attach (Calibrate OverheadFromCode); 0 when
+// the code did not give it, and hitsplats and head bars are off.
+std::uint32_t kScnOverhead   = 0;
+std::uint32_t kNpcStatsOff   = 0x1140;                                // npc.statCur
+std::uint32_t kNpcBaseStatsOff = 0x115C;                              // npc.statBase
+std::uint32_t kNpcVisLevel   = 0x1178;                                // npc.visLevel
+std::uint32_t kIfaceSubBuckets = 0xE0, kIfaceSubBucketCount = 0xE8;  // iface.subBuckets / iface.subCount
+std::uint32_t kChatBuckets   = 0x880, kChatBucketCount = 0x888;       // chat.buckets / chat.bucketCount
+std::uint32_t kMenuSlotLeft  = 0x13E0;                                // menu.slotLeft
+std::uint64_t kScnNpcCur     = rtx::scn::kNpcCur;
+std::uint64_t kScnLpCur      = rtx::scn::kLpCur;
+std::uint64_t kScnLpMax      = rtx::scn::kLpMax;
+std::uint64_t kHoverSlotOff  = 0x13F8;   // input processor -> hover record slot (left-click slot + 0x18)
+// Actor position (fine east, up, north) and the movement route before it, read off the actor's own
+// position getter once per process (actor_pos_for); the compiled values stand until then.
+std::uint32_t kActorPosSlot  = 0xB0;                                  // actor.posSlot
+std::uint64_t kScnPosX = rtx::scn::kPosX, kScnPosZ = rtx::scn::kPosZ, kScnPosY = rtx::scn::kPosY, kScnMoveMgr = rtx::scn::kMoveMgr;
+// The actor fields from the interaction target on move with the position as one block (951-1 put
+// 0x10 before it: target uid 0x1B4 -> 0x1C4, position 0x270 -> 0x280, animation 0xA90 -> 0xAA0, all
+// read live); act() gives a 950-1 offset in that block where the running build keeps it.
+inline std::uint64_t act(std::uint64_t off950) { return off950 + (kScnPosX - rtx::scn::kPosX); }
+// Map manager fields (rules map.loadA, map.loadB, map.loadScreen); the loaded map's base tile sits
+// 0x78 before the first progress field (950-1 and 951-1 alike).
+std::uint32_t kMapLoadA      = 0x710, kMapLoadB = 0x714, kMapLoadScreen = 0x71C;
+std::uint32_t kMapBase       = 0x698;
+// The worldView's area box (rule wv.areaEntries = box + 0x28).
+std::uint32_t kWvAreaEntries = 0xE8410;
+std::uint64_t kWvBoxOff      = kWvBoxOff;
+// The fields that follow from the named ones, set after every calibration.
+static void derive_record_fields() {
+    kScnNpcCur = (std::uint64_t)kScnConfig + (rtx::scn::kNpcCur - rtx::scn::kConfig);
+    kScnLpCur = (std::uint64_t)kNpcStatsOff + 12;
+    kScnLpMax = (std::uint64_t)kNpcBaseStatsOff + 12;
+    kHoverSlotOff = (std::uint64_t)kMenuSlotLeft + 0x18;
+    kMapBase = kMapLoadA - 0x78;
+    kWvBoxOff = (std::uint64_t)kWvAreaEntries - 0x28;
+}
 std::uint32_t kOffConnection    = rtx::md::kConnection;     // 0x198B8 -> connection: i32 logout reason +0x50
 std::uint32_t kOffVarWatch      = rtx::md::kVarWatch;       // 0x198C8 -> var watch: u32 change counter +0x10, dirty byte +0x14 (bumped by the var and interface packets)
 std::uint32_t kOffFriendsChat   = rtx::md::kFriendsChat;    // 0x198E0 -> friends chat channel
@@ -256,6 +318,11 @@ std::optional<T> rpm(HANDLE h, std::uint64_t addr) {
     if (!rpm_bytes(h, addr, &v, sizeof(T))) return std::nullopt;
     return v;
 }
+// the actor's overhead object pointer; none when its offset was not found
+std::optional<std::uint64_t> overhead_ptr(HANDLE h, std::uint64_t sec) {
+    if (!kScnOverhead) return std::nullopt;
+    return rpm<std::uint64_t>(h, sec + kScnOverhead);
+}
 
 // JagString (24-byte std::string-alike): tag@+0x17; bit 7 set = heap (char*@+0, len@+8),
 // clear = inline (<=23 chars@+0, len = 0x17 - tag). UTF-8. Returns "" for empty/unreadable.
@@ -326,9 +393,9 @@ std::string read_jagstring_long(HANDLE h, std::uint64_t str, std::uint64_t max_l
 
 // NPC combat stats in the actor object (950-1): stats[7] i32 at +0x1140 (attack, defence, strength,
 // constitution, ranged, prayer, magic), baseStats[7] at +0x115C, and the level the game shows at
-// +0x1178. rtx::scn::kLpCur / kLpMax are stats[3] / baseStats[3].
-constexpr std::uint64_t kNpcStatsOff = 0x1140, kNpcBaseStatsOff = 0x115C, kNpcVisLevel = 0x1178;
-static_assert(kNpcStatsOff + 12 == rtx::scn::kLpCur && kNpcBaseStatsOff + 12 == rtx::scn::kLpMax, "life points are the constitution slot of the stat arrays");
+// +0x1178 (951-1: all +0x10). The rules npc.statCur, npc.statBase and npc.visLevel read them off the
+// client's handlers; kScnLpCur / kScnLpMax are stats[3] / baseStats[3].
+static_assert(rtx::scn::kLpCur == 0x1140 + 12 && rtx::scn::kLpMax == 0x115C + 12, "life points are the constitution slot of the stat arrays");
 struct NpcStats { int cur[7]; int base[7]; int vis; };
 static bool read_npc_stats(HANDLE h, std::uint64_t sec, NpcStats& out) {
     std::uint8_t b[0x3C];
@@ -665,6 +732,219 @@ void release(State& s) {
     s = State{};
 }
 
+// ---- the var stores' layout, from their own lookup routines ----
+// Each var store class finds a var in its own hash table (VarStoreCode.h), so the bucket offsets come
+// off that code: the player store's values and change-stamp maps (vtable slots 1 and 2), and the
+// client store, the one var store object the input state embeds. Read once per process, as soon as
+// the root and the input state are set; a routine the decoder does not recognise leaves the values
+// in place and says why in the data.varlayout row.
+struct VarLayout {
+    bool done = false, ok = false;
+    std::string why;
+    std::uint32_t varpBuckets = 0, varpNext = 0, stampBuckets = 0, stampNext = 0, varcObj = 0, varcBuckets = 0, varcHits = 0;
+};
+std::mutex g_varLayoutMu;
+std::unordered_map<DWORD, VarLayout> g_varLayout;
+std::unordered_map<std::uint64_t, std::uint32_t> g_storeClass;   // pid << 48 ^ vtable -> bucket offset, 0 not a var store
+static bool rpm_raw(HANDLE h, std::uint64_t a, void* out, std::size_t n) {
+    SIZE_T got = 0;
+    return ReadProcessMemory(h, (LPCVOID)a, out, n, &got) && got == n;
+}
+static std::uint32_t store_class_buckets(HANDLE h, std::uint64_t vt) {
+    if (vt <= 0x10000) return 0;
+    const std::uint64_t key = vt ^ ((std::uint64_t)(GetProcessId(h) & 0xFFFF) << 48);
+    {
+        std::lock_guard<std::mutex> lk(g_varLayoutMu);
+        auto it = g_storeClass.find(key);
+        if (it != g_storeClass.end()) return it->second;
+    }
+    auto read = [&](std::uint64_t a, void* out, std::size_t n) { return rpm_raw(h, a, out, n); };
+    std::uint32_t b = 0, next = 0;
+    if (!rtx::varcode::StoreMaps(read, vt, b, next) || next != kVarNodeNext) b = 0;
+    std::lock_guard<std::mutex> lk(g_varLayoutMu);
+    g_storeClass[key] = b;
+    return b;
+}
+// The var table header of a store object (buckets at +0x10, count +0x18, elements +0x20 from it), by
+// the object's own class; 0 when the object is not a var store.
+static std::uint64_t store_table(HANDLE h, std::uint64_t obj) {
+    std::uint64_t vt = 0;
+    if (obj <= 0x10000 || !rpm_raw(h, obj, &vt, 8)) return 0;
+    const std::uint32_t b = store_class_buckets(h, vt);
+    return b >= 0x10 ? obj + b - 0x10 : 0;
+}
+static void var_layout_for(HANDLE h, DWORD pid, std::uint64_t mgva, std::uint64_t modBase, std::uint64_t modSize) {
+    {
+        std::lock_guard<std::mutex> lk(g_varLayoutMu);
+        auto it = g_varLayout.find(pid);
+        if (it != g_varLayout.end() && it->second.done) return;
+    }
+    auto read = [&](std::uint64_t a, void* out, std::size_t n) { return rpm_raw(h, a, out, n); };
+    std::uint64_t root = 0, vt = 0, state = 0;
+    if (!read(mgva, &root, 8) || root <= 0x10000) return;
+    if (!read(root + kOffVarpMgr, &vt, 8) || vt < modBase || vt >= modBase + modSize) return;
+    if (!read(root + kOffVarcStore, &state, 8) || state <= 0x10000) return;
+    VarLayout L; L.done = true;
+    if (!rtx::varcode::StoreMaps(read, vt, L.varpBuckets, L.varpNext, &L.stampBuckets, &L.stampNext) || L.varpNext != kVarNodeNext) {
+        L.why = "the player var store's lookup (vtable slot 1) is not recognised";
+        L.varpBuckets = 0;
+    } else {
+        // the client store: the one object in the input state whose class is a var store
+        std::vector<std::uint64_t> q(0x10000 / 8);
+        if (read(state, q.data(), q.size() * 8)) {
+            for (std::size_t i = 0; i < q.size(); ++i) {
+                const std::uint64_t v = q[i];
+                if (v < modBase || v >= modBase + modSize || v == vt) continue;
+                if (const std::uint32_t b = store_class_buckets(h, v)) {
+                    if (!L.varcHits++) { L.varcObj = (std::uint32_t)(i * 8); L.varcBuckets = b; }
+                }
+            }
+        }
+        if (L.varcHits != 1) L.why = "the client var store: " + std::to_string(L.varcHits) + " var store objects in the input state, one expected";
+        if (!L.stampBuckets || !L.stampNext)
+            L.why += std::string(L.why.empty() ? "" : "; ") + "the change-stamp map is not recognised in the player store's setter (vtable slot 2)";
+        L.ok = L.why.empty();
+    }
+    std::lock_guard<std::mutex> lk(g_varLayoutMu);
+    if (L.varpBuckets) kOffVarpHash = kOffVarpMgr + L.varpBuckets - 8;
+    if (L.stampBuckets && L.stampNext) { kStampBuckets = L.stampBuckets; kStampNext = L.stampNext; }
+    if (L.varcHits == 1) { kVarcStoreObj = L.varcObj; kVarcHashOff = L.varcObj + L.varcBuckets - 8; }
+    g_varLayout[pid] = L;
+    char line[320];
+    std::snprintf(line, sizeof(line), "var stores from code: varp buckets +0x%X, stamps +0x%X next +0x%X, client store at input state +0x%X (buckets +0x%X)%s%s",
+                  L.varpBuckets, L.stampBuckets, L.stampNext, L.varcObj, L.varcBuckets, L.why.empty() ? "" : "; ", L.why.c_str());
+    rtx::log::Client(pid, line);
+}
+// The actor position from the local player's own getter: account -> local index -> player
+// registry -> the actor, its vtable slot actor.posSlot -> `lea rax,[rcx+position]; ret`.
+std::mutex g_actorPosMu;
+std::unordered_map<DWORD, std::uint32_t> g_actorPos;   // pid -> position offset, 0 not found yet
+static void actor_pos_for(HANDLE h, DWORD pid, std::uint64_t mgva, std::uint64_t modBase, std::uint64_t modSize) {
+    {
+        std::lock_guard<std::mutex> lk(g_actorPosMu);
+        auto it = g_actorPos.find(pid);
+        if (it != g_actorPos.end() && it->second) return;
+    }
+    std::uint64_t root = 0, acct = 0, reg = 0, arr = 0, entry = 0, actor = 0, vt = 0, fn = 0;
+    std::int32_t idx = -1;
+    if (!rpm_raw(h, mgva, &root, 8) || root <= 0x10000) return;
+    if (!rpm_raw(h, root + kOffAccount, &acct, 8) || acct <= 0x10000 || !rpm_raw(h, acct + kScnLocalUid, &idx, 4) || idx < 0 || idx > 4095) return;
+    if (!rpm_raw(h, root + kOffPlayers, &reg, 8) || reg <= 0x10000 || !rpm_raw(h, reg + 0x10, &arr, 8) || arr <= 0x10000) return;
+    if (!rpm_raw(h, arr + (std::uint64_t)idx * 8, &entry, 8) || entry <= 0x10000 || !rpm_raw(h, entry + 0x38, &actor, 8) || actor <= 0x10000) return;
+    if (!rpm_raw(h, actor, &vt, 8) || vt < modBase || vt >= modBase + modSize) return;
+    if (!rpm_raw(h, vt + kActorPosSlot, &fn, 8) || fn < modBase || fn >= modBase + modSize) return;
+    std::uint8_t b[8];
+    if (!rpm_raw(h, fn, b, sizeof(b))) return;
+    const std::uint32_t pos = rtx::actorcode::PositionFromGetter(b);
+    std::lock_guard<std::mutex> lk(g_actorPosMu);
+    g_actorPos[pid] = pos;
+    if (pos) {
+        kScnPosX = pos; kScnPosZ = pos + 4; kScnPosY = pos + 8; kScnMoveMgr = pos - 8;
+        char line[160];
+        std::snprintf(line, sizeof(line), "actor position from its getter: +0x%X (slot 0x%X), route +0x%X", pos, kActorPosSlot, pos - 8);
+        rtx::log::Client(pid, line);
+    }
+}
+static std::uint32_t actor_pos_of(DWORD pid);
+// The map manager's base tile when the rule map.loadA proved nothing (its operation unnamed on this
+// build): the one pair of zone-aligned i32 in the manager that has the local player inside the
+// loaded window (within 256 tiles); the progress fields keep their distance after it.
+bool g_mapRuleProved = false;
+std::mutex g_mapBaseMu;
+std::unordered_map<DWORD, std::uint32_t> g_mapBaseFound;   // pid -> base offset, 0 not yet
+static void map_base_for(HANDLE h, DWORD pid, std::uint64_t mgva) {
+    if (g_mapRuleProved || !actor_pos_of(pid)) return;
+    {
+        std::lock_guard<std::mutex> lk(g_mapBaseMu);
+        auto it = g_mapBaseFound.find(pid);
+        if (it != g_mapBaseFound.end() && it->second) return;
+    }
+    std::uint64_t root = 0, acct = 0, reg = 0, arr = 0, entry = 0, actor = 0, mm = 0;
+    std::int32_t idx = -1;
+    if (!rpm_raw(h, mgva, &root, 8) || root <= 0x10000) return;
+    if (!rpm_raw(h, root + kOffAccount, &acct, 8) || acct <= 0x10000 || !rpm_raw(h, acct + kScnLocalUid, &idx, 4) || idx < 0 || idx > 4095) return;
+    if (!rpm_raw(h, root + kOffPlayers, &reg, 8) || reg <= 0x10000 || !rpm_raw(h, reg + 0x10, &arr, 8) || arr <= 0x10000) return;
+    if (!rpm_raw(h, arr + (std::uint64_t)idx * 8, &entry, 8) || entry <= 0x10000 || !rpm_raw(h, entry + 0x38, &actor, 8) || actor <= 0x10000) return;
+    float fx = 0, fy = 0;
+    if (!rpm_raw(h, actor + kScnPosX, &fx, 4) || !rpm_raw(h, actor + kScnPosY, &fy, 4) || !(fx > 0) || !(fy > 0)) return;
+    const int tx = (int)(fx / 512.f), ty = (int)(fy / 512.f);
+    if (!rpm_raw(h, root + kOffMapMgr, &mm, 8) || mm <= 0x10000) return;
+    std::int32_t w[0x400 / 4];
+    if (!rpm_raw(h, mm + 0x400, w, sizeof(w))) return;
+    int hits = 0; std::uint32_t at = 0;
+    for (int i = 0; i + 1 < (int)(sizeof(w) / 4); ++i) {
+        const int bx = w[i], by = w[i + 1];
+        if (bx <= 0 || by <= 0 || (bx & 7) || (by & 7)) continue;
+        if (tx < bx || ty < by || tx - bx >= 256 || ty - by >= 256) continue;
+        ++hits; at = 0x400 + (std::uint32_t)i * 4;
+    }
+    if (hits != 1) return;
+    std::lock_guard<std::mutex> lk(g_mapBaseMu);
+    g_mapBaseFound[pid] = at;
+    kMapBase = at; kMapLoadA = at + 0x78; kMapLoadB = at + 0x7C; kMapLoadScreen = at + 0x84;
+    char line[160];
+    std::snprintf(line, sizeof(line), "map base from the player's tile: map manager +0x%X (progress +0x%X)", at, at + 0x78);
+    rtx::log::Client(pid, line);
+}
+static std::uint32_t actor_pos_of(DWORD pid) {
+    std::lock_guard<std::mutex> lk(g_actorPosMu);
+    auto it = g_actorPos.find(pid);
+    return it == g_actorPos.end() ? 0 : it->second;
+}
+static VarLayout var_layout_of(DWORD pid) {
+    std::lock_guard<std::mutex> lk(g_varLayoutMu);
+    auto it = g_varLayout.find(pid);
+    return it == g_varLayout.end() ? VarLayout{} : it->second;
+}
+
+// ---- the world grid inside the worldView ----
+// The worldView owns the region grid: a pointer to itself (on the static map) with the grid's
+// bounds 0x8C before it as four i32 (min x, min y, max x, max y in mapsquares) and the row array
+// 0x40 before it; the instance map definition keeps its distance to it (both moved +0x6E0 on
+// 951-1). The owner is the one self-pointer in the worldView whose bounds read as a map box,
+// looked for once per process and again while none is found.
+struct WvGrid { std::uint64_t owner = rtx::scn::kWvGrid, min = rtx::scn::kGridMin, rows = rtx::scn::kGridRows, def = rtx::scn::kMapDef; bool found = false; };
+std::mutex g_wvGridMu;
+std::unordered_map<DWORD, WvGrid> g_wvGrid;
+static WvGrid wv_grid(HANDLE h, std::uint64_t wv) {
+    const DWORD pid = GetProcessId(h);
+    {
+        std::lock_guard<std::mutex> lk(g_wvGridMu);
+        auto it = g_wvGrid.find(pid);
+        if (it != g_wvGrid.end() && it->second.found) return it->second;
+    }
+    WvGrid g;
+    if (wv > 0x10000) {
+        constexpr std::uint64_t kLo = 0x10000, kHi = 0x18000;
+        std::vector<std::uint64_t> q((kHi - kLo) / 8);
+        SIZE_T got = 0;
+        if (ReadProcessMemory(h, (LPCVOID)(wv + kLo), q.data(), q.size() * 8, &got) && got == q.size() * 8) {
+            int hits = 0; std::uint64_t at = 0;
+            for (std::size_t i = 0x8C / 8 + 1; i < q.size(); ++i) {
+                if (q[i] != wv) continue;
+                const std::uint64_t off = kLo + i * 8;
+                std::int32_t b[4];
+                std::memcpy(b, reinterpret_cast<const std::uint8_t*>(q.data()) + (off - kLo - 0x8C), sizeof(b));
+                if (b[0] < 0 || b[1] < 0 || b[0] > b[2] || b[1] > b[3] || b[2] > 255 || b[3] > 255) continue;
+                ++hits; at = off;
+            }
+            if (hits == 1) {
+                g.owner = at; g.min = at - (rtx::scn::kWvGrid - rtx::scn::kGridMin); g.rows = at - (rtx::scn::kWvGrid - rtx::scn::kGridRows);
+                g.def = at + (rtx::scn::kMapDef - rtx::scn::kWvGrid); g.found = true;
+            }
+        }
+    }
+    std::lock_guard<std::mutex> lk(g_wvGridMu);
+    g_wvGrid[pid] = g;
+    return g;
+}
+
+static WvGrid wv_grid_cached(DWORD pid) {
+    std::lock_guard<std::mutex> lk(g_wvGridMu);
+    auto it = g_wvGrid.find(pid);
+    return it == g_wvGrid.end() ? WvGrid{} : it->second;
+}
+
 struct ProcSnap {
     HANDLE        h = nullptr;       // duplicated handle, closed in the dtor
     std::uint64_t mgva = 0;          // main_global_va: address of the MainData root pointer
@@ -688,6 +968,7 @@ static ProcSnap snap_proc(std::uint32_t pid) {
         s.mod_base = it->second.mod_base;
         s.mod_size = it->second.mod_size;
     }
+    if (s) { var_layout_for(s.h, (DWORD)pid, s.mgva, s.mod_base, s.mod_size); actor_pos_for(s.h, (DWORD)pid, s.mgva, s.mod_base, s.mod_size); map_base_for(s.h, (DWORD)pid, s.mgva); }
     return s;
 }
 
@@ -772,6 +1053,27 @@ const CalibratedOffset kCalibrated[] = {
     { "md::kLoginMgr",   &kOffLoginMgr,    kOffLoginMgr },
     { "md::kWorldInfo",  &kOffWorldInfo,   kOffWorldInfo },
     { "md::kCountry",    &kOffCountry,     kOffCountry },
+    { "varcMouseX",      &kVarcMouseX,     kVarcMouseX },
+    { "varcMouseY",      &kVarcMouseY,     kVarcMouseY },
+    { "varcButtons",     &kVarcButtons,    kVarcButtons },
+    { "varcClan",        &kVarcClan,       kVarcClan },
+    { "md::kSceneViews", &kScnContainer,   kScnContainer },
+    { "md::kMiniMap",    &kScnMiniMap,     kScnMiniMap },
+    { "scn::kConfig",    &kScnConfig,      kScnConfig },
+    { "scn::kCombat",    &kScnCombat,      kScnCombat },
+    { "npc.statCur",     &kNpcStatsOff,    kNpcStatsOff },
+    { "npc.statBase",    &kNpcBaseStatsOff, kNpcBaseStatsOff },
+    { "npc.visLevel",    &kNpcVisLevel,    kNpcVisLevel },
+    { "iface.subBuckets", &kIfaceSubBuckets, kIfaceSubBuckets },
+    { "iface.subCount",  &kIfaceSubBucketCount, kIfaceSubBucketCount },
+    { "chat.buckets",    &kChatBuckets,    kChatBuckets },
+    { "chat.bucketCount", &kChatBucketCount, kChatBucketCount },
+    { "menu.slotLeft",   &kMenuSlotLeft,   kMenuSlotLeft },
+    { "actor.posSlot",   &kActorPosSlot,   kActorPosSlot },
+    { "map.loadA",       &kMapLoadA,       kMapLoadA },
+    { "map.loadB",       &kMapLoadB,       kMapLoadB },
+    { "map.loadScreen",  &kMapLoadScreen,  kMapLoadScreen },
+    { "wv.areaEntries",  &kWvAreaEntries,  kWvAreaEntries },
 };
 
 // ---- positions read out of the client's own code ----
@@ -857,11 +1159,24 @@ void actor_layout_from_code(HANDLE h) {
 // Each offset is the client's when it proved it, else the compiled value, never what an earlier
 // attach proved: that client may have been another build.
 void calibrate_offsets(HANDLE h) {
+    {
+        // a new attach reads the var stores' layout again, after the offsets below are set
+        std::lock_guard<std::mutex> lk(g_varLayoutMu);
+        const std::uint64_t mine = (std::uint64_t)(GetProcessId(h) & 0xFFFF);
+        g_varLayout.erase(GetProcessId(h));
+        { std::lock_guard<std::mutex> lg(g_wvGridMu); g_wvGrid.erase(GetProcessId(h)); }
+        { std::lock_guard<std::mutex> lg(g_actorPosMu); g_actorPos.erase(GetProcessId(h)); }
+        { std::lock_guard<std::mutex> lg(g_mapBaseMu); g_mapBaseFound.erase(GetProcessId(h)); }
+        for (auto it = g_storeClass.begin(); it != g_storeClass.end();)
+            it = (it->first >> 48) == mine ? g_storeClass.erase(it) : std::next(it);
+    }
     wchar_t path[MAX_PATH] = {};
     if (!GetModuleFileNameExW(h, nullptr, path, MAX_PATH)) {
         for (const auto& c : kCalibrated) *c.at = c.compiled;
+        kScnOverhead = 0; kOffArrowMgr = 0; kArrowSlotBytes = 0; kArrowRequests = kArrowRequestSize = 0;   // read from the exe only: off without it
+        derive_record_fields();
         actor_layout_from_code(h);
-        rtx::log::Client(GetProcessId(h), "calibrate: client exe not found, using the compiled offsets");
+        rtx::log::Client(GetProcessId(h), "calibrate: client exe not found, using the compiled offsets; hitsplats, head bars and the scan clue ring off");
         return;
     }
     std::wstring opcodes;
@@ -870,10 +1185,55 @@ void calibrate_offsets(HANDLE h) {
         if (GetEnvironmentVariableW(L"USERPROFILE", up, MAX_PATH))
             opcodes = std::wstring(up) + L"\\RuneToolsX\\cs2\\opcodes.json";
     }
+    // server packets by identity: the reference build's packets found in this exe (PacketIds.h)
+    {
+        std::vector<std::uint8_t> file;
+        if (rtx::calib::ReadFile(path, file)) rtx::pktid::SetCurrent(file.data(), file.size(), rtx::pktid::kRef, rtx::pktid::kRefCount, rtx::pktid::kZoneRef, rtx::pktid::kZoneRefCount);
+        else rtx::pktid::Current() = rtx::pktid::Live{};
+        // from the exe's code: script operand widths (script pins that ignore the opcode renumbering),
+        // the actor's overhead object, the arrow manager and its slot size
+        {
+            rtx::calib::Pe pe;
+            std::vector<std::uint8_t> widths;
+            if (!file.empty() && rtx::calib::ParsePe(file, pe)) widths = rtx::calib::ScriptOperandWidths(pe);
+            rtx::log::Client(GetProcessId(h), widths.empty() ? "scripts: operand widths not found in the registrar, script pins compare raw bytes"
+                                                             : "scripts: operand widths for " + std::to_string(widths.size()) + " opcodes from the registrar");
+            rtx::cache::UseScriptOperands(std::move(widths));
+            kScnOverhead = pe.base ? rtx::calib::OverheadFromCode(pe) : 0;
+            const rtx::calib::ArrowSite as = pe.base ? rtx::calib::ArrowSiteFromCode(pe) : rtx::calib::ArrowSite{};
+            kOffArrowMgr = as.ok ? as.arrow : 0;
+            kArrowSlotBytes = as.ok ? as.slot : 0;
+            kArrowRequests = as.ok ? as.requests : 0;
+            kArrowRequestSize = as.ok ? as.requestSize : 0;
+            char ov[120];
+            if (kScnOverhead) std::snprintf(ov, sizeof(ov), "actors: overhead object at +0x%X from the head-bar code (compiled 0x%X)", kScnOverhead, (unsigned)rtx::scn::kOverhead);
+            else std::snprintf(ov, sizeof(ov), "actors: overhead object not found in the head-bar code; hitsplats and head bars off");
+            rtx::log::Client(GetProcessId(h), ov);
+        }
+        const auto& P = rtx::pktid::Current();
+        char line[220];
+        if (P.ok) std::snprintf(line, sizeof(line), "packets: %d in this exe, %d of %d reference packets found (%d by name, %d by order, %d by length, %d length differ)",
+                                P.liveCount, P.c.byName + P.c.byOrder + P.c.byLength, P.c.refCount, P.c.byName, P.c.byOrder, P.c.byLength, P.c.lenDiffer);
+        else std::snprintf(line, sizeof(line), "packets: not identified (%s), opcodes read as compiled", P.why.empty() ? "exe file not readable" : P.why.c_str());
+        rtx::log::Client(GetProcessId(h), line);
+        // the fixed-length packets' field layouts from their handlers, paired with the reference build's
+        if (P.ok) rtx::preads::Derive(file.data(), file.size(), rtx::preads::kRefReads, rtx::preads::kRefReadsCount, P.invoke, sizeof(P.invoke) / sizeof(P.invoke[0]));
+        else rtx::preads::Current() = rtx::preads::Layouts{};
+        const auto& PL = rtx::preads::Current();
+        int same = 0, off = 0;
+        for (const auto& kv : PL.byRef) { if (kv.second.state == rtx::preads::kSame) ++same; else if (kv.second.state == rtx::preads::kOff) ++off; }
+        if (PL.ran) std::snprintf(line, sizeof(line), "packet layouts: %d of %d reference packets read from their handlers, %d paired (%d changed since the reference, %d decided by read order), %d read alike as far as read, %d off",
+                                  PL.derived, PL.known, PL.paired, PL.changed, PL.ambiguous, same, off);
+        else std::snprintf(line, sizeof(line), "packet layouts: not read (%s), fixed-length packets left raw", PL.why.empty() ? "packets not identified" : PL.why.c_str());
+        rtx::log::Client(GetProcessId(h), line);
+    }
     // nothing found (an operation table from another build among other reasons) gives every offset
     // its compiled value
     rtx::calib::Run(path, opcodes);
     for (const auto& c : kCalibrated) *c.at = rtx::calib::Use(c.name, c.compiled);
+    g_mapRuleProved = false;
+    for (const auto& f : rtx::calib::Results()) if (std::string(f.name) == "map.loadA" && f.found) g_mapRuleProved = true;
+    derive_record_fields();
     actor_layout_from_code(h);
     {
         // what the client proved about itself, or why it proved nothing, on the record at every
@@ -1887,7 +2247,8 @@ std::string OpenContainersJson(std::uint32_t pid) {
     return out;
 }
 
-// POF pens (containers 851-857): slot item = species; inv-var index 2 & 0x1F = trait (enum 14340).
+// POF pens (the inventories enum 1943 lists: Manor Farm 851-857, Anachronia 877-881): slot item =
+// species; inv-var index 2 & 0x1F = trait (enum 14340 on Manor Farm, 14341 for dinosaurs).
 std::string PofJson(std::uint32_t pid) {
     const char* kEmpty = "{\"pens\":[]}";
     std::string key;
@@ -1916,7 +2277,9 @@ std::string PofJson(std::uint32_t pid) {
     }
     static std::mutex s_penHashMu;
     static std::unordered_map<std::uint64_t, std::uint64_t> s_penHash;   // (pid<<16|pen) -> last written hash
-    static const int kPens[] = { 851, 852, 853, 854, 855, 856, 857 };
+    // every pen inventory of both farms, in the game's order (enum POF_PADDOCK_INVENTORIES)
+    std::vector<int> kPens;
+    for (int k = 0; k < 64; ++k) { const int inv = rtx::cache::EnumIntValue(1943, k, -1); if (inv < 0) break; kPens.push_back(inv); }
     std::string out = "{\"pens\":["; bool firstPen = true;
     for (int pen : kPens) {
         std::vector<BankSlot> slots; bool open = false; long long cached_at = 0;
@@ -2595,16 +2958,17 @@ static long long read_var_seq(HANDLE h, std::uint64_t root) {
     return v ? (long long)*v : -1;
 }
 
-// The player var store's change-stamp map at root+0x19FB8+0x38170 (buckets +0x38178, bucket count
-// +0x38180): node {var id i32 +0, engine-clock ms + 500 i64 +8, flag u8 +0x10, next +0x18}, written
+// The player var store's change-stamp map (buckets at kStampBuckets in the store, bucket count +8,
+// both read off the store's setter): node {var id i32 +0, engine-clock ms + 500 i64 +8, flag u8 +0x10,
+// next at kStampNext (+0x18 on 950-1, +0x50 on 951-1, also from the setter)}, written
 // when a script sets a player var, so its keys are varp ids that changed in the last 500 ms. The
 // health row data.varstamps keeps its layout under watch.
 struct VarStamp { int id; long long stamp; int flag; };
 static bool read_var_stamps(HANDLE h, std::uint64_t root, std::vector<VarStamp>& out, std::uint32_t* bucketCount = nullptr) {
     out.clear();
     const std::uint64_t mgr = root + kOffVarpMgr;
-    const std::uint64_t buckets = rpm<std::uint64_t>(h, mgr + 0x38178).value_or(0);
-    const std::uint32_t cap = rpm<std::uint32_t>(h, mgr + 0x38180).value_or(0);
+    const std::uint64_t buckets = rpm<std::uint64_t>(h, mgr + kStampBuckets).value_or(0);
+    const std::uint32_t cap = rpm<std::uint32_t>(h, mgr + kStampBuckets + 8).value_or(0);
     if (bucketCount) *bucketCount = cap;
     if (buckets <= 0x10000 || buckets > 0x00007FFFFFFFFFFFull || cap == 0 || cap > 100000) return false;
     std::vector<std::uint64_t> arr((std::size_t)cap);
@@ -2612,11 +2976,11 @@ static bool read_var_stamps(HANDLE h, std::uint64_t root, std::vector<VarStamp>&
     for (std::uint32_t i = 0; i < cap && out.size() < 256; ++i) {
         std::uint64_t node = arr[i];
         for (int guard = 0; node > 0x10000 && guard < 64; ++guard) {
-            std::uint8_t nb[0x20];
-            if (!rpm_bytes(h, node, nb, sizeof(nb))) break;
+            std::uint8_t nb[0x80];
+            if (kStampNext < 0x18 || kStampNext + 8 > sizeof(nb) || !rpm_bytes(h, node, nb, kStampNext + 8)) break;
             VarStamp s; std::memcpy(&s.id, nb, 4); std::memcpy(&s.stamp, nb + 8, 8); s.flag = nb[0x10];
             out.push_back(s);
-            std::memcpy(&node, nb + 0x18, 8);
+            std::memcpy(&node, nb + kStampNext, 8);
         }
     }
     return true;
@@ -2827,7 +3191,7 @@ std::string VarDomainStoresJson(std::uint32_t pid) {
         return true;
     };
     std::uint64_t store = rpm<std::uint64_t>(h, *root + kOffVarcStore).value_or(0);
-    std::uint64_t clan  = store > 0x10000 ? rpm<std::uint64_t>(h, store + 0x77b0).value_or(0) : 0;
+    std::uint64_t clan  = store > 0x10000 ? rpm<std::uint64_t>(h, store + kVarcClan).value_or(0) : 0;
     std::uint64_t grp   = rpm<std::uint64_t>(h, *root + kOffPlayerGroup).value_or(0);
     std::uint64_t grpObj = grp > 0x10000 ? rpm<std::uint64_t>(h, grp + 8).value_or(0) : 0;
     // Clan settings (domain 7): the clan manager holds the listened settings store as a counted
@@ -2839,23 +3203,26 @@ std::string VarDomainStoresJson(std::uint32_t pid) {
     std::uint64_t csObj = (clanMgr > 0x10000 && csCounter > 0x10000) ? rpm<std::uint64_t>(h, clanMgr + 0x68).value_or(0) : 0;
 
     std::string out = "{\"stores\":{"; char buf[256]; bool firstS = true;
-    auto emit = [&](const char* key, const char* src, std::uint64_t obj, std::uint64_t table) {
-        int div = 0, count = 0; bool ok = obj > 0x10000 && dom_table(h, table, div, count);
-        std::uint64_t vt = obj > 0x10000 ? rpm<std::uint64_t>(h, table).value_or(0) : 0;
+    auto emit = [&](const char* key, const std::string& src, std::uint64_t obj, std::uint64_t table) {
+        int div = 0, count = 0; bool ok = obj > 0x10000 && table && dom_table(h, table, div, count);
+        std::uint64_t vt = obj > 0x10000 ? rpm<std::uint64_t>(h, obj).value_or(0) : 0;
         std::snprintf(buf, sizeof(buf), "%s\"%s\":{\"src\":\"%s\",\"ptr\":\"0x%llx\",\"live\":%s,\"div\":%d,\"count\":%d,\"vt\":%s,\"vt_rva\":\"0x%llx\"}",
-                      firstS ? "" : ",", key, src, (unsigned long long)obj, ok ? "true" : "false", ok ? div : 0, ok ? count : 0,
+                      firstS ? "" : ",", key, src.c_str(), (unsigned long long)obj, ok ? "true" : "false", ok ? div : 0, ok ? count : 0,
                       vt_ok(vt) ? "true" : "false", (unsigned long long)(in_image(vt) ? vt - ps.mod_base : 0));
         out += buf; firstS = false;
     };
-    emit("0",  "MainData+0x19fb8 (varp manager)", *root + kOffVarpMgr, *root + kOffVarpHash - 8);
-    emit("2",  "[MainData+0x19920]+0x7620 (varc object)", store > 0x10000 ? store + 0x7620 : 0, store + 0x7620 + 8);
-    emit("6",  "[[MainData+0x19920]+0x77b0]", clan, clan);
-    emit("7",  "[[MainData+0x19888]+0x68] (listened clan settings; map at +0x98)", csObj, csObj > 0x10000 ? csObj + 0x90 : 0);
-    emit("9",  "[[MainData+0x19948]+8]+0x28", grpObj > 0x10000 ? grpObj + 0x28 : 0, grpObj + 0x28);
+    const std::uint64_t client = store > 0x10000 ? store + kVarcStoreObj : 0;
+    const std::uint64_t group = grpObj > 0x10000 ? grpObj + 0x28 : 0;
+    const std::uint64_t clanT = store_table(h, clan), csT = store_table(h, csObj), grpT = store_table(h, group);
+    emit("0",  "MainData+" + rtx::health::Hex(kOffVarpMgr) + " (varp manager)", *root + kOffVarpMgr, *root + kOffVarpHash - 8);
+    emit("2",  "[MainData+" + rtx::health::Hex(kOffVarcStore) + "]+" + rtx::health::Hex(kVarcStoreObj) + " (varc object)", client, store_table(h, client));
+    emit("6",  "[[MainData+" + rtx::health::Hex(kOffVarcStore) + "]+" + rtx::health::Hex(kVarcClan) + "]", clan, clanT);
+    emit("7",  "[[MainData+" + rtx::health::Hex(kOffClanSettings) + "]+0x68] (listened clan settings)", csObj, csT);
+    emit("9",  "[[MainData+" + rtx::health::Hex(kOffPlayerGroup) + "]+8]+0x28", group, grpT);
     out += "},\"vars\":{"; bool first = true;
-    if (clan > 0x10000) dom_dump(h, clan, 6, out, first);
-    if (csObj > 0x10000) dom_dump(h, csObj + 0x90, 7, out, first);
-    if (grpObj > 0x10000) dom_dump(h, grpObj + 0x28, 9, out, first);
+    if (clanT) dom_dump(h, clanT, 6, out, first);
+    if (csT) dom_dump(h, csT, 7, out, first);
+    if (grpT) dom_dump(h, grpT, 9, out, first);
     out += "}}";
     return out;
 }
@@ -3324,6 +3691,81 @@ bool ServerPacketFeedEnable(std::uint32_t pid, bool on) {
     return ok;
 }
 
+// Outbound (client->server) feed from the companion's builder hook. Mirrors ServerPacketFeedJson:
+// records since `since`, clamped to what still lives in the ring.
+std::string OutboundPacketFeedJson(std::uint32_t pid, std::uint64_t since) {
+    wchar_t name[rtx::ipc::kNameChars];
+    rtx::outbound::MakeSectionName(pid, name);
+    HANDLE h = OpenFileMappingW(FILE_MAP_READ, FALSE, name);
+    if (!h) return "{\"ok\":false,\"reason\":\"companion not loaded / panel not built in\"}";
+    auto* sh = reinterpret_cast<const rtx::outbound::Share*>(
+        MapViewOfFile(h, FILE_MAP_READ, 0, 0, 0));
+    if (!sh) { CloseHandle(h); return "{\"ok\":false,\"reason\":\"map failed\"}"; }
+    MEMORY_BASIC_INFORMATION mbi{};
+    if (VirtualQuery(sh, &mbi, sizeof(mbi)) == 0 || mbi.RegionSize < sizeof(rtx::outbound::Share)) {
+        UnmapViewOfFile(reinterpret_cast<LPCVOID>(sh)); CloseHandle(h);
+        return "{\"ok\":false,\"reason\":\"share undersized\"}";
+    }
+    std::string out;
+    if (sh->magic != rtx::outbound::kMagic || sh->version != rtx::outbound::kVersion) {
+        out = "{\"ok\":false,\"reason\":\"share magic/version mismatch\"}";
+    } else {
+        const std::uint64_t written = sh->written;
+        const std::uint64_t oldest  = written > rtx::outbound::kMaxRecords
+                                     ? written - rtx::outbound::kMaxRecords : 0;
+        std::uint64_t from = since > oldest ? since : oldest;
+        constexpr std::uint64_t kMaxPerCall = 512;
+        if (written - from > kMaxPerCall) from = written - kMaxPerCall;
+        char meta[256];
+        std::snprintf(meta, sizeof(meta),
+            "{\"ok\":true,\"written\":%llu,\"seen\":%llu,\"from\":%llu,"
+            "\"enable\":%u,\"flags\":%u,\"builderRva\":\"0x%x\",\"sites\":%u,"
+            "\"diag\":[%u,%u,%u,%u],\"packets\":[",
+            (unsigned long long)written, (unsigned long long)sh->seen,
+            (unsigned long long)from, (unsigned)sh->enable, (unsigned)sh->flags,
+            (unsigned)sh->builderRva, (unsigned)sh->diag[1],
+            sh->diag[2], sh->diag[3], sh->diag[4], sh->diag[5]);
+        out = meta;
+        bool first = true;
+        static const char* hexd = "0123456789abcdef";
+        for (std::uint64_t s = from; s < written; ++s) {
+            const rtx::outbound::Record& r = sh->recs[s % rtx::outbound::kMaxRecords];
+            if (r.seq != s + 1) continue;                       // slot lapped mid-read: skip
+            std::uint32_t kept = r.kept; if (kept > rtx::outbound::kSnip) kept = rtx::outbound::kSnip;
+            std::string hex; hex.reserve((std::size_t)kept * 2);
+            for (std::uint32_t i = 0; i < kept; ++i) {
+                hex += hexd[r.data[i] >> 4]; hex += hexd[r.data[i] & 0xF];
+            }
+            char b[96];
+            std::snprintf(b, sizeof(b),
+                "%s{\"seq\":%llu,\"t\":%llu,\"op\":%d,\"len\":%d,\"kept\":%u,\"hex\":\"",
+                first ? "" : ",", (unsigned long long)r.seq, (unsigned long long)r.tick,
+                (int)r.opcode, (int)r.length, kept);
+            out += b; out += hex; out += "\"}";
+            first = false;
+        }
+        out += "]}";
+    }
+    UnmapViewOfFile(reinterpret_cast<LPCVOID>(sh));
+    CloseHandle(h);
+    return out;
+}
+
+bool OutboundPacketFeedEnable(std::uint32_t pid, bool on) {
+    wchar_t name[rtx::ipc::kNameChars];
+    rtx::outbound::MakeSectionName(pid, name);
+    HANDLE h = OpenFileMappingW(FILE_MAP_WRITE | FILE_MAP_READ, FALSE, name);
+    if (!h) return false;
+    auto* sh = reinterpret_cast<rtx::outbound::Share*>(
+        MapViewOfFile(h, FILE_MAP_WRITE | FILE_MAP_READ, 0, 0, 0));
+    if (!sh) { CloseHandle(h); return false; }
+    bool ok = (sh->magic == rtx::outbound::kMagic && sh->version == rtx::outbound::kVersion);
+    if (ok) sh->enable = on ? (std::uint32_t)GetTickCount64() : 0u;
+    UnmapViewOfFile(reinterpret_cast<LPCVOID>(sh));
+    CloseHandle(h);
+    return ok;
+}
+
 namespace {
 const char* const kEvSkills[29] = { "Attack", "Defence", "Strength", "Constitution", "Ranged",
     "Prayer", "Magic", "Cooking", "Woodcutting", "Fletching", "Fishing", "Firemaking", "Crafting",
@@ -3399,6 +3841,14 @@ static bool ev_item_vars(const std::uint8_t* b, std::uint32_t n, std::uint32_t& 
 
 bool ev_decode(std::string& o, int op, const std::uint8_t* b, std::uint32_t n, int len, const TrackerDefs* trk = nullptr) {
     char t[128];
+    // a fixed-length packet goes back into the reference build's wire form, the one the decoders
+    // below are written for; one whose layout was not read from its handler stays raw
+    std::uint8_t tb[64];
+    switch (rtx::preads::StateOf(op)) {
+    case rtx::preads::kPaired: if ((int)n == len && rtx::preads::Translate(op, b, n, tb, sizeof(tb))) b = tb; else return false; break;
+    case rtx::preads::kOff: return false;
+    default: break;
+    }
     {   // zone item bodies; a body without a decoder is tagged with its sub id instead of raw
         const int sub = rtx::evzone::subForOpcode(op);
         if (sub >= 0) {
@@ -3733,13 +4183,13 @@ std::string EventsJson(std::uint32_t pid, std::uint64_t since) {
     } else {
         std::uint32_t tickCount = 0; double age = 0;
         const bool haveTick = TickState(pid, tickCount, age);
-        {   // map origin for zone-relative packets: [MainData+0x19898]+0x698 / +0x69C (the loaded map's base tile)
+        {   // map origin for zone-relative packets: the loaded map's base tile in the map manager (kMapBase)
             ProcSnap ps = snap_proc(pid);
             if (ps) {
                 auto root = rpm<std::uint64_t>(ps.h, ps.mgva);
                 auto mgr = root && *root > 0x10000 ? rpm<std::uint64_t>(ps.h, *root + kOffMapMgr) : std::nullopt;
                 if (mgr && *mgr > 0x10000) {
-                    auto bx = rpm<std::int32_t>(ps.h, *mgr + 0x698), by = rpm<std::int32_t>(ps.h, *mgr + 0x69C);
+                    auto bx = rpm<std::int32_t>(ps.h, *mgr + kMapBase), by = rpm<std::int32_t>(ps.h, *mgr + kMapBase + 4);
                     if (bx && by) { rtx::evzone::g_mapBaseX = *bx; rtx::evzone::g_mapBaseY = *by; }
                 }
             }
@@ -4149,9 +4599,9 @@ bool validate_scene_worker(HANDLE h, std::uint64_t worker, CamProbes* probes, bo
         if (!(t <= 5 || (t >= 10 && t <= 13))) continue;
         ++typed;
         if (probes && probes->n < 8 && (t == 1 || t == 2)) {
-            float x = rpm<float>(h, *sec + 0x270).value_or(0);
-            float z = rpm<float>(h, *sec + 0x274).value_or(0);
-            float y = rpm<float>(h, *sec + 0x278).value_or(0);
+            float x = rpm<float>(h, *sec + kScnPosX).value_or(0);
+            float z = rpm<float>(h, *sec + kScnPosZ).value_or(0);
+            float y = rpm<float>(h, *sec + kScnPosY).value_or(0);
             if (x > 0 && y > 0) {
                 probes->p[probes->n][0] = x;
                 probes->p[probes->n][1] = y;
@@ -4417,7 +4867,7 @@ bool read_view_matrix(HANDLE h, std::uint32_t pid, std::uint64_t root,
 // false when the route is empty (stationary) or unreadable, leaving tx/ty as the caller's fallback,
 // which should be the visible tile. Live-verified 2026-09-11: 99.6 % of moving samples within 2 tiles.
 static bool actor_true_tile(HANDLE h, std::uint64_t sec, int& tx, int& ty) {
-    auto mm = rpm<std::uint64_t>(h, sec + rtx::scn::kMoveMgr);
+    auto mm = rpm<std::uint64_t>(h, sec + kScnMoveMgr);
     if (!mm || *mm <= 0x10000 || *mm > 0x00007FFFFFFFFFFFull) return false;
     auto beg = rpm<std::uint64_t>(h, *mm + rtx::scn::kRouteBegin);
     auto end = rpm<std::uint64_t>(h, *mm + rtx::scn::kRouteEnd);
@@ -4438,7 +4888,7 @@ static bool actor_true_tile(HANDLE h, std::uint64_t sec, int& tx, int& ty) {
 // the local player draws adrenaline in slot 0 and health in slot 1.
 static void actor_overhead_json(HANDLE h, std::uint64_t sec, std::string& splats, int& bar, int barSlot = 0) {
     splats = "[]"; bar = -1;
-    auto hb = rpm<std::uint64_t>(h, sec + rtx::scn::kOverhead);
+    auto hb = overhead_ptr(h, sec);
     if (!hb || *hb <= 0x10000 || *hb > 0x00007FFFFFFFFFFFull) return;
     auto ring = rpm<std::uint64_t>(h, *hb + rtx::scn::kOvRing);
     if (ring && *ring > 0x10000 && *ring < 0x00007FFFFFFFFFFFull) {
@@ -4475,7 +4925,7 @@ constexpr int kBarFreshCycles = 500;    // 10 s of client cycles (50/s)
 constexpr int kBarFollowCycles = 150;   // a hit is followed by a bar update well within this
 static void actor_bar_state(HANDLE h, std::uint64_t sec, int cycleNow, int& stamp, int& sinceStamp, int& hitCycle) {
     stamp = -1; sinceStamp = 0; hitCycle = -1;
-    auto hb = rpm<std::uint64_t>(h, sec + rtx::scn::kOverhead);
+    auto hb = overhead_ptr(h, sec);
     if (!hb || *hb <= 0x10000 || *hb > 0x00007FFFFFFFFFFFull) return;
     auto slots = rpm<std::uint64_t>(h, *hb + rtx::scn::kOvSlots);
     if (slots && *slots > 0x10000 && *slots < 0x00007FFFFFFFFFFFull) stamp = rpm<std::int32_t>(h, *slots + rtx::scn::kBarStamp).value_or(-1);
@@ -4562,7 +5012,7 @@ void CombatLogPoll(std::uint32_t pid) {
     const int clockNow = (int)rpm<std::uint32_t>(h, *root + kOffClientClock).value_or(0);   // CLIENTCLOCK, 50/s
     auto pdata = deref(root, kScnPlayerData);
     int local_uid = (pdata && *pdata > 0x10000) ? rpm<std::int32_t>(h, *pdata + kScnLocalUid).value_or(-1) : -1;
-    auto cont = deref(root, rtx::scn::kContainer);
+    auto cont = deref(root, kScnContainer);
     auto idx  = (cont && *cont > 0x10000) ? rpm<std::int32_t>(h, *cont + rtx::scn::kActiveIdx) : std::nullopt;
     auto arr  = deref(cont, rtx::scn::kEntryArr);
     std::optional<std::uint64_t> wv, worker, vb, ve;
@@ -4598,7 +5048,7 @@ void CombatLogPoll(std::uint32_t pid) {
         std::vector<std::uint64_t>& keys = cur[uid];
         const std::vector<std::uint64_t>* old = nullptr;
         { auto pit = prev.find(uid); if (pit != prev.end()) old = &pit->second; }
-        auto hb = rpm<std::uint64_t>(h, *sec + rtx::scn::kOverhead);
+        auto hb = overhead_ptr(h, *sec);
         if (!hb || *hb <= 0x10000 || *hb > 0x00007FFFFFFFFFFFull) continue;
         auto ring = rpm<std::uint64_t>(h, *hb + rtx::scn::kOvRing);
         if (!ring || *ring <= 0x10000 || *ring > 0x00007FFFFFFFFFFFull) continue;
@@ -4618,7 +5068,7 @@ void CombatLogPoll(std::uint32_t pid) {
             if (!actorRead) {
                 actorRead = true;
                 base.type = type; base.uid = uid; base.self = (type == 2 && uid == local_uid);
-                auto fx = rpm<float>(h, *sec + rtx::scn::kPosX), fy = rpm<float>(h, *sec + rtx::scn::kPosY);
+                auto fx = rpm<float>(h, *sec + kScnPosX), fy = rpm<float>(h, *sec + kScnPosY);
                 base.x = fx ? (int)(*fx / 512.f) : 0; base.y = fy ? (int)(*fy / 512.f) : 0;
                 base.plane = rpm<std::int32_t>(h, *sec + kScnPlane).value_or(0);
                 char nm[40] = {0};
@@ -4634,12 +5084,12 @@ void CombatLogPoll(std::uint32_t pid) {
                     if (mx > 0 && mx < 100000 && cur >= 0) { base.lp = cur; base.lpMax = mx; }
                 }
                 if (type == 1) {
-                    int cfg = rpm<std::int32_t>(h, *sec + rtx::scn::kConfig).value_or(-1);
+                    int cfg = rpm<std::int32_t>(h, *sec + kScnConfig).value_or(-1);
                     auto meta = resolve_npc(h, *root, cfg);
                     base.id = meta.id >= 0 ? meta.id : cfg;
                     if (!meta.name.empty()) base.name = meta.name;
-                    int lp = rpm<std::int32_t>(h, *sec + rtx::scn::kLpCur).value_or(-1);
-                    int lpMax = rpm<std::int32_t>(h, *sec + rtx::scn::kLpMax).value_or(-1);
+                    int lp = rpm<std::int32_t>(h, *sec + kScnLpCur).value_or(-1);
+                    int lpMax = rpm<std::int32_t>(h, *sec + kScnLpMax).value_or(-1);
                     base.lp = (lp < 0 || lp > 1000000000) ? -1 : lp;
                     base.lpMax = (lpMax <= 0 || lpMax > 1000000000) ? -1 : lpMax;
                 }
@@ -4701,11 +5151,12 @@ std::string CombatLogJson(std::uint32_t pid, std::uint64_t since, int max_events
 namespace {
 constexpr std::uint64_t kCbSecRead   = 0x1380;   // actor object bytes covering every field read below
 constexpr std::uint64_t kCbNameLen   = 0x98;
+// 950-1 offsets of the actor block that moves with the position (act()); the NPC stats come from
+// their calibration rules
 constexpr std::uint64_t kCbAnim      = 0xA90;
 constexpr std::uint64_t kCbAnimCount = 0xAFC, kCbAnimCycle = 0xB00;   // animation start count and its CLIENTCLOCK cycle
 constexpr std::uint64_t kCbTargetUid = 0x1B4;
 constexpr std::uint64_t kCbTargetKind = 0x228;
-constexpr std::uint64_t kCbNpcStats  = 0x1140, kCbNpcBase = 0x115C, kCbNpcVis = 0x1178;
 constexpr std::uint64_t kCbVarNode   = 0x30;     // var map node: id +0, value +8, type +0x20, next +0x28
 constexpr std::uint64_t kCbWindowGap = 0x8000, kCbWindowMax = 0x80000;
 
@@ -4823,22 +5274,22 @@ bool cb_read_actor(CombatCtx& c, std::uint64_t sec, bool bars, CombatActorSample
     auto f32 = [&](std::uint64_t o) { return *reinterpret_cast<const float*>(b + o); };
     const int type = b[rtx::scn::kType];
     if (type != 1 && type != 2) return false;
-    const float fx = f32(rtx::scn::kPosX), fy = f32(rtx::scn::kPosY);
+    const float fx = f32(kScnPosX), fy = f32(kScnPosY);
     if (!(fx > 0.f && fx < 1e8f && fy > 0.f && fy < 1e8f)) return false;
     a.type = type; a.tx = (int)(fx / 512.f); a.ty = (int)(fy / 512.f); a.plane = i32(kScnPlane); a.addr = sec;
-    a.uid = i32(kScnUid); a.anim = i32(kCbAnim); a.targetUid = i32(kCbTargetUid); a.targetKind = b[kCbTargetKind];
+    a.uid = i32(kScnUid); a.anim = i32(act(kCbAnim)); a.targetUid = i32(act(kCbTargetUid)); a.targetKind = b[act(kCbTargetKind)];
     cb_name(b + rtx::scn::kName, u64(kCbNameLen), a.name);
     a.self = (type == 2 && a.uid == c.out.localUid);
     if (type == 1) {
-        int id = i32(rtx::scn::kNpcCur);
-        if (id < 0) id = i32(rtx::scn::kConfig);
+        int id = i32(kScnNpcCur);
+        if (id < 0) id = i32(kScnConfig);
         a.id = id;
-        std::memcpy(a.stats, b + kCbNpcStats, 28); std::memcpy(a.base, b + kCbNpcBase, 28); a.vis = i32(kCbNpcVis);
-        a.animCount = i32(kCbAnimCount); a.animCycle = i32(kCbAnimCycle); a.haveAnimStart = true;
+        std::memcpy(a.stats, b + kNpcStatsOff, 28); std::memcpy(a.base, b + kNpcBaseStatsOff, 28); a.vis = i32(kNpcVisLevel);
+        a.animCount = i32(act(kCbAnimCount)); a.animCycle = i32(act(kCbAnimCycle)); a.haveAnimStart = true;
         a.haveStats = true;
         for (int k = 0; k < 7; ++k) if (a.stats[k] < -100000 || a.stats[k] > 1000000000 || a.base[k] < 0 || a.base[k] > 1000000000) a.haveStats = false;
         if (a.haveStats) { a.lp = a.stats[3] < 0 ? -1 : a.stats[3]; a.lpMax = a.base[3] <= 0 ? -1 : a.base[3]; }
-        a.npcTarget = i32(rtx::scn::kNpcTarget);
+        a.npcTarget = i32(act(rtx::scn::kNpcTarget));
         // an empty live name, or one that is an id string (summons such as the conjures carry one): the cache
         // name, which has the readable overrides; nothing when the cache has none either
         const bool idLike = a.name.find('_') != std::string::npos && a.name.find(' ') == std::string::npos;
@@ -4848,10 +5299,10 @@ bool cb_read_actor(CombatCtx& c, std::uint64_t sec, bool bars, CombatActorSample
             a.name = it->second;
         }
     } else {
-        const int cb = i32(rtx::scn::kCombat);
+        const int cb = i32(kScnCombat);
         a.combat = (cb >= 0 && cb <= 5000) ? cb : -1;
     }
-    const std::uint64_t ov = u64(rtx::scn::kOverhead);
+    const std::uint64_t ov = kScnOverhead ? u64(kScnOverhead) : 0;
     if (cb_heap(ov)) {
         std::uint8_t hb[0x40];
         ++c.out.reads;
@@ -4998,13 +5449,13 @@ bool CombatRead(std::uint32_t pid, bool bars, CombatSample& out) {
             }
         }
     }
-    {   // the map base at [MainData+0x19898]+0x698 / +0x69C, for the zone packets the recorder decodes
+    {   // the map base in the map manager (kMapBase), for the zone packets the recorder decodes
         ++out.reads;
         const std::uint64_t mm = rpm<std::uint64_t>(h, *root + kOffMapMgr).value_or(0);
         std::int32_t mb[2] = { 0, 0 };
         if (mm > 0x10000) {
             ++out.reads;
-            if (rpm_bytes(h, mm + 0x698, mb, sizeof(mb))) { out.mapBaseX = mb[0]; out.mapBaseY = mb[1]; out.haveMapBase = true; }
+            if (rpm_bytes(h, mm + kMapBase, mb, sizeof(mb))) { out.mapBaseX = mb[0]; out.mapBaseY = mb[1]; out.haveMapBase = true; }
         }
     }
     auto deref = [&](std::optional<std::uint64_t> p, std::uint64_t off) -> std::optional<std::uint64_t> {
@@ -5015,7 +5466,7 @@ bool CombatRead(std::uint32_t pid, bool bars, CombatSample& out) {
     auto pdata = deref(root, kScnPlayerData);
     out.localUid = (pdata && *pdata > 0x10000) ? rpm<std::int32_t>(h, *pdata + kScnLocalUid).value_or(-1) : -1;
     ++out.reads;
-    auto cont = deref(root, rtx::scn::kContainer);
+    auto cont = deref(root, kScnContainer);
     auto idx  = (cont && *cont > 0x10000) ? rpm<std::int32_t>(h, *cont + rtx::scn::kActiveIdx) : std::nullopt;
     auto arr  = deref(cont, rtx::scn::kEntryArr);
     std::optional<std::uint64_t> wv, worker, vb, ve;
@@ -5087,8 +5538,8 @@ bool CombatReadLocal(std::uint32_t pid, std::uint32_t& clock, int& anim, int& ta
     auto root = rpm<std::uint64_t>(ps.h, ps.mgva);
     if (!root || *root <= 0x10000) return false;
     auto clk = rpm<std::uint32_t>(ps.h, *root + kOffClientClock);
-    auto an = rpm<std::int32_t>(ps.h, sec + kCbAnim);
-    auto tg = rpm<std::int32_t>(ps.h, sec + kCbTargetUid);
+    auto an = rpm<std::int32_t>(ps.h, sec + act(kCbAnim));
+    auto tg = rpm<std::int32_t>(ps.h, sec + act(kCbTargetUid));
     if (!clk || !an || !tg) return false;
     clock = *clk; anim = *an; targetUid = *tg;
     return true;
@@ -5230,12 +5681,13 @@ TerrainLayout terrain_layout(HANDLE h, std::uint32_t pid, std::uint64_t base, st
 // The terrain object of region (rx, ry), 0 when the region is not loaded. Every plane shares it.
 std::uint64_t terrain_object(HANDLE h, std::uint64_t scene, int rx, int ry) {
     if (!t_terr || !t_terr->ok) return 0;
-    auto mgr = rpm<std::uint64_t>(h, scene + 0x140C0);
+    const WvGrid G = wv_grid(h, scene);
+    auto mgr = rpm<std::uint64_t>(h, scene + G.owner);
     if (!mgr || *mgr <= 0x10000) return 0;
-    auto minx = rpm<std::int32_t>(h, *mgr + 0x14034), miny = rpm<std::int32_t>(h, *mgr + 0x14038);
-    auto maxx = rpm<std::int32_t>(h, *mgr + 0x1403C), maxy = rpm<std::int32_t>(h, *mgr + 0x14040);
+    auto minx = rpm<std::int32_t>(h, *mgr + G.min), miny = rpm<std::int32_t>(h, *mgr + G.min + 4);
+    auto maxx = rpm<std::int32_t>(h, *mgr + G.min + 8), maxy = rpm<std::int32_t>(h, *mgr + G.min + 12);
     if (!minx || !miny || !maxx || !maxy || rx < *minx || rx > *maxx || ry < *miny || ry > *maxy) return 0;
-    auto rows = rpm<std::uint64_t>(h, *mgr + 0x14080);
+    auto rows = rpm<std::uint64_t>(h, *mgr + G.rows);
     if (!rows || *rows <= 0x10000) return 0;
     auto col = rpm<std::uint64_t>(h, *rows + (std::uint64_t)(rx - *minx) * 0x18);
     if (!col || *col <= 0x10000) return 0;
@@ -5459,7 +5911,7 @@ static int overhead_height(HANDLE h, std::uint64_t sec, int type, int* src) {
 // The point that height is measured from: three floats (east, up, north), where the class keeps them.
 static bool overhead_origin(HANDLE h, std::uint64_t sec, int type, float& x, float& up, float& z) {
     std::uint64_t at = 0;
-    if (type == 1 || type == 2) at = sec + 0x270;
+    if (type == 1 || type == 2) at = sec + kScnPosX;
     else {
         auto d = rpm<std::uint64_t>(h, sec + 0x18);
         if (!d || *d <= 0x10000) return false;
@@ -5504,7 +5956,7 @@ bool ReadLiveLocs(std::uint32_t pid, std::vector<LiveLoc>& out) {
         if (!p || *p <= 0x10000) return std::nullopt;
         return rpm<std::uint64_t>(h, *p + off);
     };
-    auto cont = deref(root, rtx::scn::kContainer);
+    auto cont = deref(root, kScnContainer);
     auto idx  = (cont && *cont > 0x10000) ? rpm<std::int32_t>(h, *cont + rtx::scn::kActiveIdx) : std::nullopt;
     auto arr  = deref(cont, rtx::scn::kEntryArr);
     if (!idx || *idx < 0 || !arr || *arr <= 0x10000) return false;
@@ -5564,7 +6016,7 @@ std::string OverheadBarsJson(std::uint32_t pid) {
         if (!p || *p <= 0x10000) return std::nullopt;
         return rpm<std::uint64_t>(h, *p + off);
     };
-    auto cont = deref(root, rtx::scn::kContainer);
+    auto cont = deref(root, kScnContainer);
     auto idx  = (cont && *cont > 0x10000) ? rpm<std::int32_t>(h, *cont + rtx::scn::kActiveIdx) : std::nullopt;
     auto arr  = deref(cont, rtx::scn::kEntryArr);
     if (!idx || *idx < 0 || !arr || *arr <= 0x10000) return "{\"actors\":[]}";
@@ -5583,14 +6035,14 @@ std::string OverheadBarsJson(std::uint32_t pid) {
         if (!sec || *sec <= 0x10000) continue;
         const int type = rpm<std::uint8_t>(h, *sec + rtx::scn::kType).value_or(0xff);
         if (type != 1 && type != 2) continue;
-        auto hb = rpm<std::uint64_t>(h, *sec + rtx::scn::kOverhead);
+        auto hb = overhead_ptr(h, *sec);
         if (!hb || *hb <= 0x10000) continue;
         auto sb = rpm<std::uint64_t>(h, *hb + rtx::scn::kOvSlots);
         auto se = rpm<std::uint64_t>(h, *hb + 0x30);
         if (!sb || !se || *sb <= 0x10000 || *se < *sb) continue;
         const std::uint64_t span = *se - *sb;
         const int slots = (span % 0x1b0 == 0) ? (int)(span / 0x1b0) : -(int)span;
-        const int cfg = rpm<std::int32_t>(h, *sec + rtx::scn::kConfig).value_or(-1);
+        const int cfg = rpm<std::int32_t>(h, *sec + kScnConfig).value_or(-1);
         char b[160];
         std::snprintf(b, sizeof(b), "%s{\"type\":%d,\"cfg\":%d,\"span\":%llu,\"slots\":%d,\"s\":[",
                       first ? "" : ",", type, cfg, (unsigned long long)span, slots);
@@ -5648,7 +6100,7 @@ std::string OverheadClassJson(std::uint32_t pid) {
         if (!p || *p <= 0x10000) return std::nullopt;
         return rpm<std::uint64_t>(h, *p + off);
     };
-    auto cont = deref(root, rtx::scn::kContainer);
+    auto cont = deref(root, kScnContainer);
     auto idx  = (cont && *cont > 0x10000) ? rpm<std::int32_t>(h, *cont + rtx::scn::kActiveIdx) : std::nullopt;
     auto arr  = deref(cont, rtx::scn::kEntryArr);
     std::optional<std::uint64_t> wv, worker, vbo, veo;
@@ -5683,7 +6135,7 @@ std::string OverheadClassJson(std::uint32_t pid) {
         if (!pos || !hgt) continue;
         int type = rpm<std::uint8_t>(h, *sec + rtx::scn::kType).value_or(0xff);
         int cfg  = rpm<std::int32_t>(h, *sec + kScnUid).value_or(-1);
-        int cfgId = rpm<std::int32_t>(h, *sec + rtx::scn::kConfig).value_or(-1);
+        int cfgId = rpm<std::int32_t>(h, *sec + kScnConfig).value_or(-1);
         int src = 0;
         const int oh = overhead_height(h, *sec, type, &src);
         float px = 0, up = 0, pz = 0;
@@ -5792,7 +6244,7 @@ std::uint32_t inst_src_key(int level, int zx, int zy) { return ((std::uint32_t)l
 std::uint64_t inst_worldview(HANDLE h, std::uint64_t mgva) {
     const std::uint64_t root = rpm<std::uint64_t>(h, mgva).value_or(0);
     if (root <= 0x10000) return 0;
-    const std::uint64_t cont = rpm<std::uint64_t>(h, root + rtx::scn::kContainer).value_or(0);
+    const std::uint64_t cont = rpm<std::uint64_t>(h, root + kScnContainer).value_or(0);
     if (cont <= 0x10000) return 0;
     const int idx = rpm<std::int32_t>(h, cont + rtx::scn::kActiveIdx).value_or(-1);
     const std::uint64_t arr = rpm<std::uint64_t>(h, cont + rtx::scn::kEntryArr).value_or(0);
@@ -5852,20 +6304,21 @@ InstSnap& inst_snap_locked(std::uint32_t pid) {
     if (L.pid != pid) { L = InstLayout{}; L.pid = pid; }
     if (h && !L.tried) inst_layout_from_code(h, modBase, modSize, L);
     const std::uint64_t wv = (h && mgva && L.ok) ? inst_worldview(h, mgva) : 0;
-    const std::uint64_t def = wv ? rpm<std::uint64_t>(h, wv + rtx::scn::kMapDef).value_or(0) : 0;
+    const WvGrid G = wv_grid(h, wv);
+    const std::uint64_t def = wv ? rpm<std::uint64_t>(h, wv + G.def).value_or(0) : 0;
     // an instance is built once and stays; the table is read again every few seconds all the same,
     // so mapsquares that were still loading on the first pass are picked up
     if (s.pid == pid && s.wv == wv && s.def == def && now - s.built < 3000) { s.checked = now; return s; }
     InstSnap n; n.pid = pid; n.wv = wv; n.def = def; n.checked = now; n.built = now;
     std::int32_t bd[4] = { 0, 0, -1, -1 };
     // an instance loads a handful of mapsquares; the real map's grid is the whole world, or a box with no zone tables in it
-    if (wv && rpm<std::uint64_t>(h, wv + rtx::scn::kWvGrid).value_or(0) == wv &&
-        rpm_bytes(h, wv + rtx::scn::kGridMin, bd, sizeof(bd)) && bd[0] >= 0 && bd[1] >= 0 &&
+    if (wv && rpm<std::uint64_t>(h, wv + G.owner).value_or(0) == wv &&
+        rpm_bytes(h, wv + G.min, bd, sizeof(bd)) && bd[0] >= 0 && bd[1] >= 0 &&
         bd[2] >= bd[0] && bd[3] >= bd[1] && bd[2] - bd[0] < 16 && bd[3] - bd[1] < 16 && bd[2] < 256 && bd[3] < 256) {
         n.minx = bd[0]; n.miny = bd[1]; n.nx = bd[2] - bd[0] + 1; n.ny = bd[3] - bd[1] + 1;
         n.zone.assign((std::size_t)4 * n.nx * n.ny * 64, InstZone{});
         bool ok = true;
-        const std::uint64_t rows = rpm<std::uint64_t>(h, wv + rtx::scn::kGridRows).value_or(0);
+        const std::uint64_t rows = rpm<std::uint64_t>(h, wv + G.rows).value_or(0);
         for (int qx = 0; ok && qx < n.nx && rows > 0x10000; ++qx) {
             const std::uint64_t col = rpm<std::uint64_t>(h, rows + (std::uint64_t)qx * 0x18).value_or(0);
             if (col <= 0x10000) continue;
@@ -6008,7 +6461,7 @@ bool rr_exceptions(std::uint32_t pid, const RenderRulesUse& use, std::vector<std
     if (!h || !mgva) return false;
     const std::uint64_t root = rpm<std::uint64_t>(h, mgva).value_or(0);
     if (root <= 0x10000) return false;
-    const std::uint64_t cont = rpm<std::uint64_t>(h, root + rtx::scn::kContainer).value_or(0);
+    const std::uint64_t cont = rpm<std::uint64_t>(h, root + kScnContainer).value_or(0);
     if (cont <= 0x10000) return false;
     const int idx = rpm<std::int32_t>(h, cont + rtx::scn::kActiveIdx).value_or(-1);
     const std::uint64_t arr = rpm<std::uint64_t>(h, cont + rtx::scn::kEntryArr).value_or(0);
@@ -6043,13 +6496,13 @@ bool rr_exceptions(std::uint32_t pid, const RenderRulesUse& use, std::vector<std
             rpm_bytes(h, sec + rtx::scn::kName, nm, sizeof(nm) - 1);
             const std::string key = rr_key(nm);
             if (key.empty()) continue;
-            const float fx = rpm<float>(h, sec + rtx::scn::kPosX).value_or(0.f), fy = rpm<float>(h, sec + rtx::scn::kPosY).value_or(0.f);
+            const float fx = rpm<float>(h, sec + kScnPosX).value_or(0.f), fy = rpm<float>(h, sec + kScnPosY).value_or(0.f);
             const int tx = (int)(fx / 512.f), ty = (int)(fy / 512.f);
             if (rpm<std::int32_t>(h, sec + kScnUid).value_or(-2) == localUid) { myX = tx; myY = ty; continue; }
             pls.push_back({ sec, use.playerHide.count(key) != 0, use.playerKeep.count(key) != 0, tx, ty });
             continue;
         } else if (type == 1 && npcLists) {
-            const int cfg = rpm<std::int32_t>(h, sec + rtx::scn::kConfig).value_or(-1);
+            const int cfg = rpm<std::int32_t>(h, sec + kScnConfig).value_or(-1);
             if (cfg < 0) continue;
             auto it = npcSeen.find(cfg);
             if (it == npcSeen.end()) {
@@ -6126,7 +6579,7 @@ bool RenderActorName(std::uint32_t pid, std::uint64_t actor, int& kind, std::str
     if (!h || !mgva || actor <= 0x10000) return false;
     const std::uint64_t root = rpm<std::uint64_t>(h, mgva).value_or(0);
     if (root <= 0x10000) return false;
-    const std::uint64_t cont = rpm<std::uint64_t>(h, root + rtx::scn::kContainer).value_or(0);
+    const std::uint64_t cont = rpm<std::uint64_t>(h, root + kScnContainer).value_or(0);
     if (cont <= 0x10000) return false;
     const int idx = rpm<std::int32_t>(h, cont + rtx::scn::kActiveIdx).value_or(-1);
     const std::uint64_t arr = rpm<std::uint64_t>(h, cont + rtx::scn::kEntryArr).value_or(0);
@@ -6150,7 +6603,7 @@ bool RenderActorName(std::uint32_t pid, std::uint64_t actor, int& kind, std::str
             name = rr_key(nm);
         } else if (kind == 1) {
             bool morphHidden = false;
-            const auto meta = resolve_npc(h, root, rpm<std::int32_t>(h, actor + rtx::scn::kConfig).value_or(-1), &morphHidden);
+            const auto meta = resolve_npc(h, root, rpm<std::int32_t>(h, actor + kScnConfig).value_or(-1), &morphHidden);
             name = rr_key(meta.name);
             if (name.empty() && !morphHidden) { rpm_bytes(h, actor + rtx::scn::kName, nm, sizeof(nm) - 1); name = rr_key(nm); }
         } else return false;
@@ -6178,7 +6631,7 @@ void RenderRulesSet(std::uint32_t pid, const RenderRules& rules) {
 }
 
 std::string SceneJson(std::uint32_t pid, int obj_range) {
-    constexpr std::uint64_t kContainer = rtx::scn::kContainer;   // all from SceneOffsets.h --
+    const std::uint64_t kContainer = kScnContainer;   // all from SceneOffsets.h --
     constexpr std::uint64_t kActiveIdx = rtx::scn::kActiveIdx;   // shared with the companion
     constexpr std::uint64_t kEntryArr  = rtx::scn::kEntryArr;
     constexpr std::uint64_t kEntryWv   = rtx::scn::kEntryWv;
@@ -6188,10 +6641,10 @@ std::string SceneJson(std::uint32_t pid, int obj_range) {
     constexpr std::uint64_t kType      = rtx::scn::kType;
     const std::uint64_t kName      = rtx::scn::kName;
     const std::uint64_t kUid       = kScnUid;
-    constexpr std::uint64_t kConfig    = rtx::scn::kConfig;
-    constexpr std::uint64_t kCombat    = rtx::scn::kCombat;
-    constexpr std::uint64_t kPosX      = rtx::scn::kPosX;
-    const std::uint64_t kPosY      = rtx::scn::kPosY;
+    const std::uint64_t kConfig    = kScnConfig;
+    const std::uint64_t kCombat    = kScnCombat;
+    const std::uint64_t kPosX      = kScnPosX;
+    const std::uint64_t kPosY      = kScnPosY;
     const std::uint64_t kPlayerData = kScnPlayerData;
     const std::uint64_t kLocalUid   = kScnLocalUid;
 
@@ -6345,7 +6798,7 @@ std::string SceneJson(std::uint32_t pid, int obj_range) {
                                 player_plane = rpm<std::int32_t>(h, *sec + kScnPlane).value_or(0); }
                     int combat = rpm<std::int32_t>(h, *sec + kCombat).value_or(-1);
                     if (combat < 0 || combat > 5000) combat = -1;
-                    int anim = rpm<std::int32_t>(h, *sec + 0xA90).value_or(-1);  // shared actor anim
+                    int anim = rpm<std::int32_t>(h, *sec + act(0xA90)).value_or(-1);  // shared actor anim
                     int plane = rpm<std::int32_t>(h, *sec + kScnPlane).value_or(0);   // shared actor plane
                     if (pc) players.push_back(',');
                     std::snprintf(buf, sizeof(buf),
@@ -6356,7 +6809,7 @@ std::string SceneJson(std::uint32_t pid, int obj_range) {
                     ++pc;
                 } else {                                      // NPC
                     int cfg = rpm<std::int32_t>(h, *sec + kConfig).value_or(-1);
-                    int anim = rpm<std::int32_t>(h, *sec + 0xA90).value_or(-1);  // shared actor anim
+                    int anim = rpm<std::int32_t>(h, *sec + act(0xA90)).value_or(-1);  // shared actor anim
                     bool morphHidden = false;
                     auto meta = resolve_npc(h, root.value_or(0), cfg, &morphHidden);
                     std::string npcName = !meta.name.empty() ? meta.name : (morphHidden ? std::string() : name);
@@ -6399,11 +6852,11 @@ std::string SceneJson(std::uint32_t pid, int obj_range) {
                         "{\"id\":%d,\"uid\":%d,\"x\":%d,\"y\":%d,\"trueTile\":{\"x\":%d,\"y\":%d},\"plane\":%d,\"combat\":%d,\"anim\":%d,\"face\":%d,\"size\":%d,\"name\":\"",
                         reportId, uid, tx, ty, ttx, tty, npcPlane, meta.combat_level, anim, face, meta.size);
                     npcs += buf; npcs += json_escape(npcName);
-                    int lp = rpm<std::int32_t>(h, *sec + rtx::scn::kLpCur).value_or(-1);
-                    int lpMax = rpm<std::int32_t>(h, *sec + rtx::scn::kLpMax).value_or(-1);
+                    int lp = rpm<std::int32_t>(h, *sec + kScnLpCur).value_or(-1);
+                    int lpMax = rpm<std::int32_t>(h, *sec + kScnLpMax).value_or(-1);
                     if (lp < 0 || lp > 1000000000) lp = -1;
                     if (lpMax <= 0 || lpMax > 1000000000) lpMax = -1;
-                    int npcTarget = rpm<std::int32_t>(h, *sec + rtx::scn::kNpcTarget).value_or(-1);
+                    int npcTarget = rpm<std::int32_t>(h, *sec + act(rtx::scn::kNpcTarget)).value_or(-1);
                     if (npcTarget < -1 || npcTarget >= 4096) npcTarget = -1;
                     int vis = rpm<std::int32_t>(h, *sec + kNpcVisLevel).value_or(-1);   // the level the game shows, -1 unread
                     if (vis < 0 || vis > 20000) vis = -1;
@@ -6581,7 +7034,7 @@ std::string SceneJson(std::uint32_t pid, int obj_range) {
         auto wroot = rpm<std::uint64_t>(h, mgva);
         std::uint64_t mmp = 0;
         if (wroot && *wroot > 0x10000) {
-            auto mmv = rpm<std::uint64_t>(h, *wroot + rtx::scn::kMiniMap);
+            auto mmv = rpm<std::uint64_t>(h, *wroot + kScnMiniMap);
             if (mmv) mmp = *mmv;
         }
         if (mmp > 0x10000) {
@@ -7222,7 +7675,6 @@ static bool read_iface_mount_origin(HANDLE h, std::uint64_t main_data, int mount
 // Inbound packets 0x2D (move sub, two hashes) and 0x45 (close sub, one hash) resolve through this same map
 // (exe+0x0E2080 / exe+0x1A0840 / exe+0x1A09F0), so it is the engine's own answer to "where is group G
 // mounted". Snapshotted for 250 ms per client.
-constexpr std::uint64_t kIfaceSubBuckets = 0xE0, kIfaceSubBucketCount = 0xE8;
 struct IfaceSubParent { int group; int comp; };
 static bool iface_sub_parent(HANDLE h, std::uint64_t main_data, int gid, IfaceSubParent& out) {
     static std::mutex mu;
@@ -7706,7 +8158,11 @@ std::string CompassTargetJson(std::uint32_t pid) {
 // Scan-orb ring tiles from the scene-graphic registry: op83 stores a 0x2c-byte record at MainData+0x198f0 (+0x90 + slot*0x2c) with fine coords (0x100 + tile*512) as floats.
 // Base may be the struct or a pointer to it; every plausible tile is returned for the caller to validate.
 static void ScanRingTilesFromMemory(HANDLE h, std::uint64_t root, std::vector<std::pair<int,int>>& out) {
-    constexpr std::uint64_t kRecBase = 0x90, kRecSize = 0x2c, kSlots = 8;
+    // the request records where the arrow routine fills them (0x2C bytes from +0x90 on 950-1, 0x60
+    // from +0x170 on 951-1); every float pair in a record is tried, so their order does not matter
+    if (!kOffArrowMgr || !kArrowRequests || kArrowRequestSize < 0x2C || kArrowRequestSize > 0x100) return;
+    const std::uint64_t kRecBase = kArrowRequests, kRecSize = kArrowRequestSize;
+    constexpr std::uint64_t kSlots = 8;
     // Fine coordinate = 0x100 + tile*512; must land on a tile centre.
     auto fine_to_tile = [](float f) -> int {
         if (!(f > 0.0f) || f > 16383.0f * 512.0f + 512.0f) return -1;
@@ -7720,8 +8176,8 @@ static void ScanRingTilesFromMemory(HANDLE h, std::uint64_t root, std::vector<st
     if (auto pv = rpm<std::uint64_t>(h, root + kOffArrowMgr); pv && *pv > 0x10000) bases[1] = *pv;
     for (std::uint64_t bi = 0; bi < 2; ++bi) {
         if (!bases[bi]) continue;
-        std::uint8_t blk[kRecSize * kSlots];
-        if (!rpm_bytes(h, bases[bi] + kRecBase, blk, (int)sizeof(blk))) continue;
+        std::uint8_t blk[0x100 * kSlots];
+        if (!rpm_bytes(h, bases[bi] + kRecBase, blk, (SIZE_T)(kRecSize * kSlots))) continue;
         for (std::uint64_t slot = 0; slot < kSlots; ++slot) {
             const std::uint8_t* rec = blk + slot * kRecSize;
             for (std::size_t o = 0; o + 8 <= kRecSize; o += 4) {
@@ -7816,7 +8272,7 @@ static int iface_item_at(HANDLE h, std::uint64_t mainData, int group, int comp, 
 
 std::string HoverEntityJson(std::uint32_t pid) {
     const char* kNone = "{\"ok\":false}";
-    constexpr std::uint64_t kHoverSlot = 0x13F8;
+    const std::uint64_t kHoverSlot = kHoverSlotOff;
     auto ps = snap_proc(pid);
     if (!ps) return kNone;
     HANDLE h = ps.h;
@@ -7910,10 +8366,10 @@ std::string HoverEntityJson(std::uint32_t pid) {
     bool targetless = verb == "Walk here" || verb == "Cancel" || verb == "Continue" || name.empty();
     if (targetless) return out + "}";
     if (ref > 0) {
-        const std::uint64_t kContainer = rtx::scn::kContainer, kActiveIdx = 0x70, kEntryArr = 0x58,
+        const std::uint64_t kContainer = kScnContainer, kActiveIdx = 0x70, kEntryArr = 0x58,
                                 kEntryWv = 0x8, kVecBegin = 0x138, kVecEnd = 0x140,
                                 kSecPtr = rtx::scn::kSecPtr, kType = rtx::scn::kType, kUid = kScnUid,
-                                kPosX = 0x270, kPosY = 0x278;
+                                kPosX = kScnPosX, kPosY = kScnPosY;
         auto cont = rpm<std::uint64_t>(h, *root + kContainer);
         auto idx  = (cont && *cont > 0x10000) ? rpm<std::int32_t>(h, *cont + kActiveIdx) : std::nullopt;
         auto arr  = (cont && *cont > 0x10000) ? rpm<std::uint64_t>(h, *cont + kEntryArr) : std::nullopt;
@@ -7937,7 +8393,7 @@ std::string HoverEntityJson(std::uint32_t pid) {
                     float fy = rpm<float>(h, *sec + kPosY).value_or(0);
                     int plane = rpm<std::int32_t>(h, *sec + kScnPlane).value_or(0);
                     if (plane < 0 || plane > 3) plane = 0;
-                    int cfg = (t == 1) ? rpm<std::int32_t>(h, *sec + rtx::scn::kNpcCur).value_or(-1) : -1;
+                    int cfg = (t == 1) ? rpm<std::int32_t>(h, *sec + kScnNpcCur).value_or(-1) : -1;
                     char enm[40] = {0};
                     rpm_bytes(h, *sec + 0xB8, enm, sizeof(enm) - 1);
                     std::string sname;
@@ -8719,8 +9175,8 @@ std::string chat_store_json(HANDLE h, std::uint64_t root, int want) {
     const std::uint64_t store = r64(root + kOffChatStore);
     if (store <= 0x10000) return "[]";
     const std::int32_t next = r32(store + 0x18);          // the id the next message will take
-    const std::uint64_t buckets = r64(store + 0x880);
-    const std::uint64_t nbuckets = r64(store + 0x888);
+    const std::uint64_t buckets = r64(store + kChatBuckets);
+    const std::uint64_t nbuckets = r64(store + kChatBucketCount);
     if (next <= 0 || buckets <= 0x10000 || nbuckets == 0 || nbuckets > 0x10000) return "[]";
 
     if (want <= 0 || want > 200) want = 200;
@@ -9469,13 +9925,13 @@ bool BuildOverlayFrame(std::uint32_t pid, bool want_players, bool want_npcs,
                        const std::vector<OutlineLocReq>& outline_locs,
                        const std::vector<GuideSite>& guide_sites,
                        OverlayFrame& out) {
-    const std::uint64_t kContainer = rtx::scn::kContainer, kActiveIdx = rtx::scn::kActiveIdx,
+    const std::uint64_t kContainer = kScnContainer, kActiveIdx = rtx::scn::kActiveIdx,
                             kEntryArr = rtx::scn::kEntryArr, kEntryWv = rtx::scn::kEntryWv,
                             kVecBegin = rtx::scn::kVecBegin, kVecEnd = rtx::scn::kVecEnd,
                             kSecPtr = rtx::scn::kSecPtr, kType = rtx::scn::kType,
                             kName = rtx::scn::kName, kUid = kScnUid,
-                            kConfig = rtx::scn::kConfig, kPosX = rtx::scn::kPosX,
-                            kPosZ = rtx::scn::kPosZ, kPosY = rtx::scn::kPosY,
+                            kConfig = kScnConfig, kPosX = kScnPosX,
+                            kPosZ = kScnPosZ, kPosY = kScnPosY,
                             kPlayerData = kScnPlayerData, kLocalUid = kScnLocalUid;
 
     HANDLE h = nullptr; std::uint64_t mgva = 0;
@@ -9668,7 +10124,7 @@ bool BuildOverlayFrame(std::uint32_t pid, bool want_players, bool want_npcs,
             bool want = (type == 2) ? want_players : want_npcs;
             if (!want) continue;
             if (interactable && type == 1) {
-                int cur = rpm<std::int32_t>(h, *sec + rtx::scn::kNpcCur).value_or(-1);
+                int cur = rpm<std::int32_t>(h, *sec + kScnNpcCur).value_or(-1);
                 if (cur < 0 || rtx::cache::GetNpc(cur).actions.empty()) continue;
             }
             OverlayPoint p;
@@ -10364,10 +10820,10 @@ bool BuildOverlayFrame(std::uint32_t pid, bool want_players, bool want_npcs,
 
 
 std::string PlayerInfoJson(std::uint32_t pid) {
-    const std::uint64_t kContainer = rtx::scn::kContainer, kActiveIdx = 0x70, kEntryArr = 0x58,
+    const std::uint64_t kContainer = kScnContainer, kActiveIdx = 0x70, kEntryArr = 0x58,
                             kEntryWv = 0x8, kVecBegin = 0x138,
                             kVecEnd = 0x140, kSecPtr = rtx::scn::kSecPtr, kType = rtx::scn::kType, kUid = kScnUid,
-                            kPosX = 0x270, kPosY = 0x278, kAnim = 0xA90, kLocalUid = 0x48;
+                            kPosX = kScnPosX, kPosY = kScnPosY, kAnim = act(0xA90), kLocalUid = 0x48;
     const std::uint64_t kPlayerData = kOffAccount;
     auto ps = snap_proc(pid);
     if (!ps)
@@ -10424,10 +10880,10 @@ std::string PlayerInfoJson(std::uint32_t pid) {
     // Interaction target: entity ptr sec+0x218, uid sec+0x1b4, resolved against the live entity
     std::string interactJson = "null";
     if (vb && ve && *vb > 0x10000 && *ve >= *vb) {
-        auto rawp = rpm<std::uint64_t>(h, psec + 0x218);
+        auto rawp = rpm<std::uint64_t>(h, psec + act(0x218));
         std::uint64_t t1 = (rawp && *rawp > 0x10000) ? *rawp : 0;
         std::uint64_t t2 = t1 ? t1 + 0x20 : 0;
-        int tuid = rpm<std::int32_t>(h, psec + 0x1b4).value_or(-1);
+        int tuid = rpm<std::int32_t>(h, psec + act(0x1B4)).value_or(-1);
         if (t1 || tuid > 0) {
             std::uint64_t n = (*ve - *vb) / 8; if (n > 20000) n = 20000;
             for (std::uint64_t i = 0; i < n; ++i) {
@@ -10451,7 +10907,7 @@ std::string PlayerInfoJson(std::uint32_t pid) {
                 }
                 int ecfg = -1;
                 if (ety == 1) {                                   // NPC: prefer cache name
-                    ecfg = rpm<std::int32_t>(h, *sec + rtx::scn::kNpcCur).value_or(-1);
+                    ecfg = rpm<std::int32_t>(h, *sec + kScnNpcCur).value_or(-1);
                     auto m = rtx::cache::GetNpc(ecfg);
                     if (!m.name.empty()) name2 = m.name;
                 }
@@ -10468,7 +10924,7 @@ std::string PlayerInfoJson(std::uint32_t pid) {
     // elements, cycle stamp +0x78 and fill 0..255 +0x7C. Only elements with a recent stamp are live.
     int progress = -1;
     {
-        auto ov = rpm<std::uint64_t>(h, psec + rtx::scn::kOverhead);
+        auto ov = overhead_ptr(h, psec);
         auto sb = (ov && *ov > 0x10000) ? rpm<std::uint64_t>(h, *ov + rtx::scn::kOvSlots) : std::nullopt;
         auto se = (ov && *ov > 0x10000) ? rpm<std::uint64_t>(h, *ov + rtx::scn::kOvSlots + 8) : std::nullopt;
         if (sb && se && *sb > 0x10000 && *se >= *sb && (*se - *sb) % rtx::scn::kBarStride == 0) {
@@ -10539,17 +10995,17 @@ std::string PlayerInfoJson(std::uint32_t pid) {
             if (w2 && *w2 > 0x10000) world = rpm<std::int32_t>(h, *w2 + 8).value_or(-1);
             auto st = rpm<std::uint64_t>(h, *root + kOffVarcStore);      // 0x19920: the settings/input store
             if (st && *st > 0x10000) {
-                auto fx2 = rpm<float>(h, *st + 0x46D8), fy2 = rpm<float>(h, *st + 0x46DC);
+                auto fx2 = rpm<float>(h, *st + kVarcMouseX), fy2 = rpm<float>(h, *st + kVarcMouseY);
                 if (fx2 && fy2 && *fx2 >= -1.f && *fx2 < 32768.f && *fy2 >= -1.f && *fy2 < 32768.f) { mx = (int)*fx2; my = (int)*fy2; }
                 std::uint8_t btn[3] = {0, 0, 0};
-                if (rpm_bytes(h, *st + 0x46E8, btn, 3)) mb = (btn[0] ? 1 : 0) | (btn[1] ? 2 : 0) | (btn[2] ? 4 : 0);
+                if (rpm_bytes(h, *st + kVarcButtons, btn, 3)) mb = (btn[0] ? 1 : 0) | (btn[1] ? 2 : 0) | (btn[2] ? 4 : 0);
                 mods = rpm<std::uint8_t>(h, *st + 0x4F0).value_or(0);
             }
             auto cam = rpm<std::uint64_t>(h, *root + kOffMapMgr);
             if (cam && *cam > 0x10000) {
-                int a = rpm<std::int32_t>(h, *cam + 0x710).value_or(-1), b = rpm<std::int32_t>(h, *cam + 0x714).value_or(-1);
+                int a = rpm<std::int32_t>(h, *cam + kMapLoadA).value_or(-1), b = rpm<std::int32_t>(h, *cam + kMapLoadB).value_or(-1);
                 if (a >= 0 && b >= 0) loadPct = std::min(a, b);
-                loadScreen = rpm<std::uint8_t>(h, *cam + 0x71C).value_or(0) ? 1 : 0;
+                loadScreen = rpm<std::uint8_t>(h, *cam + kMapLoadScreen).value_or(0) ? 1 : 0;
             }
         }
         char xb[320];
@@ -10683,10 +11139,10 @@ std::string SocialJson(std::uint32_t pid) {
 }
 
 bool PlayerTile(std::uint32_t pid, int& tx, int& ty, int& plane) {
-    const std::uint64_t kContainer = rtx::scn::kContainer, kActiveIdx = 0x70, kEntryArr = 0x58,
+    const std::uint64_t kContainer = kScnContainer, kActiveIdx = 0x70, kEntryArr = 0x58,
                             kEntryWv = 0x8, kVecBegin = 0x138,
                             kVecEnd = 0x140, kSecPtr = rtx::scn::kSecPtr, kType = rtx::scn::kType, kUid = kScnUid,
-                            kPosX = 0x270, kPosY = 0x278, kLocalUid = 0x48;
+                            kPosX = kScnPosX, kPosY = kScnPosY, kLocalUid = 0x48;
     const std::uint64_t kPlayerData = kOffAccount;
     auto ps = snap_proc(pid);
     if (!ps) return false;
@@ -10978,11 +11434,14 @@ void scene_secs(const HCtx& c, std::vector<std::pair<std::uint64_t, std::uint64_
 }
 
 // A type-4 effect validates when its graphic is a cache spotanim and it sits within a map of the player.
-bool t4_valid(HANDLE h, std::uint64_t sec, float px, float py, int& gfx) {
+// why (when given) names the failed test: the graphic, or the distance in tiles.
+bool t4_valid(HANDLE h, std::uint64_t sec, float px, float py, int& gfx, std::string* why = nullptr) {
     gfx = rpm<std::int32_t>(h, sec + rtx::scn::kT4Gfx).value_or(-1);
     const int ex = rpm<std::int32_t>(h, sec + rtx::scn::kT4PosE).value_or(0), en = rpm<std::int32_t>(h, sec + rtx::scn::kT4PosN).value_or(0);
-    if (gfx < 0 || rtx::cache::PinFingerprint("spotanim", std::to_string(gfx), "").empty()) return false;
-    return std::fabs(ex - px) <= 104 * 512 && std::fabs(en - py) <= 104 * 512;
+    if (gfx < 0 || rtx::cache::PinFingerprint("spotanim", std::to_string(gfx), "").empty()) { if (why) *why = "not in the cache"; return false; }
+    if (std::fabs(ex - px) <= 104 * 512 && std::fabs(en - py) <= 104 * 512) return true;
+    if (why) *why = std::to_string((int)((ex - px) / 512)) + "," + std::to_string((int)((en - py) / 512)) + " tiles away";
+    return false;
 }
 
 // The scene's type-4 effects into c, once per run: the scene group fills them while it reads the
@@ -10990,8 +11449,8 @@ bool t4_valid(HANDLE h, std::uint64_t sec, float px, float py, int& gfx) {
 void scene_t4(HCtx& c) {
     if (c.fxRead || !c.inWorld || !c.worker) return;
     std::vector<std::pair<std::uint64_t, std::uint64_t>> secs; scene_secs(c, secs);
-    const float px = c.localSec ? rpm<float>(c.h, c.localSec + rtx::scn::kPosX).value_or(0) : 0.f;
-    const float py = c.localSec ? rpm<float>(c.h, c.localSec + rtx::scn::kPosY).value_or(0) : 0.f;
+    const float px = c.localSec ? rpm<float>(c.h, c.localSec + kScnPosX).value_or(0) : 0.f;
+    const float py = c.localSec ? rpm<float>(c.h, c.localSec + kScnPosY).value_or(0) : 0.f;
     for (const auto& es : secs) {
         if (rpm<std::uint8_t>(c.h, es.second + rtx::scn::kType).value_or(0xFF) != 4) continue;
         ++c.t4Seen;
@@ -11344,30 +11803,28 @@ void health_calibration(HCtx& c, rtx::health::Run& run) {
     // own, and a table kept from an earlier run would hold another client's.
     {
         const struct { const char* name; std::uint32_t copy; const std::uint32_t* live; } kPairs[] = {
-            { "status", rtx::md::kStatus, &kOffStatus }, { "player data", (std::uint32_t)kScnPlayerData, &kOffAccount },
-            { "world", rtx::md::kWorld, &kOffWorld }, { "containers", rtx::md::kContainers, &kOffInvData },
-            { "chat store", rtx::md::kChatStore, &kOffChatStore }, { "clan settings", rtx::md::kClanSettings, &kOffClanSettings },
-            { "map manager", rtx::md::kMapMgr, &kOffMapMgr }, { "input reporter", rtx::md::kInputReport, &kOffInputReporter },
-            { "arrow manager", rtx::md::kArrowMgr, &kOffArrowMgr }, { "interface owner", rtx::md::kIfaceOwner, &kOffIfaceOwner },
-            { "input processor", rtx::md::kInputProc, &kOffInputProc }, { "player group", rtx::md::kPlayerGroup, &kOffPlayerGroup },
-            { "players", rtx::md::kPlayers, &kOffPlayers }, { "friends", rtx::md::kFriends, &kOffFriends },
-            { "cutscene", rtx::md::kCutscene, &kOffCutscene }, { "varp manager", rtx::md::kVarpMgr, &kOffVarpMgr },
-            { "varp hash", rtx::md::kVarpHash, &kOffVarpHash }, { "options", rtx::md::kOptions, &kOffOptions },
-            { "varc store", rtx::md::kVarcStore, &kOffVarcStore }, { "Grand Exchange", rtx::md::kGrandExchange, &kOffGE },
-            { "client clock", rtx::md::kClientClock, &kOffClientClock },
-            { "connection", rtx::md::kConnection, &kOffConnection }, { "var watch", rtx::md::kVarWatch, &kOffVarWatch },
-            { "friends chat", rtx::md::kFriendsChat, &kOffFriendsChat }, { "login manager", rtx::md::kLoginMgr, &kOffLoginMgr },
-            { "world info", rtx::md::kWorldInfo, &kOffWorldInfo }, { "country", rtx::md::kCountry, &kOffCountry },
+            // the scene code's player data (from the player draw routine) against the account rule; the
+            // companion reads its root fields through its own run of the rules (CompOffsets), not
+            // through the compiled table, so those are no copies
+            { "player data", (std::uint32_t)kScnPlayerData, &kOffAccount },
         };
         std::string bad; int agree = 0;
         for (const auto& p : kPairs) {
             if (p.copy == *p.live) { ++agree; continue; }
-            bad += std::string(bad.empty() ? "" : "; ") + p.name + " " + hx(p.copy) + " compiled, reader uses " + hx(*p.live);
+            bad += std::string(bad.empty() ? "" : "; ") + p.name + " " + hx(p.copy) + " from the scene code, " + hx(*p.live) + " from the rule";
         }
         const int total = (int)(sizeof(kPairs) / sizeof(kPairs[0]));
         run.Add(G, "calib.copies", "Compiled copies", bad.empty() ? kPass : kWarn,
-                bad.empty() ? std::to_string(total) + " companion and scene constants agree with the offsets in use" : "MOVED: companion copies behind the reader: " + bad,
-                "Companion engine ops|Scene reads|Engine markers", std::to_string(total), std::to_string(agree), "calib.table");
+                bad.empty() ? std::to_string(total) + " scene offset agrees with the rule" : "MOVED: the scene code and the rules disagree: " + bad,
+                "Scene reads", std::to_string(total), std::to_string(agree), "calib.table");
+    }
+    // the scan clue ring is read from the arrow manager's request records
+    {
+        const bool ok = kOffArrowMgr && kArrowRequests;
+        const std::string d = !kOffArrowMgr ? std::string("GONE: the arrow-frame site was not found; the scan clue ring read is off")
+                            : ok ? "arrow manager at MainData+" + hx(kOffArrowMgr) + " (" + std::to_string(kArrowSlotBytes) + "-byte slots), request records at +" + hx(kArrowRequests) + " by " + hx(kArrowRequestSize) + " from the arrow routine"
+                                 : "FORMAT: arrow manager at MainData+" + hx(kOffArrowMgr) + "; the arrow routine does not say where its request records sit, the scan clue ring read is off";
+        run.Add(G, "calib.arrowmgr", "Arrow manager (clue scan)", ok ? kPass : kWarn, d, "Clue Scrolls: scan ring", "request records from the arrow routine", hx(kArrowRequests) + "/" + hx(kArrowRequestSize), "calib.table");
     }
 }
 
@@ -11429,6 +11886,20 @@ void health_data(HCtx& c, rtx::health::Run& run) {
         const bool fpsOk = fps >= 1.f && fps <= 1000.f;
         run.Add(G, "data.fps", "FPS", fpsOk ? kPass : kFail, std::string(fpsOk ? "" : "MOVED: ") + std::to_string((int)fps) + " at MainData+" + hx(rtx::md::kFps) + (fpsOk ? "" : " (not a frame rate: the field moved)"),
                 "Player State FPS", "1..1000", std::to_string((int)fps), "data.root");
+    }
+    // the var stores' layout, read off their own lookup routines
+    {
+        const VarLayout L = var_layout_of(c.pid);
+        int ok = kPass; std::string d;
+        if (!L.done) { ok = kUnchecked; d = "UNVERIFIED: not read yet (the root, the player store or the input state is not set)"; }
+        else if (!L.varpBuckets) { ok = kFail; d = "FORMAT: " + L.why; }
+        else {
+            d = "varp buckets +" + hx(L.varpBuckets) + ", stamps +" + hx(L.stampBuckets) + " (next +" + hx(L.stampNext) + "), client store at input state +" + hx(L.varcObj) +
+                " (buckets +" + hx(L.varcBuckets) + ")";
+            if (!L.ok) { ok = kFail; d = "GONE: " + L.why + "; " + d; }
+        }
+        run.Add(G, "data.varlayout", "Var store layout", ok, d, "Every varp, varc and varbit read|Var updates (script sets)",
+                "the player store's lookup and setter and one client store in the input state", L.done ? hx(L.varpBuckets) + "/" + hx(L.stampBuckets) + "/" + hx(L.varcObj) : "", "data.root").need = ok == kUnchecked ? "start the game" : "";
     }
     // varp store
     {
@@ -11535,7 +12006,7 @@ void health_data(HCtx& c, rtx::health::Run& run) {
         // read is the one that moved
         else if (c.inWorld && ((clanPtr && !clan) || (clanSetPtr && !clanSet))) {
             ok = kWarn;
-            d = "UNVERIFIED: " + std::string(clanPtr && !clan ? "clan var store at [[MainData+" + hx(kOffVarcStore) + "]+0x77B0]" : "clan settings store at [[MainData+" + hx(kOffClanSettings) + "]+0x68]") +
+            d = "UNVERIFIED: " + std::string(clanPtr && !clan ? "clan var store at [[MainData+" + hx(kOffVarcStore) + "]+" + hx(kVarcClan) + "]" : "clan settings store at [[MainData+" + hx(kOffClanSettings) + "]+0x68]") +
                 " is set but its table does not read (a moved store); " + d;
         }
         else if (clanSet && !clan) d += " (clan settings without clan vars: no clan var state)";
@@ -11649,7 +12120,7 @@ void health_data(HCtx& c, rtx::health::Run& run) {
         int ok = kPass; std::string d, word;
         if (st <= 0x10000) { ok = kFail; d = "store not readable at MainData+" + hx(kOffVarcStore); word = "GONE"; }
         else {
-            const float mx = rpm<float>(h, st + 0x46D8).value_or(-9), my = rpm<float>(h, st + 0x46DC).value_or(-9);
+            const float mx = rpm<float>(h, st + kVarcMouseX).value_or(-9), my = rpm<float>(h, st + kVarcMouseY).value_or(-9);
             const std::uint32_t mods = rpm<std::uint32_t>(h, st + 0x4F0).value_or(0xFFFFFFFFu);
             int lw = 0, lh = 0, gx = 0, gy = 0, gw = 0, gh = 0;
             read_gameview_rect(h, root, gx, gy, gw, gh, &lw, &lh);
@@ -11659,11 +12130,11 @@ void health_data(HCtx& c, rtx::health::Run& run) {
         }
         const std::uint64_t mm = rpm<std::uint64_t>(h, root + kOffMapMgr).value_or(0);
         if (mm > 0x10000) {
-            const int a = rpm<std::int32_t>(h, mm + 0x710).value_or(-1), b = rpm<std::int32_t>(h, mm + 0x714).value_or(-1);
-            const int ls = rpm<std::uint8_t>(h, mm + 0x71C).value_or(0);
+            const int a = rpm<std::int32_t>(h, mm + kMapLoadA).value_or(-1), b = rpm<std::int32_t>(h, mm + kMapLoadB).value_or(-1);
+            const int ls = rpm<std::uint8_t>(h, mm + kMapLoadScreen).value_or(0);
             d += ", map load " + std::to_string(std::min(a, b)) + "%";
             if (a < 0 || a > 100 || b < 0 || b > 100) { ok = kFail; if (word.empty()) word = "FORMAT"; d += " (out of range)"; }
-            else if (!ls && c.inWorld && std::min(a, b) != 100) { if (ok == kPass) { ok = kWarn; word = "MOVED"; } d += " while not loading (progress fields +0x710/+0x714 or the loading flag moved)"; }
+            else if (!ls && c.inWorld && std::min(a, b) != 100) { if (ok == kPass) { ok = kWarn; word = "MOVED"; } d += " while not loading (progress fields +" + hx(kMapLoadA) + "/+" + hx(kMapLoadB) + " or the loading flag moved)"; }
         }
         if (!word.empty()) d = word + ": " + d;
         run.Add(G, "data.input2", "Mouse, keys, map load", ok, d, "Player State mouse and keys|Loading detection", "mouse inside the window, modifiers <= 0xF, map load 0..100 % (100 when not loading)", d.substr(d.find("mouse ") == std::string::npos ? 0 : d.find("mouse ")), "data.root");
@@ -11673,12 +12144,12 @@ void health_data(HCtx& c, rtx::health::Run& run) {
         int ok = kPass; std::string d, got;
         if (mm <= 0x10000) { ok = c.inWorld ? kFail : kUnchecked; d = c.inWorld ? "GONE: map manager pointer at MainData+" + hx(kOffMapMgr) + " not readable" : "map manager not set before login"; }
         else {
-            const int bx = rpm<std::int32_t>(h, mm + 0x698).value_or(-1), by = rpm<std::int32_t>(h, mm + 0x69C).value_or(-1);
+            const int bx = rpm<std::int32_t>(h, mm + kMapBase).value_or(-1), by = rpm<std::int32_t>(h, mm + kMapBase + 4).value_or(-1);
             d = "base " + std::to_string(bx) + "," + std::to_string(by);
             got = d;
-            if (bx < 0 || by < 0 || (bx % 8) || (by % 8)) { ok = kFail; d = "FORMAT: " + d + " (not on a zone boundary: +0x698/+0x69C are not the base tile)"; }
+            if (bx < 0 || by < 0 || (bx % 8) || (by % 8)) { ok = kFail; d = "FORMAT: " + d + " (not on a zone boundary: +" + hx(kMapBase) + " is not the base tile)"; }
             if (c.localSec) {
-                const int tx = (int)(rpm<float>(h, c.localSec + rtx::scn::kPosX).value_or(0) / 512.f), ty = (int)(rpm<float>(h, c.localSec + rtx::scn::kPosY).value_or(0) / 512.f);
+                const int tx = (int)(rpm<float>(h, c.localSec + kScnPosX).value_or(0) / 512.f), ty = (int)(rpm<float>(h, c.localSec + kScnPosY).value_or(0) / 512.f);
                 got += ", player " + std::to_string(tx) + "," + std::to_string(ty);
                 if (tx - bx < 0 || tx - bx >= 256 || ty - by < 0 || ty - by >= 256) { ok = kFail; if (d.rfind("FORMAT", 0) != 0) d = "MOVED: " + d; d += "; player tile " + std::to_string(tx) + "," + std::to_string(ty) + " outside the loaded map"; }
                 else d += ", player at +" + std::to_string(tx - bx) + ",+" + std::to_string(ty - by);
@@ -11780,9 +12251,9 @@ void health_data(HCtx& c, rtx::health::Run& run) {
         int ok = kPass; std::string d, got, need;
         if (ip <= 0x10000) { ok = c.inWorld ? kFail : kUnchecked; d = c.inWorld ? "GONE: input processor pointer at MainData+" + hx(kOffInputProc) + " not readable" : "input processor not set before login"; need = c.inWorld ? "" : "log in"; }
         else {
-            const std::uint64_t slot = rpm<std::uint64_t>(h, ip + 0x13F8).value_or(1);
+            const std::uint64_t slot = rpm<std::uint64_t>(h, ip + kHoverSlotOff).value_or(1);
             got = hx(slot);
-            if (slot != 0 && (slot <= 0x10000 || slot > 0x00007FFFFFFFFFFFull)) { ok = kFail; d = "FORMAT: hover slot " + hx(slot) + " at +0x13F8 is not a pointer"; }
+            if (slot != 0 && (slot <= 0x10000 || slot > 0x00007FFFFFFFFFFFull)) { ok = kFail; d = "FORMAT: hover slot " + hx(slot) + " at +" + hx(kHoverSlotOff) + " is not a pointer"; }
             else if (slot) d = "hovering " + hx(slot);
             else { ok = kUnchecked; d = "nothing hovered: the slot reads 0 whether or not it moved"; need = "hover an item or entity"; }
         }
@@ -11793,7 +12264,7 @@ void health_data(HCtx& c, rtx::health::Run& run) {
         const bool readable = read_var_stamps(h, root, stamps, &cap);
         const long long clock = (long long)rpm<std::uint64_t>(h, c.mgva + kEngineClock).value_or(0);
         int ok = kPass; std::string d, got = "buckets " + std::to_string(cap) + ", " + std::to_string(stamps.size()) + " stamps";
-        if (!readable) { ok = c.inWorld ? kFail : kUnchecked; d = c.inWorld ? "FORMAT: " + std::to_string(cap) + " buckets at MainData+" + hx(kOffVarpMgr) + "+0x38178 do not read as a hash map" : "stamp map empty before login"; }
+        if (!readable) { ok = c.inWorld ? kFail : kUnchecked; d = c.inWorld ? "FORMAT: " + std::to_string(cap) + " buckets at MainData+" + hx(kOffVarpMgr) + "+" + hx(kStampBuckets) + " do not read as a hash map" : "stamp map empty before login"; }
         else {
             // only a stamp near the clock is judged (a script set within the last second): older
             // entries and the second setter's flag-1 marks carry other values
@@ -11855,9 +12326,9 @@ void health_data(HCtx& c, rtx::health::Run& run) {
                 "update 0..1e8 ticks, members 0/1, replies 0..255, fov 6..170 deg, a change counter", d, "data.root").need = ok == kUnchecked ? "log in" : "";
     }
     {
-        const std::uint64_t mm = rpm<std::uint64_t>(h, root + rtx::scn::kMiniMap).value_or(0);
+        const std::uint64_t mm = rpm<std::uint64_t>(h, root + kScnMiniMap).value_or(0);
         int ok = kPass; std::string d, got, need;
-        if (mm <= 0x10000) { ok = c.inWorld ? kFail : kUnchecked; d = c.inWorld ? "GONE: minimap pointer at MainData+" + hx(rtx::scn::kMiniMap) + " not readable" : "minimap not set before login"; need = c.inWorld ? "" : "log in"; }
+        if (mm <= 0x10000) { ok = c.inWorld ? kFail : kUnchecked; d = c.inWorld ? "GONE: minimap pointer at MainData+" + hx(kScnMiniMap) + " not readable" : "minimap not set before login"; need = c.inWorld ? "" : "log in"; }
         else {
             const int dx = rpm<std::int32_t>(h, mm + rtx::scn::kDestX).value_or(-1), dy = rpm<std::int32_t>(h, mm + rtx::scn::kDestY).value_or(-1);
             got = std::to_string(dx) + "," + std::to_string(dy);
@@ -11867,7 +12338,7 @@ void health_data(HCtx& c, rtx::health::Run& run) {
                 const bool centred = (dx % 512) == 256 && (dy % 512) == 256;
                 bool inReach = true;
                 if (c.localSec) {
-                    const float px = rpm<float>(h, c.localSec + rtx::scn::kPosX).value_or(0), py = rpm<float>(h, c.localSec + rtx::scn::kPosY).value_or(0);
+                    const float px = rpm<float>(h, c.localSec + kScnPosX).value_or(0), py = rpm<float>(h, c.localSec + kScnPosY).value_or(0);
                     inReach = std::fabs(px - dx) < 104 * 512 && std::fabs(py - dy) < 104 * 512;
                 }
                 if (!centred || !inReach) { ok = kFail; d = "FORMAT: " + d + (centred ? " (not near the player)" : " (not a tile centre: +0x14/+0x18 are not fine coordinates)"); }
@@ -11969,6 +12440,37 @@ void health_player(HCtx& c, rtx::health::Run& run) {
 }
 
 // ---- Scene ----
+// The cache's map placements by region, and whether a live loc sits on one: on its own tile, or in
+// an instance on the source tile its copied zone came from. `tol` widens each placement by that many
+// tiles for callers whose live tile is the model's centre rather than its origin.
+struct PlacementIndex {
+    std::uint32_t pid = 0;
+    int tol = 0;
+    std::unordered_map<int, std::unordered_set<long long>> sets;
+    static long long Key(int id, int x, int y) { return ((long long)id << 28) | ((long long)x << 14) | (long long)y; }
+    bool At(int id, int x, int y) {
+        if (x < 0 || y < 0) return false;
+        const int rx = x >> 6, ry = y >> 6, key = (rx << 8) | ry;
+        auto it = sets.find(key);
+        if (it == sets.end()) {
+            auto& s = sets[key];
+            for (const auto& pl : rtx::cache::RegionLocations(rx, ry))
+                for (int dx = -tol; dx <= tol; ++dx) for (int dy = -tol; dy <= tol; ++dy)
+                    s.insert(Key(pl.id, rx * 64 + pl.x + dx, ry * 64 + pl.y + dy));
+            it = sets.find(key);
+        }
+        return it->second.count(Key(id, x, y)) != 0;
+    }
+    bool Has(int id, int x, int y, int plane) {
+        if (At(id, x, y)) return true;
+        int sx = 0, sy = 0, sp = 0;
+        if (InstanceSource(pid, x, y, plane, sx, sy, sp) != 1) return false;
+        // a turned zone moves a big loc's origin to another corner of its footprint
+        for (int dx = -2; dx <= 2; ++dx) for (int dy = -2; dy <= 2; ++dy) if (At(id, sx + dx, sy + dy)) return true;
+        return false;
+    }
+};
+
 void health_scene(HCtx& c, rtx::health::Run& run) {
     const char* G = "Scene";
     HANDLE h = c.h;
@@ -11994,8 +12496,8 @@ void health_scene(HCtx& c, rtx::health::Run& run) {
     const int cycleNow = (int)rpm<std::uint32_t>(h, c.root + kOffClientClock).value_or(0);
     int curOk = 0, curMorphed = 0, curBadN = 0; std::string curBad;
     int visN = 0, visOk = 0; std::string visBad;
-    const float px = c.localSec ? rpm<float>(h, c.localSec + rtx::scn::kPosX).value_or(0) : 0.f;
-    const float py = c.localSec ? rpm<float>(h, c.localSec + rtx::scn::kPosY).value_or(0) : 0.f;
+    const float px = c.localSec ? rpm<float>(h, c.localSec + kScnPosX).value_or(0) : 0.f;
+    const float py = c.localSec ? rpm<float>(h, c.localSec + kScnPosY).value_or(0) : 0.f;
     const int seqMax = rtx::cache::IndexInfo(20).maxArchive;
     c.t4Seen = 0; c.t4Gfx.clear();
     for (const auto& es : secs) {
@@ -12003,14 +12505,14 @@ void health_scene(HCtx& c, rtx::health::Run& run) {
         const int t = rpm<std::uint8_t>(h, sec + rtx::scn::kType).value_or(0xFF);
         ++types[t];
         if (t == 1 || t == 2) {
-            const int anim = rpm<std::int32_t>(h, sec + 0xA90).value_or(-2);
+            const int anim = rpm<std::int32_t>(h, sec + act(0xA90)).value_or(-2);
             const float qy = rpm<float>(h, sec + rtx::scn::kFaceTargetY).value_or(0), qz = rpm<float>(h, sec + 0x1E4).value_or(0), qw = rpm<float>(h, sec + rtx::scn::kFaceTargetW).value_or(0);
             const float norm = qy * qy + qz * qz + qw * qw;
             float nq[4] = {};
             const float nnorm = rpm_bytes(h, es.first + rtx::scn::kNodeYaw, nq, sizeof(nq)) ? nq[0] * nq[0] + nq[1] * nq[1] + nq[2] * nq[2] + nq[3] * nq[3] : 0.f;
             ++motionN;
             if ((anim == -1 || (anim >= 0 && (seqMax < 0 || anim <= (seqMax + 1) * 128))) && norm > 0.96f && norm < 1.04f && nnorm > 0.96f && nnorm < 1.04f) ++motionOk;
-            const std::uint64_t ov = rpm<std::uint64_t>(h, sec + rtx::scn::kOverhead).value_or(0);
+            const std::uint64_t ov = overhead_ptr(h, sec).value_or(0);
             if (ov > 0x10000) {
                 ++ovN;
                 const std::uint64_t sb = rpm<std::uint64_t>(h, ov + rtx::scn::kOvSlots).value_or(0), se = rpm<std::uint64_t>(h, ov + 0x30).value_or(0);
@@ -12020,7 +12522,7 @@ void health_scene(HCtx& c, rtx::health::Run& run) {
         }
         if (t == 1) {
             ++npcs;
-            const int cfg = rpm<std::int32_t>(h, sec + rtx::scn::kConfig).value_or(-1);
+            const int cfg = rpm<std::int32_t>(h, sec + kScnConfig).value_or(-1);
             const std::string live = norm_name(sec_name(h, sec));
             const rtx::cache::NpcMeta m = rtx::cache::GetNpc(cfg);
             bool match = !m.name.empty() && norm_name(m.name) == live;
@@ -12044,7 +12546,7 @@ void health_scene(HCtx& c, rtx::health::Run& run) {
             }
             bool curAgrees = false;
             {   // the current type id against the morph evaluation of the base id
-                const int cur = rpm<std::int32_t>(h, sec + rtx::scn::kNpcCur).value_or(-2);
+                const int cur = rpm<std::int32_t>(h, sec + kScnNpcCur).value_or(-2);
                 bool hid = false;
                 const rtx::cache::NpcMeta rm = resolve_npc(h, c.root, cfg, &hid);
                 if (cur != cfg) ++curMorphed;
@@ -12061,11 +12563,11 @@ void health_scene(HCtx& c, rtx::health::Run& run) {
             if (match || live.empty()) ++npcNamed;
             else if (renamed) { ++npcRenamed; if (npcOther.size() < 80) npcOther += " " + std::to_string(cfg) + " " + m.name + "='" + shown + "'"; }
             else if (npcBad.size() < 80) npcBad += " " + std::to_string(cfg) + "='" + shown + "'";
-            const int lp = rpm<std::int32_t>(h, sec + rtx::scn::kLpCur).value_or(-1), lpMax = rpm<std::int32_t>(h, sec + rtx::scn::kLpMax).value_or(-1);
-            const int target = rpm<std::int32_t>(h, sec + rtx::scn::kNpcTarget).value_or(-2);
+            const int lp = rpm<std::int32_t>(h, sec + kScnLpCur).value_or(-1), lpMax = rpm<std::int32_t>(h, sec + kScnLpMax).value_or(-1);
+            const int target = rpm<std::int32_t>(h, sec + act(rtx::scn::kNpcTarget)).value_or(-2);
             std::string sp; int bar = -1; actor_overhead_json(h, sec, sp, bar);
             {   // the level the game shows (sec+0x1178) against the cache's combat level of the drawn type
-                const int cur = rpm<std::int32_t>(h, sec + rtx::scn::kNpcCur).value_or(-1);
+                const int cur = rpm<std::int32_t>(h, sec + kScnNpcCur).value_or(-1);
                 const int cl = rtx::cache::GetNpc(cur >= 0 ? cur : cfg).combat_level;
                 NpcStats ns;
                 if (cl > 0 && read_npc_stats(h, sec, ns)) {
@@ -12096,7 +12598,7 @@ void health_scene(HCtx& c, rtx::health::Run& run) {
         } else if (t == 2) {
             ++players;
             const std::string nm = sec_name(h, sec);
-            const int cb = rpm<std::int32_t>(h, sec + rtx::scn::kCombat).value_or(-1), cb2 = rpm<std::int32_t>(h, sec + rtx::scn::kCombat + 4).value_or(-2);
+            const int cb = rpm<std::int32_t>(h, sec + kScnCombat).value_or(-1), cb2 = rpm<std::int32_t>(h, sec + kScnCombat + 4).value_or(-2);
             const int pl = rpm<std::int32_t>(h, sec + kScnPlane).value_or(-1);
             // two combat levels: the one shown and a second that can sit above it (the local player
             // reads 140 and 152), each in 3..152; the name is UTF-8 as the client stores it
@@ -12108,10 +12610,11 @@ void health_scene(HCtx& c, rtx::health::Run& run) {
             bool ok = true;
             if (t == 4) {
                 int gfx = -1;
-                ok = t4_valid(h, sec, px, py, gfx);
+                std::string why;
+                ok = t4_valid(h, sec, px, py, gfx, &why);
                 ++c.t4Seen;
                 if (ok) ++c.t4Gfx[gfx];
-                if (!ok && fxBad.size() < 60) fxBad += " gfx " + std::to_string(gfx);
+                if (!ok && fxBad.size() < 100) fxBad += " gfx " + std::to_string(gfx) + " " + why;
             } else {   // the source tile, stored as fine ints like the type-4 position
                 const int sx = rpm<std::int32_t>(h, sec + rtx::scn::kProjSrcX).value_or(0), sy = rpm<std::int32_t>(h, sec + rtx::scn::kProjSrcY).value_or(0);
                 const float fx = rpm<float>(h, sec + rtx::scn::kProjSrcX).value_or(0), fy = rpm<float>(h, sec + rtx::scn::kProjSrcY).value_or(0);
@@ -12142,15 +12645,15 @@ void health_scene(HCtx& c, rtx::health::Run& run) {
         const int ok = npcs == 0 ? kUnchecked : unproven ? (npcs < 5 ? kUnchecked : kFail) : (npcNamed * 10 >= judged * 9 ? kPass : kFail);
         const std::string other = npcRenamed ? ", " + std::to_string(npcRenamed) + " under a name of " + (npcRenamed == 1 ? "its" : "their") + " own (a pet its owner named):" + npcOther : std::string();
         run.Add(G, "scene.npcs", "NPC names", ok,
-                npcs == 0 ? "no NPCs nearby" : std::string(ok == kFail ? "MOVED: " : ok == kUnchecked ? "UNVERIFIED: " : "") + std::to_string(npcNamed) + "/" + std::to_string(judged) + " config ids name the live NPC" + other + (ok == kFail ? " (the config id at sec+" + hx(rtx::scn::kConfig) + " or the name buffer moved)" : "") + (npcBad.empty() ? "" : "; e.g." + npcBad),
+                npcs == 0 ? "no NPCs nearby" : std::string(ok == kFail ? "MOVED: " : ok == kUnchecked ? "UNVERIFIED: " : "") + std::to_string(npcNamed) + "/" + std::to_string(judged) + " config ids name the live NPC" + other + (ok == kFail ? " (the config id at sec+" + hx(kScnConfig) + " or the name buffer moved)" : "") + (npcBad.empty() ? "" : "; e.g." + npcBad),
                 "NPC labels|Boss info|Slayer|Plugins", "90 % named", std::to_string(npcNamed) + "/" + std::to_string(judged), "scene.types").need = npcs == 0 ? "an NPC nearby" : ok == kUnchecked ? "an NPC under its own name nearby" : "";
     }
     {
         const bool curPass = curOk * 10 >= npcs * 9;
         run.Add(G, "scene.npctype", "NPC current type", npcs == 0 ? kUnchecked : (curPass ? kPass : kWarn),
                 npcs == 0 ? std::string("no NPCs nearby") : std::string(curPass ? "" : "MOVED: ") +
-                std::to_string(curOk) + "/" + std::to_string(npcs) + " current type ids at sec+" + hx(rtx::scn::kNpcCur) + " agree with the morph evaluation, " +
-                std::to_string(curMorphed) + " differ from the base id" + (curPass ? "" : " (sec+" + hx(rtx::scn::kNpcCur) + " disagrees with the morph evaluation)") +
+                std::to_string(curOk) + "/" + std::to_string(npcs) + " current type ids at sec+" + hx(kScnNpcCur) + " agree with the morph evaluation, " +
+                std::to_string(curMorphed) + " differ from the base id" + (curPass ? "" : " (sec+" + hx(kScnNpcCur) + " disagrees with the morph evaluation)") +
                 (curBad.empty() ? "" : "; e.g." + curBad),
                 "NPC hover ids|Interactable NPCs|Interaction target", "90 %", std::to_string(curOk) + "/" + std::to_string(npcs), "scene.types").need = npcs == 0 ? "an NPC nearby" : "";
     }
@@ -12158,7 +12661,7 @@ void health_scene(HCtx& c, rtx::health::Run& run) {
         const bool pPass = playersOk * 10 >= players * 9;
         run.Add(G, "scene.players", "Players", players == 0 ? kUnchecked : (pPass ? kPass : kFail),
                 players == 0 ? std::string("no other players nearby") : std::string(pPass ? "" : "FORMAT: ") + std::to_string(playersOk) + "/" + std::to_string(players) + " with a UTF-8 name, two combat levels in 3..152 and a plane" + (playerBad.empty() ? "" : "; off:" + playerBad),
-                "Player labels|Nameplates", "90 %: UTF-8 name of 1..24 bytes, combat 3..152 at sec+" + hx(rtx::scn::kCombat) + " and +" + hx(rtx::scn::kCombat + 4) + " (the second can sit above the first), plane 0..3", std::to_string(playersOk) + "/" + std::to_string(players), "scene.types").need = players == 0 ? "another player nearby" : "";
+                "Player labels|Nameplates", "90 %: UTF-8 name of 1..24 bytes, combat 3..152 at sec+" + hx(kScnCombat) + " and +" + hx(kScnCombat + 4) + " (the second can sit above the first), plane 0..3", std::to_string(playersOk) + "/" + std::to_string(players), "scene.types").need = players == 0 ? "another player nearby" : "";
     }
     run.Add(G, "scene.motion", "Animation and facing", motionN == 0 ? kUnchecked : (motionOk * 10 >= motionN * 9 ? kPass : kFail),
             motionN == 0 ? std::string("no players or NPCs nearby") : std::string(motionOk * 10 >= motionN * 9 ? "" : "FORMAT: ") + std::to_string(motionOk) + "/" + std::to_string(motionN) + " actors with a valid animation and a unit facing (turn target and entity node)",
@@ -12171,12 +12674,24 @@ void health_scene(HCtx& c, rtx::health::Run& run) {
     run.Add(G, "scene.npcvis", "NPC shown level", visN < 5 ? kUnchecked : (visOk * 10 >= visN * 9 ? kPass : kFail),
             visN < 5 ? std::string("UNVERIFIED: ") + std::to_string(visN) + " NPCs with a combat level in view, 5 needed (sec+" + hx(kNpcVisLevel) + (visN ? ": " + std::to_string(visOk) + "/" + std::to_string(visN) + " equal the cache level)" : " not checked)") : std::string(visOk * 10 >= visN * 9 ? "" : "FORMAT: ") + std::to_string(visOk) + "/" + std::to_string(visN) + " shown levels at sec+" + hx(kNpcVisLevel) + " equal the cache combat level" + (visBad.empty() ? "" : "; e.g." + visBad),
             "NPC hover stats|Scene NPC levels", "90 % of 5 or more", std::to_string(visOk) + "/" + std::to_string(visN), "scene.npcs").need = visN < 5 ? "five NPCs with a combat level in view" : "";
-    run.Add(G, "scene.overhead", "Overhead objects", ovN == 0 ? kUnchecked : (ovOk == ovN ? kPass : kFail),
-            ovN == 0 ? std::string("no actor with an overhead object") : std::string(ovOk == ovN ? "" : "FORMAT: ") + std::to_string(ovOk) + "/" + std::to_string(ovN) + " with a 0x1B0-stride bar vector and at most 6 splats",
-            "Combat log|Head bars", "every overhead object", std::to_string(ovOk) + "/" + std::to_string(ovN), "scene.types").need = ovN == 0 ? "an actor with a head bar nearby" : "";
-    run.Add(G, "scene.effects", "Effects and projectiles", fxN == 0 ? kUnchecked : (fxOk == fxN ? kPass : kFail),
-            fxN == 0 ? "none nearby" : std::string(fxOk == fxN ? "" : "FORMAT: ") + std::to_string(fxOk) + "/" + std::to_string(fxN) + " near the player with a cache graphic" + (fxBad.empty() ? "" : ";" + fxBad),
-            "Specials: graphic highlights|Clue scan ring|Projectiles", "every effect", std::to_string(fxOk) + "/" + std::to_string(fxN), "scene.types").need = fxN == 0 ? "an effect or projectile nearby" : "";
+    {
+        const std::string at = "at sec+" + hx(kScnOverhead) + " from the head-bar code" + (kScnOverhead != rtx::scn::kOverhead ? " (compiled " + hx((std::uint32_t)rtx::scn::kOverhead) + ")" : "");
+        if (!kScnOverhead)
+            run.Add(G, "scene.overhead", "Overhead objects", kFail, "GONE: the overhead object was not found in the head-bar code; hitsplats and head bars off",
+                    "Combat log|Head bars", "the actor field the head-bar code reads", "none", "scene.types");
+        else
+            run.Add(G, "scene.overhead", "Overhead objects", ovN == 0 ? kUnchecked : (ovOk == ovN ? kPass : kFail),
+                    ovN == 0 ? std::string("UNVERIFIED: no actor with an overhead object; ") + at : std::string(ovOk == ovN ? "" : "FORMAT: ") + std::to_string(ovOk) + "/" + std::to_string(ovN) + " with a 0x1B0-stride bar vector and at most 6 splats, " + at,
+                    "Combat log|Head bars", "every overhead object", std::to_string(ovOk) + "/" + std::to_string(ovN), "scene.types").need = ovN == 0 ? "an actor with a head bar nearby" : "";
+    }
+    {
+        // 90 % from five effects on, like the other scene rows: one stale or far effect does not break the
+        // row; below five, a miss leaves it unverified unless every one of two or more fails
+        const int fxRes = fxN == 0 ? kUnchecked : fxOk == fxN ? kPass : fxN >= 5 ? (fxOk * 10 >= fxN * 9 ? kPass : kFail) : (fxN >= 2 && fxOk == 0 ? kFail : kUnchecked);
+        run.Add(G, "scene.effects", "Effects and projectiles", fxRes,
+                fxN == 0 ? "none nearby" : std::string(fxRes == kFail ? "FORMAT: " : fxRes == kUnchecked ? "UNVERIFIED: " : "") + std::to_string(fxOk) + "/" + std::to_string(fxN) + " near the player with a cache graphic" + (fxBad.empty() ? "" : ";" + fxBad),
+                "Specials: graphic highlights|Clue scan ring|Projectiles", "90 % of 5 or more", std::to_string(fxOk) + "/" + std::to_string(fxN), "scene.types").need = fxN == 0 ? "an effect or projectile nearby" : fxRes == kUnchecked ? "five effects or projectiles nearby" : "";
+    }
     // movement route: every player and NPC carries a 21-entry route at sec+0x268, and a moving
     // actor's newest entry (its true tile) sits near where it is drawn. A runner covers 2 tiles a tick
     // and is drawn up to 2 ticks behind, so 4 tiles; a moved layout reads tiles far off or none. Fewer
@@ -12189,10 +12704,10 @@ void health_scene(HCtx& c, rtx::health::Run& run) {
             const std::uint64_t sec = es.second;
             const int t = rpm<std::uint8_t>(h, sec + rtx::scn::kType).value_or(0xFF);
             if (t != 1 && t != 2) continue;
-            const float fx = rpm<float>(h, sec + rtx::scn::kPosX).value_or(0), fy = rpm<float>(h, sec + rtx::scn::kPosY).value_or(0);
+            const float fx = rpm<float>(h, sec + kScnPosX).value_or(0), fy = rpm<float>(h, sec + kScnPosY).value_or(0);
             if (fx <= 0.f || fy <= 0.f) continue;
             ++total;
-            const std::uint64_t mm = rpm<std::uint64_t>(h, sec + rtx::scn::kMoveMgr).value_or(0);
+            const std::uint64_t mm = rpm<std::uint64_t>(h, sec + kScnMoveMgr).value_or(0);
             if (mm <= 0x10000) continue;
             const std::uint64_t beg = rpm<std::uint64_t>(h, mm + rtx::scn::kRouteBegin).value_or(0), end = rpm<std::uint64_t>(h, mm + rtx::scn::kRouteEnd).value_or(0);
             const std::uint64_t wr = rpm<std::uint64_t>(h, mm + rtx::scn::kRouteWrite).value_or(0);
@@ -12215,7 +12730,7 @@ void health_scene(HCtx& c, rtx::health::Run& run) {
         const int st = total == 0 ? kUnchecked : !ok ? kFail : (routesOk && few) ? kUnchecked : kPass;
         run.Add(G, "scene.route", "Actor true tile", st,
                 total == 0 ? std::string("no players or NPCs in the scene") : std::string(st == kFail ? "MOVED: " : "") +
-                std::to_string(routes) + "/" + std::to_string(total) + " actors carry a movement route at sec+" + hx(rtx::scn::kMoveMgr) + ", " +
+                std::to_string(routes) + "/" + std::to_string(total) + " actors carry a movement route at sec+" + hx(kScnMoveMgr) + ", " +
                 std::to_string(queueOk) + "/" + std::to_string(routes) + " queues consistent, " +
                 std::to_string(close) + "/" + std::to_string(moving) + " moving within 4 tiles of where they are drawn" +
                 (few ? " (too few moving to judge)" : moveOk ? "" : " (route object or entry layout moved?)") +
@@ -12229,7 +12744,7 @@ void health_scene(HCtx& c, rtx::health::Run& run) {
         CamProbes probes; float m[16] = {};
         int ok = kUnchecked; std::string d = "camera matrix not readable", got;
         if (c.wv && read_view_matrix(h, c.pid, c.root, c.wv, probes, m) && c.localSec) {
-            const float x = rpm<float>(h, c.localSec + rtx::scn::kPosX).value_or(0), y = rpm<float>(h, c.localSec + rtx::scn::kPosY).value_or(0), z = rpm<float>(h, c.localSec + rtx::scn::kPosZ).value_or(0);
+            const float x = rpm<float>(h, c.localSec + kScnPosX).value_or(0), y = rpm<float>(h, c.localSec + kScnPosY).value_or(0), z = rpm<float>(h, c.localSec + kScnPosZ).value_or(0);
             const float w = m[3] * x + m[11] * y + m[7] * z + m[15];
             if (w > 1.f) {
                 const float nx = (m[0] * x + m[8] * y + m[4] * z + m[12]) / w, ny = (m[1] * x + m[9] * y + m[5] * z + m[13]) / w;
@@ -12245,7 +12760,7 @@ void health_scene(HCtx& c, rtx::health::Run& run) {
     {
         int ok = kUnchecked; std::string d = "no local player", got;
         if (c.localSec) {
-            const float x = rpm<float>(h, c.localSec + rtx::scn::kPosX).value_or(0), y = rpm<float>(h, c.localSec + rtx::scn::kPosY).value_or(0), z = rpm<float>(h, c.localSec + rtx::scn::kPosZ).value_or(0);
+            const float x = rpm<float>(h, c.localSec + kScnPosX).value_or(0), y = rpm<float>(h, c.localSec + kScnPosY).value_or(0), z = rpm<float>(h, c.localSec + kScnPosZ).value_or(0);
             const int plane = rpm<std::int32_t>(h, c.localSec + kScnPlane).value_or(0);
             const int tx = (int)(x / 512.f), ty = (int)(y / 512.f);
             if (LiveTerrainSnapshot(c.pid, tx, ty, plane)) {
@@ -12260,11 +12775,23 @@ void health_scene(HCtx& c, rtx::health::Run& run) {
                     char b[120]; std::snprintf(b, sizeof(b), "actor height %.1f, grid %.1f (off by %.1f)", z, want, z - want);
                     d = b; got = b;
                     ok = std::fabs(z - want) <= 1.5f ? kPass : (std::fabs(z - want) <= 64.f ? kWarn : kFail);
-                    if (ok != kPass) d = "FORMAT: " + d + (ok == kWarn ? " (the grid or the lift reads a nearby field)" : " (the height grid chain does not land on the actor)");
+                    // the +5 rule holds for an actor at rest: one walking between tiles, or playing an
+                    // animation, is not on the grid it is measured against
+                    if (ok == kWarn) {
+                        Sleep(120);
+                        const float x2 = rpm<float>(h, c.localSec + kScnPosX).value_or(0), y2 = rpm<float>(h, c.localSec + kScnPosY).value_or(0);
+                        const int anim = rpm<std::int32_t>(h, c.localSec + act(0xA90)).value_or(-1);
+                        if (std::fabs(x2 - x) > 1.f || std::fabs(y2 - y) > 1.f || anim != -1) {
+                            ok = kUnchecked;
+                            d = std::string("UNVERIFIED: ") + (anim != -1 ? "the player is animating" : "the player is moving") + ", " + d;
+                        }
+                    }
+                    if (ok == kWarn || ok == kFail) d = "FORMAT: " + d + (ok == kWarn ? " (the grid or the lift reads a nearby field)" : " (the height grid chain does not land on the actor)");
                 }
             } else { ok = kFail; d = "GONE: terrain snapshot failed (the scene's height grid chain did not resolve)"; got = "no snapshot"; }
         }
-        run.Add(G, "scene.terrain", "Terrain heights", ok, d, "Tile markers|Ground overlays|In-frame markers", "actor height within 1.5 of grid + lift + 5", got, "player.registry").need = ok == kUnchecked ? "a local player in the scene" : "";
+        run.Add(G, "scene.terrain", "Terrain heights", ok, d, "Tile markers|Ground overlays|In-frame markers", "actor height within 1.5 of grid + lift + 5, the player at rest", got, "player.registry").need =
+            ok != kUnchecked ? "" : c.localSec ? "the player standing still" : "a local player in the scene";
     }
     // actor layout: seven actor positions the game's own routines name, against the compiled ones
     {
@@ -12276,13 +12803,14 @@ void health_scene(HCtx& c, rtx::health::Run& run) {
             d = "GONE: " + (al.missing ? std::to_string(al.missing) + " of the 2 routines not found exactly once" : std::string("the routines were found but their values are out of range")) +
                 "; the compiled positions are in use";
         } else if (al.ok) {
-            struct Cmp { const char* name; std::uint32_t found; std::uint64_t compiled; bool applied; };
-            const Cmp cmp[] = { { "level", al.plane, rtx::scn::kPlane, true }, { "scene node", al.node, rtx::scn::kBack, false }, { "tile size", al.size, rtx::scn::kActorSize, false },
-                                { "account", al.account, rtx::scn::kPlayerData, true }, { "index", al.uid, rtx::scn::kUid, true }, { "local index", al.localIdx, rtx::scn::kLocalUid, true } };
+            // applied: the reader reads the found value; read: something reads the compiled one
+            struct Cmp { const char* name; std::uint32_t found; std::uint64_t compiled; bool applied; bool read; };
+            const Cmp cmp[] = { { "level", al.plane, rtx::scn::kPlane, true, true }, { "scene node", al.node, rtx::scn::kBack, false, true }, { "tile size", al.size, rtx::scn::kActorSize, false, false },
+                                { "account", al.account, rtx::scn::kPlayerData, true, true }, { "index", al.uid, rtx::scn::kUid, true, true }, { "local index", al.localIdx, rtx::scn::kLocalUid, true, true } };
             std::string moved;
             for (const Cmp& x : cmp) {
                 got += std::string(got.empty() ? "" : " ") + hx(x.found);
-                if (x.found != x.compiled) moved += std::string(moved.empty() ? "" : ", ") + x.name + " " + hx(x.compiled) + " -> " + hx(x.found) + (x.applied ? "" : " (the compiled copy still in use)");
+                if (x.found != x.compiled) moved += std::string(moved.empty() ? "" : ", ") + x.name + " " + hx(x.compiled) + " -> " + hx(x.found) + (x.applied ? "" : x.read ? " (the compiled copy still in use)" : " (nothing reads it)");
             }
             ok = moved.empty() ? kPass : kWarn;
             d = moved.empty() ? "level, scene node, tile size, account, index and local index as the game's own routines read them; actor to root +" + hx(al.root)
@@ -12310,25 +12838,26 @@ void health_scene(HCtx& c, rtx::health::Run& run) {
         int ok = kUnchecked; std::string d = "no local player", got;
         const std::uint64_t wv = c.wv;
         if (wv > 0x10000 && c.localSec) {
-            const std::uint64_t mgr = rpm<std::uint64_t>(h, wv + rtx::scn::kWvGrid).value_or(0);
-            if (rpm<std::uint64_t>(h, wv + rtx::scn::kMapDef).value_or(0) != 0) {
+            const WvGrid WG = wv_grid(h, wv);
+            const std::uint64_t mgr = rpm<std::uint64_t>(h, wv + WG.owner).value_or(0);
+            if (rpm<std::uint64_t>(h, wv + WG.def).value_or(0) != 0) {
                 ok = kUnchecked;
                 d = "instanced worldView, grid owner " + (mgr == wv ? std::string("self") : hx(mgr)) + " (instance layout not verified)";
             }
-            else if (mgr != wv) { ok = kFail; d = "MOVED: grid owner [wv+" + hx(rtx::scn::kWvGrid) + "] is " + hx(mgr) + ", not the worldView (grid moved?)"; }
+            else if (mgr != wv) { ok = kFail; d = "MOVED: grid owner [wv+" + hx(WG.owner) + "] is " + hx(mgr) + ", not the worldView (grid moved?)"; }
             else {
                 ok = kPass;
                 std::int32_t b[4] = { -1, -1, -1, -1 };
-                rpm_bytes(h, mgr + rtx::scn::kGridMin, b, sizeof(b));
+                rpm_bytes(h, mgr + WG.min, b, sizeof(b));
                 got = std::to_string(b[0]) + "," + std::to_string(b[1]) + ".." + std::to_string(b[2]) + "," + std::to_string(b[3]);
                 d = "self, bounds " + got;
-                const int rx = (int)(rpm<float>(h, c.localSec + rtx::scn::kPosX).value_or(0) / 512.f) >> 6;
-                const int ry = (int)(rpm<float>(h, c.localSec + rtx::scn::kPosY).value_or(0) / 512.f) >> 6;
+                const int rx = (int)(rpm<float>(h, c.localSec + kScnPosX).value_or(0) / 512.f) >> 6;
+                const int ry = (int)(rpm<float>(h, c.localSec + kScnPosY).value_or(0) / 512.f) >> 6;
                 const std::string ms = std::to_string(rx) + "," + std::to_string(ry);
-                if (b[0] < 0 || b[1] < 0 || b[2] > 98 || b[3] > 198 || b[0] > b[2] || b[1] > b[3]) { ok = kFail; d = "FORMAT: " + d + " (not a box inside 0,0..98,198: the bounds at +" + hx(rtx::scn::kGridMin) + " moved)"; }
+                if (b[0] < 0 || b[1] < 0 || b[2] > 98 || b[3] > 198 || b[0] > b[2] || b[1] > b[3]) { ok = kFail; d = "FORMAT: " + d + " (not a box inside 0,0..98,198: the bounds at +" + hx(WG.min) + " moved)"; }
                 else if (rx < b[0] || rx > b[2] || ry < b[1] || ry > b[3]) { ok = kFail; d = "FORMAT: " + d + ", player mapsquare " + ms + " outside the grid"; }
                 else {
-                    const std::uint64_t rows = rpm<std::uint64_t>(h, mgr + rtx::scn::kGridRows).value_or(0);
+                    const std::uint64_t rows = rpm<std::uint64_t>(h, mgr + WG.rows).value_or(0);
                     const std::uint64_t col = rows > 0x10000 ? rpm<std::uint64_t>(h, rows + (std::uint64_t)(rx - b[0]) * 0x18).value_or(0) : 0;
                     const std::uint64_t region = col > 0x10000 ? rpm<std::uint64_t>(h, col + (std::uint64_t)(ry - b[1]) * 0x18 + 8).value_or(0) : 0;
                     if (region <= 0x10000) { ok = kFail; d = "GONE: " + d + ", no region object at mapsquare " + ms; }
@@ -12341,10 +12870,10 @@ void health_scene(HCtx& c, rtx::health::Run& run) {
                         } else d += ", player mapsquare " + ms + " inside, region back reference";
                     }
                 }
-                d += "; +" + hx(rtx::scn::kMapDef) + " = 0 (not instanced)";
-                if (rpm<std::uint64_t>(h, wv + rtx::scn::kWvBox).value_or(0) != wv) {
+                d += "; +" + hx(WG.def) + " = 0 (not instanced)";
+                if (rpm<std::uint64_t>(h, wv + kWvBoxOff).value_or(0) != wv) {
                     if (ok == kPass) { ok = kWarn; d = "MOVED: " + d; }
-                    d += "; [wv+" + hx(rtx::scn::kWvBox) + "] is not the worldView (loc menu box moved?)";
+                    d += "; [wv+" + hx(kWvBoxOff) + "] is not the worldView (loc menu box moved?)";
                 }
             }
         }
@@ -12357,8 +12886,8 @@ void health_scene(HCtx& c, rtx::health::Run& run) {
         int ok = kUnchecked; std::string d = "no local player", got, need = "a local player in the scene";
         if (c.wv > 0x10000 && c.localSec) {
             const InstFacts f = inst_facts(c.pid);
-            const int px = (int)(rpm<float>(h, c.localSec + rtx::scn::kPosX).value_or(0) / 512.f);
-            const int py = (int)(rpm<float>(h, c.localSec + rtx::scn::kPosY).value_or(0) / 512.f);
+            const int px = (int)(rpm<float>(h, c.localSec + kScnPosX).value_or(0) / 512.f);
+            const int py = (int)(rpm<float>(h, c.localSec + kScnPosY).value_or(0) / 512.f);
             const int pp = rpm<std::int32_t>(h, c.localSec + kScnPlane).value_or(0);
             const std::string sizes = "level " + hx(f.layout.level) + ", column " + hx(f.layout.column) + ", record " + std::to_string(f.layout.record) + " bytes from " +
                                       std::to_string(f.layout.pairs) + " place" + (f.layout.pairs == 1 ? "" : "s") + " in the client's code";
@@ -12370,7 +12899,7 @@ void health_scene(HCtx& c, rtx::health::Run& run) {
             else if (!f.def && !f.instanced) { d = "not in an instance; zone table sizes read: " + sizes; need = "an instance (a house, a boss room, a quest instance)"; }
             else if (f.def != f.instanced && !f.boxBad && !f.layoutBad) {
                 ok = kWarn; need.clear();
-                d = std::string("MOVED: the map definition at +") + hx(rtx::scn::kMapDef) + (f.def ? " is set but no loaded mapsquare has a zone table" : " is empty but mapsquares have zone tables") + " (map definition moved?)";
+                d = std::string("MOVED: the map definition at +") + hx(wv_grid_cached(c.pid).def) + (f.def ? " is set but no loaded mapsquare has a zone table" : " is empty but mapsquares have zone tables") + " (map definition moved?)";
             }
             else if (f.boxBad) { ok = kFail; need.clear(); d = "FORMAT: instanced worldView whose grid is not a box of up to 16 x 16 loaded mapsquares owned by the worldView (grid moved?)"; }
             else if (f.layoutBad) { ok = kFail; need.clear(); d = "FORMAT: a mapsquare's zone table at +" + hx(f.layout.regionOff) + " is not 4 levels of 10 columns of 10 records stored inline (" + sizes + ")"; }
@@ -12396,21 +12925,12 @@ void health_scene(HCtx& c, rtx::health::Run& run) {
         std::vector<LiveLoc> locs;
         int ok = kUnchecked; std::string d = "no live scenery read";
         if (ReadLiveLocs(c.pid, locs) && !locs.empty()) {
-            std::unordered_map<int, std::unordered_set<long long>> sets;
+            PlacementIndex places; places.pid = c.pid; places.tol = 2;   // the live tile is the model's centre
             int matched = 0, total = 0;
             for (const auto& L : locs) {
                 if (total >= 400) break;
                 ++total;
-                const int rx = L.tx >> 6, ry = L.ty >> 6, key = (rx << 8) | ry;
-                auto it = sets.find(key);
-                if (it == sets.end()) {
-                    auto& s = sets[key];
-                    for (const auto& pl : rtx::cache::RegionLocations(rx, ry))
-                        for (int dx = -2; dx <= 2; ++dx) for (int dy = -2; dy <= 2; ++dy)
-                            s.insert(((long long)pl.id << 28) | ((long long)(rx * 64 + pl.x + dx) << 14) | (long long)(ry * 64 + pl.y + dy));
-                    it = sets.find(key);
-                }
-                if (it->second.count(((long long)L.id << 28) | ((long long)L.tx << 14) | (long long)L.ty)) ++matched;
+                if (places.Has(L.id, L.tx, L.ty, L.plane)) ++matched;
             }
             d = std::to_string(matched) + "/" + std::to_string(total) + " live scenery ids sit on a cache placement of that id";
             ok = matched * 10 >= total ? kPass : kFail;
@@ -12724,46 +13244,6 @@ std::uint32_t handler_fingerprint(HANDLE h, std::uint64_t fn) {
     return hsh;
 }
 
-// The zone sub-packet table, found in the running image so no exe needs it recorded. The client
-// keeps several tables of pointers to descriptors {id, wire length} whose ids count up from 0 (the
-// server packets and three more); the zone one is the table whose lengths agree with the most
-// sub-packets this reader knows, and it has to stand alone at that. 0 when none does. `runOut`
-// takes how many descriptors the table holds.
-std::uint32_t find_zone_sub_table(HCtx& c, int* runOut) {
-    if (runOut) *runOut = 0;
-    const std::size_t size = c.imageSize;
-    if (!c.base || size < 0x10000 || size > (256u << 20)) return 0;
-    std::vector<std::uint8_t> img(size, 0);
-    for (std::size_t off = 0; off < size; off += 0x10000) {
-        const std::size_t n = size - off < 0x10000 ? size - off : 0x10000;
-        if (rpm_bytes(c.h, c.base + off, img.data() + off, n)) continue;
-        for (std::size_t pg = 0; pg < n; pg += 0x1000) rpm_bytes(c.h, c.base + off + pg, img.data() + off + pg, n - pg < 0x1000 ? n - pg : 0x1000);
-    }
-    auto desc = [&](std::size_t slot, std::int32_t& id, std::int32_t& len) {
-        std::uint64_t ptr; std::memcpy(&ptr, img.data() + slot, 8);
-        if (ptr < c.base || ptr - c.base + 8 > size) return false;
-        std::memcpy(&id, img.data() + (ptr - c.base), 4); std::memcpy(&len, img.data() + (ptr - c.base) + 4, 4);
-        return true;
-    };
-    std::uint32_t best = 0; int bestAgree = 0, bestRun = 0, ties = 0;
-    for (std::size_t i = 0; i + 8 <= size; ) {
-        int run = 0, agree = 0;
-        for (std::size_t j = i; j + 8 <= size; j += 8, ++run) {
-            std::int32_t id, len;
-            if (!desc(j, id, len) || id != run) break;
-            if (run < rtx::evzone::kSubCount && len == rtx::evzone::subLen(run)) ++agree;
-        }
-        if (run >= 8) {
-            if (agree > bestAgree) { best = (std::uint32_t)i; bestAgree = agree; bestRun = run; ties = 0; }
-            else if (agree == bestAgree) ++ties;
-        }
-        i += run >= 8 ? (std::size_t)run * 8 : 8;
-    }
-    if (!best || ties || bestAgree * 3 < rtx::evzone::kSubCount * 2) return 0;
-    if (runOut) *runOut = bestRun;
-    return best;
-}
-
 // ---- Packets: live layouts ----
 // One row per expected opcode seen at least 20 times in the event ring: records the decoder read,
 // and records whose decoded values the game state and the cache do not allow. A layout that kept
@@ -12782,7 +13262,7 @@ void health_packets_live(HCtx& c, rtx::health::Run& run) {
     HANDLE h = c.h;
     {   // map origin for the zone-relative packets
         const std::uint64_t mm = rpm<std::uint64_t>(h, c.root + kOffMapMgr).value_or(0);
-        if (mm > 0x10000) { rtx::evzone::g_mapBaseX = rpm<std::int32_t>(h, mm + 0x698).value_or(0); rtx::evzone::g_mapBaseY = rpm<std::int32_t>(h, mm + 0x69C).value_or(0); }
+        if (mm > 0x10000) { rtx::evzone::g_mapBaseX = rpm<std::int32_t>(h, mm + kMapBase).value_or(0); rtx::evzone::g_mapBaseY = rpm<std::int32_t>(h, mm + kMapBase + 4).value_or(0); }
     }
     const int mapX = rtx::evzone::g_mapBaseX, mapY = rtx::evzone::g_mapBaseY;
     TrackerDefs trk; const bool trkOk = read_tracker_defs(h, c.root, trk);
@@ -12845,6 +13325,11 @@ void health_packets_live(HCtx& c, rtx::health::Run& run) {
             continue;
         }
         if (op == rtx::sops::kHintArrow) { s.rawOk = true; ++s.decoded; continue; }
+        if (rtx::preads::StateOf(op) == rtx::preads::kOff) {
+            const auto it = rtx::preads::Current().byRef.find(op);
+            bad(s, "layout not read from its handler (" + (it != rtx::preads::Current().byRef.end() ? it->second.why : std::string("no layout")) + "), left raw");
+            continue;
+        }
         std::string body;
         if (!ev_decode(body, op, r.payload, n, r.length, trkOk ? &trk : nullptr)) { if (op == rtx::sops::kRunClientScript) bad(s, "signature or terminator not readable"); continue; }
         ++s.decoded;
@@ -13048,22 +13533,58 @@ void health_packets(HCtx& c, rtx::health::Run& run) {
         const std::uint64_t vb = rpm<std::uint64_t>(h, self).value_or(0), vc = rpm<std::uint64_t>(h, self + 0x10).value_or(0);
         const bool shape = vb == tbl && vc >= vb && ((vc - vb) % 8) == 0 && (vc - vb) / 8 <= 4096;
         const int count = shape ? (int)((vc - vb) / 8) : -1;
-        const std::uint64_t dMax = rpm<std::uint64_t>(h, tbl + (std::uint64_t)rtx::sops::kOpMax * 8).value_or(0);
-        const bool atMax = dMax > 0x10000 && rpm<std::int32_t>(h, dMax).value_or(-1) == rtx::sops::kOpMax;
+        const int last = count > 0 ? count - 1 : rtx::sops::kOpMax;
+        const std::uint64_t dMax = rpm<std::uint64_t>(h, tbl + (std::uint64_t)last * 8).value_or(0);
+        const bool atMax = dMax > 0x10000 && rpm<std::int32_t>(h, dMax).value_or(-1) == last;
         run.Fact("packets.live.descriptors", std::to_string(count));
+        const auto& P = rtx::pktid::Current();
         int ok = kPass; std::string d;
-        if (!shape) { ok = atMax ? kWarn : kFail; d = std::string(atMax ? "FORMAT: " : "GONE: ") + "the table global is not an inline-buffer vector (begin " + hx(vb) + " vs buffer " + hx(tbl) + ")" + (atMax ? "; a descriptor still sits at " + hx(rtx::sops::kOpMax) : ""); }
-        else if (count != rtx::sops::kOpMax + 1) { ok = kFail; d = "FORMAT: descriptor vector holds " + std::to_string(count) + ", compiled bound " + hx(rtx::sops::kOpMax) + " (opcodes renumbered: re-pin ServerOps.h)"; }
-        else if (!atMax) { ok = kFail; d = "FORMAT: " + std::to_string(count) + " descriptors but the one at " + hx(rtx::sops::kOpMax) + " does not carry its opcode (descriptor layout moved)"; }
-        else d = std::to_string(count) + " descriptors, opcodes 0.." + hx(rtx::sops::kOpMax);
-        run.Add(G, "pkt.table", "Packet table", ok, d, "Every packet decoder", std::to_string(rtx::sops::kOpMax + 1) + " descriptors", count < 0 ? std::string("no vector") : std::to_string(count), "code.packets");
+        if (!shape) { ok = atMax ? kWarn : kFail; d = std::string(atMax ? "FORMAT: " : "GONE: ") + "the table global is not an inline-buffer vector (begin " + hx(vb) + " vs buffer " + hx(tbl) + ")" + (atMax ? "; a descriptor still sits at " + hx((std::uint32_t)last) : ""); }
+        else if (!atMax) { ok = kFail; d = "FORMAT: " + std::to_string(count) + " descriptors but the last one does not carry its opcode (descriptor layout moved)"; }
+        else if (P.ok && count < P.liveCount) { ok = kFail; d = "FORMAT: descriptor vector holds " + std::to_string(count) + ", the exe registers " + std::to_string(P.liveCount) + " packet callbacks"; }
+        else d = std::to_string(count) + " descriptors, opcodes 0.." + hx((std::uint32_t)last) + (P.ok ? "; " + std::to_string(P.c.byName + P.c.byOrder + P.c.byLength) + " of " + std::to_string(P.c.refCount) + " reference packets found by identity" : std::string("; packet identity not read: ") + P.why);
+        run.Add(G, "pkt.table", "Packet table", ok, d, "Every packet decoder", "a descriptor vector", count < 0 ? std::string("no vector") : std::to_string(count), "code.packets");
+    }
+    // the fixed-length packets' field layouts, read from their handlers and paired with the reference
+    // build's (PacketReads.h); the decoders read every packet through them
+    {
+        const auto& L = rtx::preads::Current();
+        int ok = kPass; std::string d, offs, ambs;
+        int dec = 0, decOff = 0, decAmb = 0, same = 0, off = 0;
+        for (const auto& kv : L.byRef) { if (kv.second.state == rtx::preads::kSame) ++same; else if (kv.second.state == rtx::preads::kOff) ++off; }
+        std::set<int> seenOp;
+        for (const auto& e : rtx::sops::kExpected) {
+            if (e.len <= 0 || !seenOp.insert(e.op).second) continue;
+            ++dec;
+            const auto it = L.byRef.find(e.op);
+            if (it == L.byRef.end()) continue;
+            if (it->second.state == rtx::preads::kOff) { ++decOff; offs += std::string(offs.empty() ? "" : "; ") + e.name + " " + hx((std::uint32_t)e.op) + ": " + it->second.why; }
+            else if (it->second.state == rtx::preads::kPaired && it->second.ambiguous) { ++decAmb; ambs += std::string(ambs.empty() ? "" : ", ") + e.name + " " + hx((std::uint32_t)e.op); }
+        }
+        if (!L.ran) { ok = kFail; d = "GONE: layouts not read (" + (L.why.empty() ? std::string("packets not identified") : L.why) + "): every fixed-length packet left raw"; }
+        else {
+            d = std::to_string(L.derived) + " of " + std::to_string(L.known) + " reference packets read from their handlers, " + std::to_string(L.paired) + " paired with the reference (" +
+                std::to_string(L.changed) + " changed their wire form), " + std::to_string(same) + " read alike as far as read, " + std::to_string(off) + " off";
+            if (decAmb) d += "; fields told apart only by read order: " + ambs;
+            if (decOff) { ok = kWarn; d = "OFF: " + std::to_string(decOff) + " of " + std::to_string(dec) + " decoded packets left raw (" + offs + "); " + d; }
+        }
+        run.Fact("packets.layouts", std::to_string(L.paired) + " paired, " + std::to_string(L.changed) + " changed, " + std::to_string(off) + " off");
+        run.Add(G, "pkt.layouts", "Packet layouts", ok, d, "Packet decoders|Var updates|Skills panel|Zone events|Events channel",
+                "every decoded fixed-length packet read from its handler", std::to_string(dec - decOff) + "/" + std::to_string(dec), "pkt.table");
     }
     // lengths and handler fingerprints of every opcode the reader decodes
     {
+        // live descriptors, by live opcode; every reference packet is looked up at the opcode it
+        // carries in this exe (PacketIds.h)
+        const auto& P = rtx::pktid::Current();
+        const std::uint64_t self = tbl - 0x28;
+        const std::uint64_t vb = rpm<std::uint64_t>(h, self).value_or(0), vc = rpm<std::uint64_t>(h, self + 0x10).value_or(0);
+        const int liveN = (vb == tbl && vc > vb && (vc - vb) / 8 <= 511) ? (int)((vc - vb) / 8) : rtx::sops::kOpMax + 1;
         std::map<std::uint32_t, int> fpOp;   // fingerprint -> opcode, this exe
-        std::vector<std::uint32_t> fps((std::size_t)rtx::sops::kOpMax + 1);
-        std::vector<int> lens((std::size_t)rtx::sops::kOpMax + 1, 0x7FFF);   // wire length per opcode, 0x7FFF = no descriptor
-        for (int op = 0; op <= rtx::sops::kOpMax; ++op) {
+        std::vector<std::uint32_t> fps((std::size_t)liveN);
+        std::vector<int> lens((std::size_t)liveN, 0x7FFF);   // wire length per opcode, 0x7FFF = no descriptor
+        auto liveOf = [&](int ref) { const int o = rtx::pktid::LiveOf(ref); return o >= 0 && o < liveN ? o : -1; };
+        for (int op = 0; op < liveN; ++op) {
             const std::uint64_t d = rpm<std::uint64_t>(h, tbl + (std::uint64_t)op * 8).value_or(0);
             if (d <= 0x10000) continue;
             lens[(std::size_t)op] = rpm<std::int32_t>(h, d + kDescLenOff).value_or(0x7FFF);
@@ -13091,14 +13612,18 @@ void health_packets(HCtx& c, rtx::health::Run& run) {
                     if (st && !rtx::pins::StampValue(first.expect, st).empty()) { sibling = st; break; }
                 }
         }
+        int carried = 0;
         for (const auto& e : rtx::sops::kExpected) {
             ++total;
-            const int len = lens[(std::size_t)e.op];
-            char fpb[16]; std::snprintf(fpb, sizeof(fpb), "%08x", fps[(std::size_t)e.op]);
-            run.Fact(std::string("op.") + e.name + "." + hx((std::uint32_t)e.op), hx((std::uint32_t)e.op) + "/len=" + std::to_string(len) + "/h=" + fpb);
+            const int lo = liveOf(e.op);
+            if (lo < 0) { bad += std::string(bad.empty() ? "" : "; ") + e.name + " " + hx((std::uint32_t)e.op) + ": not found in this exe by name, order or length"; continue; }
+            ++carried;
+            const int len = lens[(std::size_t)lo];
+            char fpb[16]; std::snprintf(fpb, sizeof(fpb), "%08x", fps[(std::size_t)lo]);
+            run.Fact(std::string("op.") + e.name + "." + hx((std::uint32_t)e.op), hx((std::uint32_t)lo) + "/len=" + std::to_string(len) + "/h=" + fpb);
             bool good = len == e.len;
             std::string why;
-            if (!good) why = "length " + std::to_string(len) + ", expected " + std::to_string(e.len);
+            if (!good) why = "length " + std::to_string(len) + " at " + hx((std::uint32_t)lo) + ", expected " + std::to_string(e.len);
             // the manifest's handler fingerprint for this opcode on this exe
             const rtx::pins::Line pin = rtx::pins::Find("op", std::string(e.name) + "." + hx((std::uint32_t)e.op));
             const std::string want = pin.kind.empty() ? std::string() : rtx::pins::StampValue(pin.expect, c.stamp);
@@ -13106,7 +13631,7 @@ void health_packets(HCtx& c, rtx::health::Run& run) {
                 ++pinned;
                 const std::size_t hp = want.find("h=");
                 const std::uint32_t wantFp = hp == std::string::npos ? 0 : (std::uint32_t)std::strtoul(want.c_str() + hp + 2, nullptr, 16);
-                if (wantFp && wantFp != fps[(std::size_t)e.op]) {
+                if (wantFp && wantFp != fps[(std::size_t)lo]) {
                     good = false; moved = true;
                     auto it = fpOp.find(wantFp);
                     why += std::string(why.empty() ? "" : ", ") + "handler changed" + (it != fpOp.end() ? " (the recorded handler is now op " + hx((std::uint32_t)it->second) + ")" : "");
@@ -13116,10 +13641,10 @@ void health_packets(HCtx& c, rtx::health::Run& run) {
                 const std::string sv = rtx::pins::StampValue(pin.expect, sibling);
                 const std::size_t hp = sv.find("h=");
                 const std::uint32_t sibFp = hp == std::string::npos ? 0 : (std::uint32_t)std::strtoul(sv.c_str() + hp + 2, nullptr, 16);
-                if (sibFp && sibFp == fps[(std::size_t)e.op]) ++same;
+                if (sibFp && sibFp == fps[(std::size_t)lo]) ++same;
                 else if (sibFp) {
                     auto it = fpOp.find(sibFp);
-                    if (it != fpOp.end() && it->second != e.op) { good = false; moved = true; why += std::string(why.empty() ? "" : ", ") + "its handler is now op " + hx((std::uint32_t)it->second); }
+                    if (it != fpOp.end() && it->second != lo) { good = false; moved = true; why += std::string(why.empty() ? "" : ", ") + "its handler is now op " + hx((std::uint32_t)it->second); }
                     else ++differ;
                 }
             }
@@ -13134,6 +13659,13 @@ void health_packets(HCtx& c, rtx::health::Run& run) {
                     std::to_string(total) + " opcodes carry their wire length; " + std::to_string(same) + " handlers are the ones recorded for the " + sib + " client of this game version, " +
                     std::to_string(differ) + " compiled differently, none under another opcode",
                     "Chat capture|Events channel|Zone events|Var updates|GE offers", std::to_string(total) + " lengths and handlers", std::to_string(okc) + " match, " + std::to_string(same) + " as " + sib, "pkt.table");
+        } else if (okc == total && pinned == 0 && P.ok) {
+            // identity came from the callbacks themselves (name, then place among named ones); the
+            // lengths agreeing at the carried opcodes is the check
+            run.Add(G, "pkt.opcodes", "Server opcodes", kPass,
+                    std::to_string(total) + " packets found by identity (" + std::to_string(P.c.byName) + " of the reference build's by name, " + std::to_string(P.c.byOrder) + " by order, " +
+                    std::to_string(P.c.byLength) + " by length), every one with its wire length",
+                    "Chat capture|Events channel|Zone events|Var updates|GE offers", std::to_string(total) + " packets", std::to_string(okc) + " found", "pkt.table");
         } else if (okc == total && pinned == 0) {
             // lengths alone pass a renumbering that keeps a length: without the handler fingerprints
             // of this exe the compare says nothing
@@ -13148,41 +13680,44 @@ void health_packets(HCtx& c, rtx::health::Run& run) {
         }
         // every opcode's wire length against the compiled table: an update that resizes any packet is named here
         {
-            const int all = rtx::sops::kOpMax + 1; int agree = 0; std::string diff;
+            const int all = rtx::sops::kOpMax + 1; int agree = 0, lost = 0; std::string diff, gone;
             for (int op = 0; op < all; ++op) {
-                if (lens[(std::size_t)op] == rtx::sops::kAllLengths[op]) { ++agree; continue; }
-                if (diff.size() < 240) diff += std::string(diff.empty() ? "" : ", ") + hx((std::uint32_t)op) + " " + (lens[(std::size_t)op] == 0x7FFF ? std::string("none") : std::to_string(lens[(std::size_t)op])) + "/" + std::to_string(rtx::sops::kAllLengths[op]);
+                const int lo = liveOf(op);
+                if (lo < 0) { ++lost; if (gone.size() < 120) gone += std::string(gone.empty() ? "" : ", ") + hx((std::uint32_t)op); continue; }
+                if (lens[(std::size_t)lo] == rtx::sops::kAllLengths[op]) { ++agree; continue; }
+                if (diff.size() < 240) diff += std::string(diff.empty() ? "" : ", ") + hx((std::uint32_t)op) + "@" + hx((std::uint32_t)lo) + " " + (lens[(std::size_t)lo] == 0x7FFF ? std::string("none") : std::to_string(lens[(std::size_t)lo])) + "/" + std::to_string(rtx::sops::kAllLengths[op]);
             }
-            run.Add(G, "pkt.lengths", "Wire lengths, every opcode", agree == all ? kPass : kFail,
-                    agree == all ? std::to_string(all) + " opcodes carry their compiled wire length" : "FORMAT: " + std::to_string(all - agree) + " of " + std::to_string(all) + " opcodes changed length (live/compiled): " + diff,
-                    "Packet decoders|Events channel", std::to_string(all) + " lengths", std::to_string(agree) + " agree", "pkt.table");
+            const bool okAll = agree + lost == all && diff.empty();
+            run.Add(G, "pkt.lengths", "Wire lengths, every opcode", okAll ? (lost ? kWarn : kPass) : kFail,
+                    !diff.empty() ? "FORMAT: " + std::to_string(all - agree - lost) + " of " + std::to_string(all) + " reference packets changed length (reference id@live opcode, live/reference): " + diff
+                                  : std::to_string(agree) + " reference packets carry their wire length" + (lost ? "; GONE: " + std::to_string(lost) + " not found in this exe (" + gone + ")" : std::string()),
+                    "Packet decoders|Events channel", std::to_string(all) + " lengths", std::to_string(agree) + " agree, " + std::to_string(lost) + " not found", "pkt.table");
         }
     }
-    // zone sub-packets: the table the zone update dispatches through
+    // zone sub-packets: the descriptors the zone update dispatches through, read from the exe and
+    // carried to the reference build's subs at attach (PacketIds.h)
     {
-        int tableRun = 0;
-        const std::uint32_t found = find_zone_sub_table(c, &tableRun);
-        const std::uint32_t recorded = rtx::pins::PinnedRva("zoneSub", c.stamp);
-        const std::uint32_t pinned = found ? found : recorded;
-        if (found) run.Fact("packets.zoneSubRva", hx(found));
-        int ok = kFail; std::string d = "GONE: no table of zone sub-packet descriptors found in the client", word;
-        if (pinned) {
-            int agree = 0, n = 0; std::string bad;
-            for (int sub = 0; sub <= rtx::evzone::kSubCount; ++sub) {
-                const std::uint64_t d0 = rpm<std::uint64_t>(h, c.base + pinned + (std::uint64_t)sub * 8).value_or(0);
-                const bool desc = d0 > 0x10000 && rpm<std::int32_t>(h, d0).value_or(-1) == sub;
-                if (sub == rtx::evzone::kSubCount) { if (desc) { word = "NEW"; bad += " a sub-packet past " + hx((std::uint32_t)(rtx::evzone::kSubCount - 1)); ++n; } break; }
-                const int want = rtx::evzone::subLen(sub);
-                const int len = desc ? rpm<std::int32_t>(h, d0 + 4).value_or(-100) : -100;
-                ++n;
-                if (len == want) ++agree; else { if (word.empty()) word = desc ? "FORMAT" : "GONE"; if (bad.size() < 60) bad += " sub " + std::to_string(sub) + " " + std::to_string(len) + "/" + std::to_string(want); }
+        const auto& Z = rtx::pktid::Current().zone;
+        int ok = kFail; std::string d, found = "none";
+        if (!rtx::pktid::Current().ok) d = "GONE: server packets not identified, so the zone sub-packets are not either";
+        else if (!Z.ok) d = "GONE: " + (Z.why.empty() ? std::string("no zone sub-packet descriptors recognised") : Z.why);
+        else {
+            int carried = 0; std::string lost;
+            for (std::size_t i = 0; i < rtx::pktid::kZoneRefCount; ++i) {
+                const int r = rtx::pktid::kZoneRef[i].sub;
+                if (r >= 0 && r < 64 && Z.toLive[r] >= 0) ++carried;
+                else if (lost.size() < 80) lost += (lost.empty() ? "" : ", ") + std::to_string(r);
             }
-            ok = n && agree == n ? kPass : kFail;
-            d = std::to_string(agree) + "/" + std::to_string(n) + " zone sub-packet lengths agree" + (bad.empty() ? "" : ";" + bad);
-            if (found && recorded && found != recorded) d += "; table at " + hx(found) + ", recorded " + hx(recorded);
-            if (ok != kPass) d = (word.empty() ? std::string("GONE") : word) + ": " + d;
+            found = std::to_string(carried) + "/" + std::to_string(Z.refCount);
+            d = std::to_string(Z.liveCount) + " sub-packets in this exe; " + found + " reference subs carried (" + std::to_string(Z.byTwin) + " by twin packet, " +
+                std::to_string(Z.byName) + " by name, " + std::to_string(Z.byLength) + " by length)";
+            if (carried == Z.refCount) ok = Z.newSubs.empty() ? kPass : kWarn;
+            if (!Z.newSubs.empty()) d += "; NEW: live subs " + Z.newSubs + " have no reference counterpart (left raw, the walk stops there)";
+            if (carried != Z.refCount) d = "GONE: " + d + "; not carried: " + lost;
+            for (int r = 0; r < 64; ++r) if (Z.toLive[r] >= 0) run.Fact("packets.zoneSub." + std::to_string(r), std::to_string(Z.toLive[r]) + "/len=" + std::to_string(Z.liveLen[Z.toLive[r]]));
         }
-        run.Add(G, "pkt.zone", "Zone sub-packets", ok, d, "Ground items|Loc changes|Spot animations|Projectiles|Sounds", std::to_string(rtx::evzone::kSubCount) + " subs with their lengths", pinned ? d.substr(d.find_first_of("0123456789")) : std::string("no table"), "pkt.table");
+        run.Add(G, "pkt.zone", "Zone sub-packets", ok, d, "Ground items|Loc changes|Spot animations|Projectiles|Sounds",
+                std::to_string(rtx::pktid::kZoneRefCount) + " reference subs carried", found, "pkt.table");
     }
     // the event ring the launcher reads: mask as asked, message_game left to the chat ring
     if (c.cli) {
@@ -13590,21 +14125,13 @@ void health_companion(HCtx& c, rtx::health::Run& run) {
         std::vector<RuntimeObj> objs;
         int ok = kUnchecked, matched = 0, total = 0, rendered = 0; std::string d = "no runtime objects published yet";
         if (ReadRuntimeObjects(c.pid, objs) && !objs.empty()) {
-            std::unordered_map<int, std::unordered_set<long long>> sets;
+            PlacementIndex places; places.pid = c.pid;
             for (std::size_t i = 0; i < objs.size() && total < 300; ++i) {
                 const auto& r = objs[i];
                 if (r.config_id <= 0) continue;
                 ++total;
                 if (r.bmax[0] > r.bmin[0]) ++rendered;
-                const int rx = r.x >> 6, ry = r.y >> 6, key = (rx << 8) | ry;
-                auto it = sets.find(key);
-                if (it == sets.end()) {
-                    auto& s = sets[key];
-                    for (const auto& pl : rtx::cache::RegionLocations(rx, ry))
-                        s.insert(((long long)pl.id << 28) | ((long long)(rx * 64 + pl.x) << 14) | (long long)(ry * 64 + pl.y));
-                    it = sets.find(key);
-                }
-                if (it->second.count(((long long)r.config_id << 28) | ((long long)r.x << 14) | (long long)r.y)) ++matched;
+                if (places.Has(r.config_id, r.x, r.y, r.plane)) ++matched;
             }
             ok = (total == 0 || matched * 10 >= total) ? kPass : kFail;   // 10 % leaves room for dynamic areas
             d = std::string(ok == kPass ? "" : "MOVED: ") + std::to_string(matched) + "/" + std::to_string(total) + " loc ids sit on a map placement of that id, " +
@@ -13658,7 +14185,7 @@ std::string ReaderHealthJson(std::uint32_t pid, const std::string& runtimePinsJs
             if (auto p2 = rpm<std::uint64_t>(c.h, *p1 + 0x20); p2 && *p2 > 0x10000) c.world = rpm<std::int32_t>(c.h, *p2 + 8).value_or(-1);
         const std::uint64_t pdata = rpm<std::uint64_t>(c.h, c.root + kOffAccount).value_or(0);
         c.localUid = pdata > 0x10000 ? rpm<std::int32_t>(c.h, pdata + kScnLocalUid).value_or(-1) : -1;
-        const std::uint64_t cont = rpm<std::uint64_t>(c.h, c.root + rtx::scn::kContainer).value_or(0);
+        const std::uint64_t cont = rpm<std::uint64_t>(c.h, c.root + kScnContainer).value_or(0);
         const int idx = cont > 0x10000 ? rpm<std::int32_t>(c.h, cont + rtx::scn::kActiveIdx).value_or(-1) : -1;
         const std::uint64_t arr = cont > 0x10000 ? rpm<std::uint64_t>(c.h, cont + rtx::scn::kEntryArr).value_or(0) : 0;
         c.wv = (idx >= 0 && arr > 0x10000) ? rpm<std::uint64_t>(c.h, arr + (std::uint64_t)idx * 0x10 + rtx::scn::kEntryWv).value_or(0) : 0;
@@ -13676,12 +14203,21 @@ std::string ReaderHealthJson(std::uint32_t pid, const std::string& runtimePinsJs
     health_build(c, run);
     rtx::codescan::Check(c.exe, run);
     health_calibration(c, run);
+    // Rows read from the running game's state, as opposed to the exe, the cache and the build record:
+    // the ones a single read can catch mid-change (a region loading, a teleport, a fight ending).
+    using Group = void (*)(HCtx&, rtx::health::Run&);
+    std::set<std::string> liveIds;
+    auto live = [&](Group fn) {
+        const std::size_t from = run.Rows().size();
+        fn(c, run);
+        for (std::size_t i = from; i < run.Rows().size(); ++i) liveIds.insert(run.Rows()[i].id);
+    };
     if (c.root > 0x10000) {
-        health_data(c, run);
-        health_player(c, run);
-        health_scene(c, run);
-        health_interfaces(c, run);
-        health_packets(c, run);
+        live(health_data);
+        live(health_player);
+        live(health_scene);
+        live(health_interfaces);
+        live(health_packets);
     } else {
         // the anchor is found and the root is empty: the lobby or a load, not a moved layout
         const bool anchored = run.StatusOf("code.sig.main-anchor") == kPass;
@@ -13692,11 +14228,48 @@ std::string ReaderHealthJson(std::uint32_t pid, const std::string& runtimePinsJs
         run.Add("Content", "content.cache", "Cache open", rtx::cache::IndexInfo(2).open ? kPass : kFail,
                 rtx::cache::IndexInfo(2).open ? rtx::cache::CacheRoot() : "GONE: config index not readable", "Every cache read");
         rtx::pins::CheckContent(run, c.runtimePins, c.cli ? 15000 : 0);
-        if (c.root > 0x10000) health_dailies(c, run);
+        if (c.root > 0x10000) live(health_dailies);
     }
-    if (c.root > 0x10000) health_live(c, run);
+    if (c.root > 0x10000) live(health_live);
     health_cache(c, run);
-    health_companion(c, run);
+    live(health_companion);
+
+    // A live row that failed is read again before it counts as broken: up to two more reads 0.7 s
+    // apart, and a row passes when any read passes. A value that moved fails every read.
+    auto liveBad = [&] {
+        std::vector<std::string> v;
+        for (const auto& r : run.Rows()) if (liveIds.count(r.id) && (r.ok == kFail || r.ok == kWarn)) v.push_back(r.id);
+        return v;
+    };
+    for (int read = 2; read <= 3 && c.root > 0x10000; ++read) {
+        const auto bad = liveBad();
+        if (bad.empty()) break;
+        Sleep(700);
+        rtx::health::Run again;
+        for (const auto& r : run.Rows()) if (!liveIds.count(r.id)) again.Put(r);   // the rows live groups look up
+        HCtx c2 = c;
+        for (Group fn : { (Group)health_data, (Group)health_player, (Group)health_scene, (Group)health_interfaces,
+                          (Group)health_packets, (Group)health_dailies, (Group)health_live, (Group)health_companion })
+            fn(c2, again);
+        for (const auto& id : bad) {
+            const rtx::health::Row* r2 = again.Find(id);
+            if (!r2 || r2->ok != kPass) continue;
+            rtx::health::Row r = *r2;
+            r.detail += " (settled on read " + std::to_string(read) + ")";
+            run.Put(r);
+        }
+    }
+    // A share judged on fewer than five things is not a finding: one odd health bar or one effect
+    // is not a moved field. Such a live row is left unchecked and says what would judge it.
+    for (const auto& id : liveBad()) {
+        rtx::health::Row r = *run.Find(id);
+        int a = -1, b = -1; char tail = 0;
+        if (std::sscanf(r.got.c_str(), "%d/%d%c", &a, &b, &tail) != 2 || b >= 5) continue;
+        const std::size_t colon = r.detail.find(": ");
+        r.detail = "UNVERIFIED: too few to judge, " + (colon != std::string::npos && colon < 12 ? r.detail.substr(colon + 2) : r.detail);
+        r.ok = kUnchecked; r.kind = "precondition"; r.need = "5 or more in view";
+        run.Put(r);
+    }
 
     // complete: every group judged a logged-in client with its companion
     c.complete = c.inWorld && c.bootFound && c.root > 0x10000;

@@ -1,5 +1,5 @@
   const DUNG_ENABLED = true;
-  const NETPROBE_ENABLED = false;
+  const NETPROBE_ENABLED = true;   // Server Packets panel: inbound Live feed + Protocol, and the Outbound capture tab
   const TABS = [
     { id: 'player',   label: 'Skills',       cat: 'Character', icon: '<path d="M5 20v-5M12 20V8M19 20v-9"/>' },
     { id: 'info',     label: 'Player State', cat: 'Character', icon: '<path d="M12 19s-6-4-6-8.5A3 3 0 0 1 12 8a3 3 0 0 1 6 2.5C18 15 12 19 12 19z"/>' },

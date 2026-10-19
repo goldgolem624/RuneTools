@@ -56,7 +56,7 @@
       <SubSystem>Windows</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <AdditionalLibraryDirectories>$(DetoursDir)\lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalDependencies>detours.lib;opengl32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>detours.lib;opengl32.lib;version.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
@@ -76,7 +76,7 @@
       <SubSystem>Windows</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <AdditionalLibraryDirectories>$(DetoursDir)\lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalDependencies>detours.lib;opengl32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>detours.lib;opengl32.lib;version.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
@@ -96,6 +96,8 @@
     <ClCompile Include="SoundFilter.cpp" />
     <ClCompile Include="ChatFilter.cpp" />
     <ClCompile Include="InputFilter.cpp" />
+    <ClCompile Include="CompOffsets.cpp" />
+    <ClCompile Include="..\src\reader\Calibrate.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="SceneShare.h" />
@@ -124,6 +126,8 @@
     <ClInclude Include="EngineComponents.h" />
     <ClInclude Include="EngineOps.h" />
     <ClInclude Include="OpPrints.h" />
+    <ClInclude Include="CompOffsets.h" />
+    <ClInclude Include="VarStoreCode.h" />
     <ClInclude Include="OpPrintsTable.h" />
     <ClInclude Include="MenuShare.h" />
     <ClInclude Include="SoundFilter.h" />

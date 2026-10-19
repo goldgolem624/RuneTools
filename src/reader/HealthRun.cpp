@@ -61,6 +61,11 @@ Row& Run::Add(const char* group, const std::string& id, const std::string& key, 
     return rows_.back();
 }
 
+void Run::Put(const Row& r) {
+    for (auto& x : rows_) if (x.id == r.id) { x = r; return; }
+    rows_.push_back(r);
+}
+
 void Run::Fact(const std::string& key, const std::string& value) { facts_[key] = value; }
 
 void Run::Section(const std::string& name, const std::string& json) {

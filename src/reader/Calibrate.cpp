@@ -27,7 +27,15 @@ namespace {
 // never applied (the reader's own offsets take theirs through Use()).
 // `wrap`: the handler is a component setter wrapper and the shape sits in the callback it hands on.
 // `span`: how far into the handler the instruction is looked for, for a handler that reads its field late.
-struct Rule { const char* name; const char* op; const char* head; std::uint32_t lo, hi; int nth; std::uint32_t compiled = 0; bool wrap = false; const char* what = nullptr; std::uint32_t span = 0x140; };
+// `call`: the shape sits in the routine the handler's n-th direct call names (0-based, in address
+// order; only calls to a function the exe's unwind data knows count), for a field the handler reads
+// through a helper. -1 reads the handler itself.
+// A name may appear more than once: other operations that read the same field. The first rule that
+// finds a value stands, so a build where one handler changed still calibrates; two rules that find
+// different values cancel each other, since one of them reads some other field.
+// `d8`: the displacement is one byte (a field below +0x80, which the compiler never encodes in four;
+// also an immediate such as a stride). The range and the ambiguity rule apply as for four bytes.
+struct Rule { const char* name; const char* op; const char* head; std::uint32_t lo, hi; int nth; std::uint32_t compiled = 0; bool wrap = false; const char* what = nullptr; std::uint32_t span = 0x140; int call = -1; bool d8 = false; };
 constexpr std::uint32_t kMdLo = 0x18000, kMdHi = 0x60000, kInLo = 0x1000, kInHi = 0x10000;
 // The varp hash map sits inside the player var store: derived from md::kVarpMgr, never pinned alone.
 constexpr std::uint32_t kVarpHashFromMgr = rtx::md::kVarpHashFromMgr;
@@ -49,6 +57,7 @@ const Rule kRules[] = {
     { "md::kChatStore",    "CHAT_LASTUID",                     "48 8B 81", kMdLo, kMdHi, 0, rtx::md::kChatStore },
     { "md::kClanSettings", "ACTIVECLANSETTINGS_FIND_LISTENED", "48 8B 91", kMdLo, kMdHi, 0, rtx::md::kClanSettings },
     { "md::kMapMgr",       "MAP_LOADEDPERCENT",                "48 8B 81", kMdLo, kMdHi, 0, rtx::md::kMapMgr },
+    { "md::kMapMgr",       "MAP_PRELOAD",                      "48 8B 89", kMdLo, kMdHi, 0, rtx::md::kMapMgr },        // mov rcx,[rcx+disp]; the loaded-percent handler changed on the plugin client
     { "md::kInputReport",  "AUTOSETUP_SETCUSTOM",              "48 8B 83", kMdLo, kMdHi, 0, rtx::md::kInputReport },   // mov rax,[rbx+disp]
     { "md::kIfaceOwner",   "IF_CLOSE",                         "48 8B 89", kMdLo, kMdHi, 0, rtx::md::kIfaceOwner },
     { "md::kInputProc",    "MINIMENUOPEN",                     "48 8B 89", kMdLo, kMdHi, 0, rtx::md::kInputProc },
@@ -56,6 +65,7 @@ const Rule kRules[] = {
     { "md::kPlayers",      "COORD",                            "48 8B 88", kMdLo, kMdHi, 0, rtx::md::kPlayers },        // mov rcx,[rax+disp]
     { "md::kFriends",      "FRIEND_COUNT",                     "4C 8B 89", kMdLo, kMdHi, 0, rtx::md::kFriends },
     { "md::kContainers",   "INV_TOTALCAT",                     "48 8B 89", kMdLo, kMdHi, 0, rtx::md::kContainers },
+    { "md::kContainers",   "INV_FREESPACE",                    "48 8B 8D", kMdLo, kMdHi, 0, rtx::md::kContainers },    // mov rcx,[rbp+disp]; INV_TOTALCAT is not named by its code on the plugin client
     { "md::kSceneViews",   "UNKNOWN_COMMAND_500",              "48 8B 81", kMdLo, kMdHi, 0, rtx::md::kSceneViews },
     { "md::kCutscene",     "CUTSCENE2D_STOP",                  "48 8B 89", kMdLo, kMdHi, 0, rtx::md::kCutscene },
     { "md::kSoundCtx",     "SOUND_SYNTH",                      "48 8B 89", kMdLo, kMdHi, 0, rtx::md::kSoundCtx },
@@ -86,6 +96,219 @@ const Rule kRules[] = {
     { "stateEntityRef",    "GET_ENTITY_BOUNDING_BOX",          "48 8B 9A", kInLo, kInHi, 0, 0xC3B0 },      // the script state (rdx)
     { "stateEntityObj",    "GET_ENTITY_OVERLAY_HEIGHT",        "48 8B 8A", kInLo, kInHi, 0, 0xC3B8 },
     { "scn::kCombat",      "COMLEVEL_ACTIVE",                  "8B 91",    kInLo, kInHi, 0, (std::uint32_t)rtx::scn::kCombat },   // in the player's actor
+    // references: MainData fields the reader and the companion read with no rule until now. Every
+    // operation below is named by its handler's own code on the builds checked (unk<id> is the
+    // export's name for an operation the official list leaves unnamed; the id is the cache's own
+    // and does not change between builds).
+    { "md::kMiniMap",      "unk11190",                         "48 8B 81", kMdLo, kMdHi, 0, rtx::md::kMiniMap, false, "minimap: mask shape +0x38, walk destination +0x14/+0x18/+0x1C" },
+    { "md::kWalkMgr",      "unk11014",                         "48 8B 89", kMdLo, kMdHi, 0, rtx::md::kWalkMgr, false, "walk marker appearance: ids +0x68/+0x6C, sprite +0x70, model +0x80" },
+    { "md::kEntityLookup", "unk11164",                         "48 8B 89", 0x19930, 0x19948, 0, rtx::md::kEntityLookup, false, "entity lookup by uid (the zone event registry)" },
+    { "md::kOptionsArray", "CLIENTOPTION_GET",                 "48 8B 8C F8", kInLo, kInHi, 0, 0x2DA8, false, "client option objects in the options object, 8 bytes per id" },
+    { "md::kOptionsArray", "unk11116",                         "48 8B 8C C8", kInLo, kInHi, 0, 0x2DA8 },
+    { "map.loadA",         "MAP_LOADEDPERCENT",                "44 8B 80", 0x700, 0x800, 0, 0x710, false, "map manager loading counter (reader data.input2)" },
+    { "map.loadB",         "MAP_LOADEDPERCENT",                "8B 90",    0x700, 0x800, 0, 0x714, false, "map manager loading counter (reader data.input2)" },
+    { "map.loadScreen",    "MAP_LOADINGSCREEN_ISOPEN",         "0F B6 90", 0x700, 0x800, 0, 0x71C, false, "map manager loading screen flag (reader data.input2)" },
+    // the actor (scene entity object): what the NPC ops read through the state's entity slot
+    { "scn::kConfig",      "unk11134",                         "8B 90",    kInLo, kInHi, 0, (std::uint32_t)rtx::scn::kConfig, false, "NPC base type id in the actor" },
+    { "npc.visLevel",      "CHATCAT_UNK11187",                 "8B 90",    kInLo, kInHi, 0, 0x1178, false, "NPC visible combat level in the actor (the reader's kNpcVisLevel)" },
+    { "npc.statCur",       "unk11135",                         "8B 8C 81", kInLo, kInHi, 0, 0x1140, false, "NPC current stats in the actor, 4 bytes per stat; life points at +0xC (scn::kLpCur)" },
+    { "npc.statBase",      "unk11135",                         "44 8B 84 81", kInLo, kInHi, 0, 0x115C, false, "NPC base stats in the actor; life points at +0xC (scn::kLpMax)" },
+    { "actor.npcType",     "unk11136",                         "48 8B 88", kInLo, kInHi, 0, 0x10A8, false, "NPC type object in the actor (the reader's overhead height chain)" },
+    { "actor.nameString",  "CHAT_PLAYERNAME",                  "48 8D 91", 0x80, 0x100, 0, 0x90, false, "the actor's name string object; the reader's kName 0xB8 is its inline buffer", 0x140, 0 },
+    // the game world (worldView): the screen-position helper's matrix reads and the area box
+    { "wv.projDepth",      "GET_OBJ_SCREEN_POSITION",          "F3 41 0F 59 A8", 0x13000, 0x14000, 0, 0x13128, false, "view-projection depth column in the worldView (kMatrixOffDefault + 0x98)", 0x140, 1 },
+    { "wv.areaEntries",    "unk10994",                         "4C 2B 81", 0xE0000, 0xF0000, 0, (std::uint32_t)rtx::scn::kWvBox + 0x28, false, "area box: entries vector (kWvBox + 0x28)" },
+    { "wv.areaEntriesEnd", "unk10994",                         "4C 8B 81", 0xE0000, 0xF0000, 0, (std::uint32_t)rtx::scn::kWvBox + 0x30, false, "area box: entries vector end (kWvBox + 0x30)" },
+    { "wv.areaSpawnFlag",  "TEXTINPUT_BLUR",                   "80 B9",    0xE8000, 0xE9000, 0, (std::uint32_t)rtx::scn::kWvBox + 0x40, false, "area box: spawn point set flag (kWvBox + 0x40)" },
+    { "wv.areaSpawn",      "TEXTINPUT_BLUR",                   "F2 0F 11 81", 0xE8000, 0xE9000, 0, (std::uint32_t)rtx::scn::kWvBox + 0x4C, false, "area box: spawn point (kWvBox + 0x4C)" },
+    { "wv.areaMin",        "unk10993",                         "3B 91",    0xE8450, 0xE8460, 0, (std::uint32_t)rtx::scn::kWvBox + 0x70, false, "area box: min corner (kWvBox + 0x70)", 0x200 },
+    { "wv.areaMax",        "unk10993",                         "3B 91",    0xE8460, 0xE8470, 0, (std::uint32_t)rtx::scn::kWvBox + 0x7C, false, "area box: max corner (kWvBox + 0x7C)", 0x200 },
+    // the script state and the interface manager
+    { "state.settingsCtx", "ACTIVECLANSETTINGS_GETAFFINEDCOUNT", "48 8B 82", 0xC000, 0xD000, 0, 0xC828, false, "clan settings context in the script state (the companion's settings context)" },
+    { "state.settingsCtx", "ACTIVECLANSETTINGS_GETCLANNAME",   "48 8B 92", 0xC000, 0xD000, 0, 0xC828 },
+    { "state.settingsCtx", "ACTIVECLANSETTINGS_FIND_LISTENED", "48 8B 9F", 0xC000, 0xD000, 0, 0xC828 },
+    { "iface.subBuckets",  "IF_HASSUB",                        "48 8B 99", 0x80, 0x200, 0, 0xE0, false, "interface owner: sub table buckets (the reader's kIfaceSubBuckets)", 0x140, 0 },
+    { "iface.subCount",    "IF_HASSUB",                        "44 8B 89", 0x80, 0x200, 0, 0xE8, false, "interface owner: sub table bucket count", 0x140, 0 },
+    // the component object (the reader's interface node + 0x20): the getter and setter callbacks
+    // the cc_ and if_ wrappers hand on
+    { "iface.compWidth",   "CC_GETWIDTH",                      "8B 90",    0x80, 0x84, 0, 0x80, true, "component width; the reader's node offset is this + 0x20" },
+    { "iface.compWidth",   "IF_GETWIDTH",                      "8B 90",    0x80, 0x84, 0, 0x80, true },
+    { "iface.compHeight",  "CC_GETHEIGHT",                     "8B 90",    0x84, 0x88, 0, 0x84, true, "component height (node offset = this + 0x20)" },
+    { "iface.compHeight",  "IF_GETHEIGHT",                     "8B 90",    0x84, 0x88, 0, 0x84, true },
+    { "iface.compColour",  "CC_GETCOLOUR",                     "8B 90",    0x80, 0x100, 0, 0x88, true, "component colour (node offset = this + 0x20); the transparency byte follows it" },
+    { "iface.compColour",  "CC_SETCOLOUR",                     "44 89 88", 0x80, 0x100, 0, 0x88, true },
+    { "iface.compSprite",  "IF_GETGRAPHIC",                    "48 8D 81", 0x188, 0x190, 0, 0x188, true, "graphic sub-object of component kinds 3 and 6 (node offset = this + 0x20); its first dword is the sprite id" },
+    { "iface.compKey",     "IF_GETGRAPHIC",                    "48 8D 81", 0x190, 0x198, 0, 0x190, true, "graphic sub-object of the text kind (node offset = this + 0x20)" },
+    // the minimenu: its entry vector and the left-click record slots
+    { "menu.entriesBegin", "unk11099",                         "48 2B 90", 0x80, 0x100, 0, 0x90, false, "minimenu entry vector begin (MenuProbe kEntriesBegin)" },
+    { "menu.entriesEnd",   "unk11099",                         "48 8B 90", 0x80, 0x100, 0, 0x98, false, "minimenu entry vector end (MenuProbe kEntriesEnd)" },
+    { "menu.slotLeft",     "MINIMENU_CLOSE",                   "48 8B BB", 0x13E0, 0x13F0, 0, rtx::sig::kMenuLeftClickSlot, false, "minimenu left-click record slot (the lift's slot)", 0x140, 0 },
+    { "menu.slotLeft",     "FORMATMINIMENU",                   "48 8B BB", 0x13E0, 0x13F0, 0, rtx::sig::kMenuLeftClickSlot, false, nullptr, 0x140, 0 },
+    { "menu.slotSecond",   "MINIMENU_CLOSE",                   "48 8B BB", 0x1400, 0x1410, 0, 0x1400, false, "minimenu second option record slot", 0x140, 0 },
+    { "menu.slotSecond",   "FORMATMINIMENU",                   "48 8B BB", 0x1400, 0x1410, 0, 0x1400, false, nullptr, 0x140, 0 },
+    // the chat store
+    { "chat.buckets",      "unk11195",                         "49 8B 9B", 0x800, 0x900, 0, 0x880, false, "chat store: record hash buckets (reader chat_store_json, companion Unlink)" },
+    { "chat.buckets",      "printmessage",                     "4D 8B 96", 0x800, 0x900, 0, 0x880, false, nullptr, 0x200, 4 },
+    { "chat.bucketCount",  "unk11195",                         "41 8B 8B", 0x800, 0x900, 0, 0x888, false, "chat store: bucket count" },
+    { "chat.bucketCount",  "printmessage",                     "41 8B 8E", 0x800, 0x900, 0, 0x888, false, nullptr, 0x200, 4 },
+    { "chat.recordCount",  "printmessage",                     "48 FF 8E", 0x800, 0x900, 0, 0x890, false, "chat store: record count", 0x300, 5 },
+    { "chat.recordNext",   "unk11195",                         "48 8B 80", 0x80, 0x100, 0, 0xB8, false, "chat record: next in the bucket chain" },
+    { "chat.recordNext",   "printmessage",                     "48 8B 80", 0x80, 0x100, 0, 0xB8, false, nullptr, 0x200, 4 },
+    { "chat.recordText",   "printmessage",                     "0F 10 9A", 0x80, 0x100, 0, 0x90, false, "chat record: message text", 0x400, 4 },
+    // One-byte fields (d8). The game world list, the account and the players registry: the chain
+    // the scene root and the local player are read through.
+    { "scn::kActiveIdx",   "unk10994",                   "49 63 41", 0x60, 0x80, 0, (std::uint32_t)rtx::scn::kActiveIdx, false, "game world list: i32 current world index", 0x140, -1, true },
+    { "scn::kActiveIdx",   "unk11253",                   "48 63 42", 0x60, 0x80, 0, (std::uint32_t)rtx::scn::kActiveIdx, false, nullptr, 0x140, -1, true },
+    { "scn::kActiveIdx",   "TEXTINPUT_BLUR",             "48 63 42", 0x60, 0x80, 0, (std::uint32_t)rtx::scn::kActiveIdx, false, nullptr, 0x140, -1, true },
+    { "scn::kEntryArr",    "unk10994",                   "49 03 41", 0x50, 0x60, 0, (std::uint32_t)rtx::scn::kEntryArr, false, "game world list: vector of 0x10-byte world handles", 0x140, -1, true },
+    { "scn::kEntryArr",    "unk11253",                   "48 03 42", 0x50, 0x60, 0, (std::uint32_t)rtx::scn::kEntryArr, false, nullptr, 0x140, -1, true },
+    { "scn::kEntryArr",    "TEXTINPUT_BLUR",             "48 03 42", 0x50, 0x60, 0, (std::uint32_t)rtx::scn::kEntryArr, false, nullptr, 0x140, -1, true },
+    { "scn::kEntryWv",     "unk10994",                   "48 8B 48", 0x8, 0x10, 0, (std::uint32_t)rtx::scn::kEntryWv, false, "world handle: the game world (worldView)", 0x140, -1, true },
+    { "scn::kEntryWv",     "unk11253",                   "48 8B 40", 0x8, 0x10, 0, (std::uint32_t)rtx::scn::kEntryWv, false, nullptr, 0x140, -1, true },
+    { "scn::kEntryWv",     "TEXTINPUT_BLUR",             "48 8B 48", 0x8, 0x10, 0, (std::uint32_t)rtx::scn::kEntryWv, false, nullptr, 0x140, -1, true },
+    { "scn::kLocalUid",    "COMLEVEL_ACTIVE",            "48 63 48", 0x40, 0x50, 0, (std::uint32_t)rtx::scn::kLocalUid, false, "account: i32 local player index", 0x140, -1, true },
+    { "scn::kLocalUid",    "COORD",                      "48 63 48", 0x40, 0x50, 0, (std::uint32_t)rtx::scn::kLocalUid, false, nullptr, 0x140, -1, true },
+    { "scn::kLocalUid",    "CHAT_PLAYERNAME_UNFILTERED", "49 63 40", 0x40, 0x50, 0, (std::uint32_t)rtx::scn::kLocalUid, false, nullptr, 0x140, -1, true },
+    { "scn::kLocalUid",    "GENDER",                     "49 63 40", 0x40, 0x50, 0, (std::uint32_t)rtx::scn::kLocalUid, false, nullptr, 0x140, -1, true },
+    { "players.table",     "COMLEVEL_ACTIVE",            "48 8B 41", 0x10, 0x18, 0, 0x10, false, "players registry: entry table, entry = [table + index * 8]", 0x140, -1, true },
+    { "players.table",     "COORD",                      "48 8B 41", 0x10, 0x18, 0, 0x10, false, nullptr, 0x140, -1, true },
+    { "players.table",     "CHAT_PLAYERNAME_UNFILTERED", "48 8B 41", 0x10, 0x18, 0, 0x10, false, nullptr, 0x140, -1, true },
+    { "actor.posSlot",     "COORD",                            "FF 90",    0x40, 0x400, 0, 0xB0, false, "actor vtable slot of the position getter (lea rax,[rcx+position]; ret)" },
+    { "players.entryActor", "CHAT_PLAYERNAME_UNFILTERED", "48 83 C0", 0x38, 0x40, 0, 0x38, false, "player entry: the actor (counted pair at +0x30, object at +8)", 0x140, -1, true },
+    { "players.entryActor", "CHAT_PLAYERNAME",           "48 83 C0", 0x38, 0x40, 0, 0x38, false, nullptr, 0x140, -1, true },
+    { "players.entryActor", "CLAN_ISSELF",               "48 83 C0", 0x38, 0x40, 0, 0x38, false, nullptr, 0x140, -1, true },
+    { "account.member",    "PLAYERMEMBER",               "80 78",    0x20, 0x30, 0, 0x28, false, "account: u8 members flag (the reader's kOffAcctIsMember)", 0x140, -1, true },
+    { "account.member",    "FRIEND_ADD",                 "80 78",    0x20, 0x30, 0, 0x28, false, nullptr, 0x140, -1, true },
+    { "account.expiry",    "USERDETAIL_LOBBY_MEMBERSHIP", "4C 8B 47", 0x30, 0x38, 0, 0x30, false, "account: u64 membership end in ms (the reader's kOffAcctExpiry)", 0x140, -1, true },
+    { "account.name",      "CHAT_PLAYERNAME",            "4D 8D 48", 0x60, 0x70, 0, 0x68, false, "account: display name string", 0x140, -1, true },
+    { "account.name",      "CHAT_PLAYERNAME_UNFILTERED", "4D 8D 48", 0x60, 0x70, 0, 0x68, false, nullptr, 0x140, -1, true },
+    { "account.name",      "CLAN_ISSELF",                "4C 8D 49", 0x60, 0x70, 0, 0x68, false, nullptr, 0x140, -1, true },
+    { "scn::kWalkResX",    "unk11014",                   "39 51",    0x60, 0x70, 0, (std::uint32_t)rtx::scn::kWalkResX, false, "walk marker manager: i32 custom sprite id", 0x140, 0, true },
+    { "scn::kWalkResX",    "unk11014",                   "89 51",    0x60, 0x70, 0, (std::uint32_t)rtx::scn::kWalkResX, false, nullptr, 0x140, 0, true },
+    { "scn::kWalkResY",    "unk11014",                   "39 7D",    0x60, 0x70, 0, (std::uint32_t)rtx::scn::kWalkResY, false, "walk marker manager: i32 custom model id", 0x140, 0, true },
+    { "scn::kWalkResY",    "unk11014",                   "89 7D",    0x60, 0x70, 0, (std::uint32_t)rtx::scn::kWalkResY, false, nullptr, 0x140, 0, true },
+    // the component object, its group and the interface owner
+    { "iface.compX",       "IF_GETX",                    "8B 50",    0x78, 0x7C, 0, 0x78, true, "component x (node offset = this + 0x20)", 0x140, -1, true },
+    { "iface.compX",       "CC_GETX",                    "8B 50",    0x78, 0x7C, 0, 0x78, true, nullptr, 0x140, -1, true },
+    { "iface.compY",       "IF_GETY",                    "8B 50",    0x7C, 0x80, 0, 0x7C, true, "component y (node offset = this + 0x20)", 0x140, -1, true },
+    { "iface.compY",       "CC_GETY",                    "8B 50",    0x7C, 0x80, 0, 0x7C, true, nullptr, 0x140, -1, true },
+    { "iface.compGroup",   "IF_GETLAYER",                "0F B7 48", 0x18, 0x1A, 0, 0x18, false, "component: u16 interface id (node offset = this + 0x20)", 0x140, -1, true },
+    { "iface.compGroup",   "CC_GETLAYER",                "0F B7 41", 0x18, 0x1A, 0, 0x18, false, nullptr, 0x140, -1, true },
+    { "iface.compGroup",   "UNKNOWN_COMMAND_120",        "41 0F B7 48", 0x18, 0x1A, 0, 0x18, false, nullptr, 0x140, -1, true },
+    { "iface.compId",      "UNKNOWN_COMMAND_120",        "41 0F B7 48", 0x1A, 0x1C, 0, 0x1A, false, "component: u16 component id", 0x140, -1, true },
+    { "iface.compId",      "IF_SETMODEL",                "0F B7 51", 0x1A, 0x1C, 0, 0x1A, true, nullptr, 0x140, -1, true },
+    { "iface.compId",      "CC_SETMODELANIM",            "0F B7 51", 0x1A, 0x1C, 0, 0x1A, true, nullptr, 0x140, -1, true },
+    { "iface.compId",      "IF_SETTEXTFONT",             "0F B7 51", 0x1A, 0x1C, 0, 0x1A, true, nullptr, 0x140, -1, true },
+    { "iface.compId",      "IF_GET_GAMESCREEN",          "0F B7 49", 0x1A, 0x1C, 0, 0x1A, false, nullptr, 0x140, -1, true },
+    { "iface.compSub",     "CC_GETID",                   "0F B7 48", 0x1C, 0x1E, 0, 0x1C, false, "component: u16 dynamic sub id (0xFFFF for a static one)", 0x140, -1, true },
+    { "iface.compSub",     "CC_DELETE",                  "41 0F B7 4E", 0x1C, 0x1E, 0, 0x1C, false, nullptr, 0x140, -1, true },
+    { "iface.compSub",     "CC_FINDBYCATEGORY",          "0F B7 48", 0x1C, 0x1E, 0, 0x1C, false, nullptr, 0x140, 1, true },
+    { "iface.compParent",  "IF_GETLAYER",                "0F B7 48", 0x1E, 0x20, 0, 0x1E, false, "component: u16 parent layer id", 0x140, -1, true },
+    { "iface.compParent",  "CC_GETLAYER",                "0F B7 41", 0x1E, 0x20, 0, 0x1E, false, nullptr, 0x140, -1, true },
+    { "iface.compTrans",   "CC_SETTRANS",                "88 8A",    0x80, 0x100, 0, 0x8C, true, "component transparency byte, kept as 255 - trans (node offset = this + 0x20)" },
+    { "iface.compTrans",   "IF_SETTRANS",                "88 8A",    0x80, 0x100, 0, 0x8C, true },
+    { "iface.compTrans",   "CC_GETTRANS",                "0F B6 88", 0x80, 0x100, 0, 0x8C, true },
+    { "iface.compTrans",   "IF_GETTRANS",                "0F B6 88", 0x80, 0x100, 0, 0x8C, true },
+    { "iface.ownerMap",    "IF_GETLAYER",                "48 83 C1", 0x38, 0x3C, 0, 0x38, false, "interface owner: map of the open interfaces by id", 0x140, -1, true },
+    { "iface.ownerMap",    "CC_FINDBYCATEGORY",          "48 83 C1", 0x38, 0x3C, 0, 0x38, false, nullptr, 0x140, -1, true },
+    { "iface.groupCompsBegin", "IF_GETLAYER",            "4C 8B 49", 0x8, 0xC, 0, 0x8, false, "interface: component entry vector begin, one entry per component id", 0x140, -1, true },
+    { "iface.groupCompsBegin", "CC_FINDBYCATEGORY",      "4C 8B 49", 0x8, 0xC, 0, 0x8, false, nullptr, 0x140, -1, true },
+    { "iface.groupCompsEnd", "IF_GETLAYER",              "48 8B 49", 0x10, 0x14, 0, 0x10, false, "interface: component entry vector end", 0x140, -1, true },
+    { "iface.groupCompsEnd", "CC_FINDBYCATEGORY",        "48 8B 49", 0x10, 0x14, 0, 0x10, false, nullptr, 0x140, -1, true },
+    { "iface.entryStride", "CC_FINDBYCATEGORY",          "4D 8D 42", 0x18, 0x20, 0, 0x18, false, "component entry size: hidden byte +0, control block (the reader's node) +8, component +0x10", 0x140, 1, true },
+    { "iface.entryStride", "IF_GETNEXTSUBID",            "49 8D 71", 0x18, 0x20, 0, 0x18, false, nullptr, 0x140, 1, true },
+    { "iface.entryStride", "IF_GETNEXTSUBID",            "48 83 C1", 0x18, 0x20, 0, 0x18, false, nullptr, 0x400, 1, true },
+    { "iface.entryComp",   "CC_FINDBYCATEGORY",          "49 8B 40", 0x10, 0x14, 0, 0x10, false, "component entry: the component object", 0x140, 1, true },
+    { "iface.entryComp",   "IF_GETNEXTSUBID",            "48 8B 41", 0x10, 0x14, 0, 0x10, false, nullptr, 0x400, 1, true },
+    { "iface.entryRef",    "CC_FINDBYCATEGORY",          "49 8D 40", 0x8, 0xC, 0, 0x8, false, "component entry: counted pair {control block, component}", 0x140, 1, true },
+    // the minimenu: open flag, row lanes, entry records and their display objects
+    { "menu.open",         "UNKNOWN_COMMAND_173",        "80 7B",    0x60, 0x70, 0, 0x68, false, "minimenu: open flag byte", 0x140, -1, true },
+    { "menu.open",         "MINIMENUOPEN",               "80 79",    0x60, 0x70, 0, 0x68, false, nullptr, 0x140, 0, true },
+    { "menu.open",         "MINIMENU_CLOSE",             "C6 43",    0x60, 0x70, 0, 0x68, false, nullptr, 0x140, 0, true },
+    { "menu.open",         "FORMATMINIMENU",             "C6 43",    0x60, 0x70, 0, 0x68, false, nullptr, 0x140, 0, true },
+    { "menu.open",         "unk11164",                   "80 7A",    0x60, 0x70, 0, 0x68, false, nullptr, 0x140, -1, true },
+    { "menu.recentBegin",  "MINIMENU_CLOSE",             "48 8B 8B", 0x1400, 0x1500, 0, 0x1468, false, "minimenu: recent rows lane begin (16-byte records)", 0x200, 0 },
+    { "menu.recentBegin",  "FORMATMINIMENU",             "48 8B 8B", 0x1400, 0x1500, 0, 0x1468, false, nullptr, 0x200, 0 },
+    { "menu.recentEnd",    "MINIMENU_CLOSE",             "48 8B 93", 0x1400, 0x1500, 0, 0x1470, false, "minimenu: recent rows lane end", 0x200, 0 },
+    { "menu.recentEnd",    "FORMATMINIMENU",             "48 8B 93", 0x1400, 0x1500, 0, 0x1470, false, nullptr, 0x200, 0 },
+    { "menu.groupsBegin",  "UNKNOWN_COMMAND_174",        "48 8B 90", 0x1700, 0x1800, 0, 0x1790, false, "minimenu: groups lane begin (16-byte records)" },
+    { "menu.groupsBegin",  "MINIMENU_CLOSE",             "48 8B 8B", 0x1700, 0x1800, 0, 0x1790, false, nullptr, 0x200, 0 },
+    { "menu.groupsEnd",    "UNKNOWN_COMMAND_174",        "48 8B 88", 0x1700, 0x1800, 0, 0x1798, false, "minimenu: groups lane end" },
+    { "menu.groupsEnd",    "MINIMENU_CLOSE",             "48 8B 93", 0x1700, 0x1800, 0, 0x1798, false, nullptr, 0x200, 0 },
+    { "menu.entryDisplay", "UNKNOWN_COMMAND_180",        "48 8B 50", 0x8, 0x10, 0, 0x8, false, "minimenu entry record (16 bytes): the display object at +8, its control block at +0", 0x140, -1, true },
+    { "menu.entryDisplay", "UNKNOWN_COMMAND_181",        "48 8B 48", 0x8, 0x10, 0, 0x8, false, nullptr, 0x140, -1, true },
+    { "menu.entryDisplay", "MINIMENUOPEN",               "48 8B 48", 0x8, 0x10, 0, 0x8, false, nullptr, 0x140, 0, true },
+    { "menu.entryDisplay", "UNKNOWN_COMMAND_175",        "48 8B 68", 0x8, 0x10, 0, 0x8, false, nullptr, 0x140, -1, true },
+    { "menu.classTag",     "UNKNOWN_COMMAND_180",        "48 8B 42", 0x30, 0x40, 0, 0x38, false, "minimenu display object: class tag (MenuProbe kDispTag; the verb string is at +0x18)", 0x140, -1, true },
+    { "menu.classTag",     "UNKNOWN_COMMAND_181",        "48 39 41", 0x30, 0x40, 0, 0x38, false, nullptr, 0x140, -1, true },
+    { "menu.classTag",     "MINIMENUOPEN",               "48 8B 41", 0x30, 0x40, 0, 0x38, false, nullptr, 0x140, 0, true },
+    { "menu.classTag",     "UNKNOWN_COMMAND_175",        "48 8B 45", 0x30, 0x40, 0, 0x38, false, nullptr, 0x140, -1, true },
+    { "menu.tagKind",      "UNKNOWN_COMMAND_180",        "83 78",    0x40, 0x48, 0, 0x44, false, "minimenu class tag: row kind (1 interface item, 2 ground item, 3 loc, 4 NPC, 7 player)", 0x140, -1, true },
+    { "menu.tagKind",      "MINIMENUOPEN",               "83 78",    0x40, 0x48, 0, 0x44, false, nullptr, 0x140, 0, true },
+    { "menu.tagKind",      "UNKNOWN_COMMAND_175",        "8B 48",    0x40, 0x48, 0, 0x44, false, nullptr, 0x140, -1, true },
+    { "menu.rowX",         "UNKNOWN_COMMAND_180",        "44 8B 4A", 0x48, 0x50, 0, 0x4C, false, "minimenu display object: tile x of a loc, walk or ground row", 0x140, -1, true },
+    { "menu.rowX",         "MINIMENUOPEN",               "39 5A",    0x48, 0x50, 0, 0x4C, false, nullptr, 0x400, 0, true },
+    { "menu.rowZ",         "UNKNOWN_COMMAND_180",        "44 8B 42", 0x50, 0x58, 0, 0x50, false, "minimenu display object: tile z of a loc, walk or ground row", 0x140, -1, true },
+    { "menu.rowZ",         "MINIMENUOPEN",               "8B 59",    0x50, 0x58, 0, 0x50, false, nullptr, 0x140, 0, true },
+    // stats, friends, the Grand Exchange box, containers, clan, group and chat records. These ranges
+    // hold the compiled value alone: a move reads GONE, not the new value.
+    { "stats.array",       "STAT_BASE",                  "48 8B 42", 0x10, 0x11, 0, 0x10, false, "stats object (at kStatsInner): skill entry array", 0x140, -1, true },
+    { "stats.array",       "STAT",                       "49 8B 40", 0x10, 0x11, 0, 0x10, false, nullptr, 0x140, -1, true },
+    { "stats.xp",          "STAT_VISIBLE_XP_ACTUAL",     "8B 54 C8", 0xC, 0xD, 0, 0xC, false, "skill entry (0x18 bytes): experience", 0x140, -1, true },
+    { "stats.xp",          "STAT_VISIBLE_XP",            "41 8B 51", 0xC, 0xD, 0, 0xC, false, nullptr, 0x140, -1, true },
+    { "stats.level",       "STAT_BASE_ACTUAL",           "8B 54 C8", 0x10, 0x11, 0, 0x10, false, "skill entry: real level", 0x140, -1, true },
+    { "stats.level",       "STAT_BASE",                  "8B 4A",    0x10, 0x11, 0, 0x10, false, nullptr, 0x140, -1, true },
+    { "stats.boosted",     "STAT",                       "8B 54 C8", 0x14, 0x15, 0, 0x14, false, "skill entry: boosted level", 0x140, -1, true },
+    { "stats.runEnergy",   "RUNENERGY_VISIBLE",          "8B 51",    0x18, 0x19, 0, 0x18, false, "stats object: run energy", 0x140, -1, true },
+    { "stats.runWeight",   "RUNWEIGHT_VISIBLE",          "8B 51",    0x1C, 0x1D, 0, 0x1C, false, "stats object: run weight", 0x140, -1, true },
+    { "friends.state",     "FRIEND_GETWORLD",            "83 79",    0x10, 0x11, 0, 0x10, false, "friends list: state, 2 once loaded", 0x140, -1, true },
+    { "friends.state",     "FRIEND_COUNT",               "41 8B 41", 0x10, 0x11, 0, 0x10, false, nullptr, 0x140, -1, true },
+    { "friends.listBegin", "FRIEND_GETWORLD",            "4C 8B 59", 0x18, 0x19, 0, 0x18, false, "friends list: entry vector begin", 0x140, -1, true },
+    { "friends.listBegin", "FRIEND_GETNAME",             "4C 8B 49", 0x18, 0x19, 0, 0x18, false, nullptr, 0x140, -1, true },
+    { "friends.listEnd",   "FRIEND_GETWORLD",            "48 8B 49", 0x20, 0x21, 0, 0x20, false, "friends list: entry vector end", 0x140, -1, true },
+    { "friends.listEnd",   "FRIEND_COUNT",               "49 8B 49", 0x20, 0x21, 0, 0x20, false, nullptr, 0x140, -1, true },
+    { "friends.stride",    "FRIEND_GETWORLD",            "48 6B C8", 0x78, 0x79, 0, 0x78, false, "friend entry size", 0x140, -1, true },
+    { "friends.stride",    "FRIEND_GETNAME",             "49 6B DA", 0x78, 0x79, 0, 0x78, false, nullptr, 0x140, -1, true },
+    { "friends.world",     "FRIEND_GETWORLD",            "42 8B 44 19", 0x30, 0x31, 0, 0x30, false, "friend entry: world", 0x140, -1, true },
+    { "friends.rank",      "FRIEND_GETRANK",             "42 8B 44 19", 0x50, 0x51, 0, 0x50, false, "friend entry: rank", 0x140, -1, true },
+    { "ge.status",         "STOCKMARKET_ISOFFEREMPTY",   "39 54 C8", 0x10, 0x11, 0, 0x10, false, "GE box: first slot's status, so the slot array starts here (kGEArrayPad); slot fields = value - 0x10", 0x140, -1, true },
+    { "ge.status",         "STOCKMARKET_ISOFFERFINISHED", "83 7C C8", 0x10, 0x11, 0, 0x10, false, nullptr, 0x140, -1, true },
+    { "ge.type",           "STOCKMARKET_GETOFFERTYPE",   "8B 54 C8", 0x14, 0x15, 0, 0x14, false, "GE box: first slot's type (slot +4)", 0x140, -1, true },
+    { "ge.item",           "STOCKMARKET_GETOFFERITEM",   "8B 54 C8", 0x18, 0x19, 0, 0x18, false, "GE box: first slot's item (slot +8)", 0x140, -1, true },
+    { "ge.price",          "unk11086",                   "4A 8B 54 C0", 0x20, 0x21, 0, 0x20, false, "GE box: first slot's price (slot +0x10)", 0x140, -1, true },
+    { "ge.filled",         "STOCKMARKET_GETOFFERCOMPLETEDCOUNT", "8B 54 C8", 0x2C, 0x2D, 0, 0x2C, false, "GE box: first slot's filled count (slot +0x1C)", 0x140, -1, true },
+    { "ge.value",          "STOCKMARKET_GETOFFERCOMPLETEDGOLD", "4A 8B 54 C0", 0x30, 0x31, 0, 0x30, false, "GE box: first slot's filled value (slot +0x20)", 0x140, -1, true },
+    { "containers.begin",  "INV_FREESPACE",              "4C 8B 41", 0x8, 0x9, 0, 0x8, false, "container manager: entry vector begin", 0x140, 0, true },
+    { "containers.end",    "INV_FREESPACE",              "4C 8B 59", 0x10, 0x11, 0, 0x10, false, "container manager: entry vector end", 0x140, 0, true },
+    { "containers.stride", "INV_FREESPACE",              "4D 8D 41", 0x48, 0x49, 0, 0x48, false, "container entry size (kContainerStride)", 0x140, 0, true },
+    { "containers.stride", "INV_FREESPACE",              "49 8D 40", 0x48, 0x49, 0, 0x48, false, nullptr, 0x140, 0, true },
+    { "containers.handle", "INV_FREESPACE",              "49 8D 48", 0x8, 0x9, 0, 0x8, false, "container entry: the handle the find returns (the reader's entry + 0x18 / 0x20 = handle + 0x10 / 0x18)", 0x140, 0, true },
+    { "containers.itemsBegin", "INV_GETOBJ",             "48 8B 50", 0x10, 0x11, 0, 0x10, false, "container handle: item vector begin, 8 bytes per item", 0x140, 0, true },
+    { "containers.itemsBegin", "INV_GETNUM",             "48 8B 50", 0x10, 0x11, 0, 0x10, false, nullptr, 0x140, 0, true },
+    { "containers.itemsEnd", "INV_GETOBJ",               "48 8B 40", 0x18, 0x19, 0, 0x18, false, "container handle: item vector end", 0x140, 0, true },
+    { "containers.itemsEnd", "INV_GETNUM",               "48 8B 40", 0x18, 0x19, 0, 0x18, false, nullptr, 0x140, 0, true },
+    { "containers.itemStride", "INV_TOTAL",              "48 83 C0", 0x8, 0x9, 0, 0x8, false, "container item size: i32 id, i32 count", 0x140, 0, true },
+    { "containers.itemStride", "INVOTHER_TOTAL",         "48 83 C0", 0x8, 0x9, 0, 0x8, false, nullptr, 0x140, 0, true },
+    { "clan.listenedRef",  "ACTIVECLANSETTINGS_FIND_LISTENED", "48 83 C2", 0x60, 0x61, 0, 0x60, false, "clan manager: counted reference to the listened settings store", 0x140, -1, true },
+    { "clan.listenedObj",  "ACTIVECLANSETTINGS_FIND_LISTENED", "48 83 7A", 0x8, 0x9, 0, 0x8, false, "clan listened reference: the settings store object", 0x140, -1, true },
+    { "group.object",      "PLAYER_GROUP_MEMBER_COUNT",  "48 8B 50", 0x8, 0x9, 0, 0x8, false, "player group manager: the group", 0x140, -1, true },
+    { "group.object",      "PLAYER_GROUP_FIND",          "48 39 50", 0x8, 0x9, 0, 0x8, false, nullptr, 0x140, -1, true },
+    { "group.membersBegin", "PLAYER_GROUP_MEMBER_COUNT", "48 2B 4A", 0x60, 0x61, 0, 0x60, false, "player group: member vector begin", 0x140, -1, true },
+    { "group.membersBegin", "PLAYER_GROUP_MEMBER_GET_RANK", "49 8B 40", 0x60, 0x61, 0, 0x60, false, nullptr, 0x140, -1, true },
+    { "group.membersEnd",  "PLAYER_GROUP_MEMBER_COUNT",  "48 8B 4A", 0x68, 0x69, 0, 0x68, false, "player group: member vector end", 0x140, -1, true },
+    { "group.memberStride", "PLAYER_GROUP_MEMBER_GET_RANK", "48 69 C8", 0xB0, 0xB1, 0, 0xB0, false, "player group member size" },
+    { "group.memberStride", "PLAYER_GROUP_MEMBER_IS_ONLINE", "48 69 D0", 0xB0, 0xB1, 0, 0xB0 },
+    { "group.maxSize",     "PLAYER_GROUP_GET_MAX_SIZE",  "0F BF 51", 0x22, 0x23, 0, 0x22, false, "player group: i16 max size", 0x140, -1, true },
+    { "chat.recordId",     "printmessage",               "8B 48",    0x10, 0x11, 0, 0x10, false, "chat record: record id", 0x300, 4, true },
+    { "chat.recordId",     "printmessage",               "89 42",    0x10, 0x11, 0, 0x10, false, nullptr, 0x300, 4, true },
+    { "chat.recordId",     "printmessage",               "89 41",    0x10, 0x11, 0, 0x10, false, nullptr, 0x300, 4, true },   // the plugin client fills the record through rcx
+    { "chat.recordTick",   "printmessage",               "89 42",    0x14, 0x15, 0, 0x14, false, "chat record: client tick at insert", 0x300, 4, true },
+    { "chat.recordTick",   "printmessage",               "89 41",    0x14, 0x15, 0, 0x14, false, nullptr, 0x300, 4, true },
+    { "chat.recordType",   "printmessage",               "89 42",    0x20, 0x21, 0, 0x20, false, "chat record: message type", 0x300, 4, true },
+    { "chat.recordType",   "printmessage",               "89 41",    0x20, 0x21, 0, 0x20, false, nullptr, 0x300, 4, true },
+    { "chat.recordType",   "unk11108",                   "8B 53",    0x20, 0x21, 0, 0x20, false, nullptr, 0x300, -1, true },
+    { "chat.nextId",       "CHAT_LASTUID",               "8B 50",    0x18, 0x19, 0, 0x18, false, "chat store: next record id", 0x140, -1, true },
+    { "chat.nextId",       "printmessage",               "4C 63 79", 0x18, 0x19, 0, 0x18, false, nullptr, 0x300, 4, true },
 };
 
 // Handlers that name themselves in their error text: the string, and the table name whose number
@@ -189,12 +412,14 @@ std::uint32_t FindDisp(const Pe& pe, std::uint32_t handlerRva, std::uint32_t end
     if (len > r.span) len = r.span;
     if (endRva > handlerRva && endRva - handlerRva < len) len = endRva - handlerRva;
     int seen = 0; bool have = false; std::uint32_t got = 0;
-    for (std::size_t i = 0; i + hn + 4 <= len; ++i) {
+    const std::size_t dn = r.d8 ? 1 : 4;
+    for (std::size_t i = 0; i + hn + dn <= len; ++i) {
         if (std::memcmp(p + i, head, hn) != 0) continue;
         // a head without its own REX byte also matches one byte into the REX form, which is
         // another instruction (other register or width)
         if (!headRex && i > 0 && (p[i - 1] & 0xF0) == 0x40) continue;
-        std::uint32_t disp; std::memcpy(&disp, p + i + hn, 4);
+        std::uint32_t disp = 0;
+        if (r.d8) disp = p[i + hn]; else std::memcpy(&disp, p + i + hn, 4);
         if (disp < r.lo || disp >= r.hi) continue;
         if (seen++ < r.nth) continue;
         if (!have) { have = true; got = disp; continue; }
@@ -299,6 +524,75 @@ std::uint32_t WrapperCallback(const Pe& pe, std::uint32_t h) {
     return (std::uint32_t)cb;
 }
 
+// The functions the exe's unwind data names, start -> end. A call whose target starts one of them
+// is a call; a byte that merely looks like one inside another instruction is passed over. The end
+// bounds a rule's scan of the routine: what sits past it is another function, found only by where
+// the linker put it. The compiler splits some functions into parts whose unwind data chains to a
+// part before (UNW_FLAG_CHAININFO with the parent's entry after the unwind codes, or an entry that
+// points at its parent's entry); a part that follows the function directly and chains to it is
+// the same function, so its end is the function's end.
+std::uint32_t ChainParent(const Pe& pe, std::uint32_t info) {
+    if (info & 1) { const std::uint8_t* e = At(pe, info & ~1u, 4); std::uint32_t b = 0; if (e) std::memcpy(&b, e, 4); return b; }
+    const std::uint8_t* u = At(pe, info, 4);
+    if (!u || !((u[0] >> 3) & 4)) return 0;
+    const std::uint32_t at = info + 4 + 2u * ((u[2] + 1u) & ~1u);   // past the unwind codes, kept to an even count
+    const std::uint8_t* e = At(pe, at, 4);
+    std::uint32_t b = 0; if (e) std::memcpy(&b, e, 4);
+    return b;
+}
+std::map<std::uint32_t, std::uint32_t> FunctionRanges(const Pe& pe) {
+    std::map<std::uint32_t, std::uint32_t> out;
+    const std::uint8_t* p = pe.pdataSize ? At(pe, pe.pdataRva, pe.pdataSize) : nullptr;
+    if (!p) return out;
+    std::uint32_t lastBegin = 0, lastEnd = 0;
+    std::vector<std::uint32_t> parts;   // where each part of the function being extended begins
+    for (std::uint32_t i = 0; i + 12 <= pe.pdataSize; i += 12) {
+        std::uint32_t begin, stop, info;
+        std::memcpy(&begin, p + i, 4); std::memcpy(&stop, p + i + 4, 4); std::memcpy(&info, p + i + 8, 4);
+        if (begin < pe.textRva || begin >= pe.textRva + pe.textSize || stop <= begin) continue;
+        const std::uint32_t parent = ChainParent(pe, info);
+        if (parent && lastEnd && begin == lastEnd && std::find(parts.begin(), parts.end(), parent) != parts.end()) {
+            out[lastBegin] = stop; lastEnd = stop; parts.push_back(begin);
+            continue;
+        }
+        out.emplace(begin, stop);
+        lastBegin = begin; lastEnd = stop;
+        parts.assign(1, begin);
+    }
+    return out;
+}
+
+// Where a routine ends, at most `limit` bytes from its start: its unwind data's end when it has
+// one, else the first ret the linker's int3 padding follows. A small callback that saves no
+// register has no unwind data, and the callback linked after it is not its code.
+std::uint32_t RoutineEnd(const Pe& pe, std::uint32_t at, std::uint32_t limit, const std::map<std::uint32_t, std::uint32_t>& functions) {
+    const std::uint32_t end = at + limit;
+    if (const auto fe = functions.find(at); fe != functions.end()) return fe->second < end ? fe->second : end;
+    const std::uint8_t* p = At(pe, at, limit);
+    if (!p) return end;
+    for (std::uint32_t i = 0; i + 1 < limit; ++i)
+        if (p[i] == 0xC3 && p[i + 1] == 0xCC) return at + i + 1;
+    return end;
+}
+
+// The routine the handler's `nth` direct call names (0-based, in address order, within the first
+// 0x400 bytes of the handler and never past `end`), 0 when there is none.
+std::uint32_t CallTarget(const Pe& pe, std::uint32_t at, std::uint32_t end, int nth, const std::map<std::uint32_t, std::uint32_t>& functions) {
+    std::size_t len = 0x400;
+    if (end > at && end - at < len) len = end - at;
+    const std::uint8_t* p = At(pe, at, len);
+    if (!p) return 0;
+    int seen = 0;
+    for (std::size_t i = 0; i + 5 <= len; ++i) {
+        if (p[i] != 0xE8) continue;
+        std::int32_t rel; std::memcpy(&rel, p + i + 1, 4);
+        const std::int64_t t = (std::int64_t)at + (std::int64_t)i + 5 + rel;
+        if (t < pe.textRva || t >= (std::int64_t)pe.textRva + pe.textSize || !functions.count((std::uint32_t)t)) continue;
+        if (seen++ == nth) return (std::uint32_t)t;
+    }
+    return 0;
+}
+
 }  // namespace
 
 bool ReadFile(const std::wstring& path, std::vector<std::uint8_t>& out) {
@@ -394,6 +688,85 @@ bool Handlers(const Pe& pe, std::map<std::uint32_t, std::uint32_t>& outByOp /* o
     // dense: the numbers run 1..N with few gaps
     std::uint32_t maxOp = outByOp.rbegin()->first;
     return outByOp.size() * 10 >= (std::size_t)maxOp * 9;
+}
+
+// The registrar passes each operation's operand width beside its number, in r9b just before:
+// mov r9b,1 for a four-byte operand, mov r9b,0 / xor r9d,r9d for one byte.
+std::vector<std::uint8_t> ScriptOperandWidths(const Pe& pe) {
+    std::vector<std::uint8_t> out;
+    const std::uint8_t* t = pe.base + pe.textRaw;
+    std::size_t found = 0, open = 0;
+    for (std::size_t i = 24; i + 12 <= pe.textSize; ++i) {
+        if (t[i] != 0x66 || t[i + 1] != 0x41 || t[i + 2] != 0xB8 || t[i + 5] != 0x48 || t[i + 6] != 0x8D || t[i + 7] != 0x15) continue;
+        std::uint16_t op; std::memcpy(&op, t + i + 3, 2);
+        int w = 0;
+        for (std::size_t j = i - 1; j + 24 > i && !w; --j) {
+            if (t[j] == 0x41 && t[j + 1] == 0xB1) w = t[j + 2] ? 4 : 1;
+            else if (t[j] == 0x45 && (t[j + 1] == 0x33 || t[j + 1] == 0x32) && t[j + 2] == 0xC9) w = 1;
+        }
+        if (!w) { ++open; continue; }
+        if (op >= out.size()) out.resize((std::size_t)op + 1, 0);
+        if (out[op] && out[op] != w) return {};   // one number, two widths: not the registrar
+        out[op] = (std::uint8_t)w;
+        ++found;
+    }
+    if (found < 1500 || open * 100 > found) return {};
+    return out;
+}
+
+std::uint32_t OverheadFromCode(const Pe& pe) {
+    const std::uint8_t* t = pe.base + pe.textRaw;
+    const std::size_t n = pe.textSize;
+    constexpr std::size_t kLookBack = 0x80;
+    std::uint32_t found = 0;
+    for (std::size_t i = kLookBack; i + 7 <= n; ++i) {
+        // imul r64, r64, 0x1B0
+        if ((t[i] & 0xFA) != 0x48 || t[i + 1] != 0x69 || (t[i + 2] & 0xC0) != 0xC0) continue;
+        std::uint32_t imm; std::memcpy(&imm, t + i + 3, 4);
+        if (imm != 0x1B0) continue;
+        // mov r64,[r64+disp32] in the stretch before it
+        for (std::size_t j = i - kLookBack; j < i; ++j) {
+            if ((t[j] & 0xFA) != 0x48 || t[j + 1] != 0x8B || (t[j + 2] & 0xC0) != 0x80 || (t[j + 2] & 7) == 4) continue;
+            std::uint32_t disp; std::memcpy(&disp, t + j + 3, 4);
+            if (disp < 0x400 || disp > 0x3000) continue;
+            if (found && found != disp) return 0;
+            found = disp;
+        }
+    }
+    return found;
+}
+
+ArrowSite ArrowSiteFromCode(const Pe& pe) {
+    ArrowSite a;
+    const int* pat = rtx::sig::kArrowFrame;
+    const std::size_t len = sizeof(rtx::sig::kArrowFrame) / sizeof(int);
+    const std::uint8_t* t = pe.base + pe.textRaw;
+    const std::uint8_t* hit = nullptr;
+    for (std::size_t i = 0; i + len + 0x20 <= pe.textSize; ++i) {
+        std::size_t k = 0;
+        for (; k < len; ++k) if (pat[k] >= 0 && t[i + k] != (std::uint8_t)pat[k]) break;
+        if (k != len) continue;
+        if (hit) return a;   // twice: not the site
+        hit = t + i;
+    }
+    if (!hit) return a;
+    std::memcpy(&a.arrow, hit + rtx::sig::kArrowFrameArrow, 4);
+    std::memcpy(&a.trail, hit + rtx::sig::kArrowFrameTrail, 4);
+    a.slot = rtx::sig::ArrowSlotSize(hit);
+    a.ok = a.arrow >= 0x18000 && a.arrow < 0x60000 && a.trail >= 0x18000 && a.trail < 0x60000;
+    // the message routine: its signature sits a little into it, the records are filled further on
+    const int* mp = rtx::sig::kArrowMessage;
+    const std::size_t ml = sizeof(rtx::sig::kArrowMessage) / sizeof(int);
+    const std::uint8_t* msg = nullptr;
+    for (std::size_t i = 0x40; i + ml + 0x600 <= pe.textSize; ++i) {
+        std::size_t k = 0;
+        for (; k < ml; ++k) if (mp[k] >= 0 && t[i + k] != (std::uint8_t)mp[k]) break;
+        if (k != ml) continue;
+        if (msg) { msg = nullptr; break; }   // twice: not the routine
+        msg = t + i;
+    }
+    if (msg && !rtx::sig::ArrowRequests(msg - 0x40, 0x640, a.requests, a.requestSize)) a.requests = a.requestSize = 0;
+    return a;
 }
 
 // name -> scrambled number, from the launcher's export: [{"op":N,"id":..,"name":"X"},...]
@@ -522,12 +895,28 @@ static const std::vector<Found>& RunLocked(const std::wstring& exePath, const st
         if (note.empty()) {
             std::set<std::string> ruled;
             for (const Rule& r : kRules) ruled.insert(r.op);
-            int differ = 0, differRuled = 0;
+            // The exporter's placeholders (unk11190, UNKNOWN_COMMAND_500) are numbered in sequence and
+            // shift whenever an operation is added, so a placeholder the code learned from an earlier
+            // export names another handler in this one. Only real names are compared.
+            auto placeholder = [](const std::string& n) {
+                const auto digits_from = [&](std::size_t at) {
+                    if (at >= n.size()) return false;
+                    for (std::size_t i = at; i < n.size(); ++i) if (n[i] < '0' || n[i] > '9') return false;
+                    return true;
+                };
+                if (n.rfind("unk", 0) == 0 && digits_from(3)) return true;
+                if (n.rfind("UNKNOWN_COMMAND_", 0) == 0 && digits_from(16)) return true;
+                const std::size_t u = n.rfind("UNK");
+                return u != std::string::npos && digits_from(u + 3);
+            };
+            int differ = 0, differRuled = 0, compared = 0;
             std::map<std::uint32_t, std::string> exportedByOp;
             for (const auto& kv : exported) exportedByOp.emplace(kv.second, kv.first);
             std::set<std::uint32_t> codeOps;
             for (const auto& kv : byCode.byName) {
                 codeOps.insert(kv.second);
+                if (placeholder(kv.first)) continue;
+                ++compared;
                 const auto it = exported.find(kv.first);
                 if (it != exported.end() && it->second != kv.second) {
                     ++differ;
@@ -536,11 +925,20 @@ static const std::vector<Found>& RunLocked(const std::wstring& exePath, const st
                     g_cache.differs.push_back({ kv.first, kv.second, it->second, on == exportedByOp.end() ? std::string() : on->second });
                 }
             }
-            // the export's names, less any on a handler the code named: one name per handler
+            // the export's real names, less any on a handler the code named: one name per handler. Its
+            // placeholders are left out, a rule keyed to one reads the handler the code gave it.
             std::map<std::string, std::uint32_t> merged = byCode.byName;
             for (const auto& kv : exported)
-                if (!codeOps.count(kv.second)) merged.insert(kv);
-            note = spot_fail(merged, nullptr);
+                if (!codeOps.count(kv.second) && !placeholder(kv.first)) merged.insert(kv);
+            // An export of this build names its handlers as their code does (0 differ on 950-1). One
+            // whose version resource matches but whose names mostly disagree is another build's: the
+            // plugin beta client carries the live version string on other operation numbers.
+            if (compared > 0 && differ * 20 > compared) {
+                char why[200];
+                std::snprintf(why, sizeof(why), "the export names %d of %d handlers differently from their own code: it is another build's (%s)",
+                              differ, compared, g_cache.table.label.empty() ? "no label" : g_cache.table.label.c_str());
+                note = why;
+            } else note = spot_fail(merged, nullptr);
             if (note.empty()) {
                 ops.swap(merged);
                 g_cache.table.exportUsed = true; g_cache.table.differ = differ; g_cache.table.differRuled = differRuled;
@@ -560,39 +958,83 @@ static const std::vector<Found>& RunLocked(const std::wstring& exePath, const st
     std::vector<std::uint32_t> starts;
     for (const auto& kv : handlers) starts.push_back(kv.second);
     std::sort(starts.begin(), starts.end());
-    for (const Rule& r : kRules) {
-        Found fd{ r.name, r.compiled, 0, r.op, Outcome::NotFound };
-        fd.ref = r.compiled != 0;
-        fd.what = r.what;
+    const std::map<std::uint32_t, std::uint32_t> functions = FunctionRanges(pe);
+    // One rule against this exe: the value it finds (0 for none) and why not.
+    struct Try { std::uint32_t value = 0; Outcome status = Outcome::NotFound; };
+    auto try_rule = [&](const Rule& r) {
+        Try t;
         // a name the code could not tell from its look-alikes stands for all of them: the rule
         // holds when every one reads the same place
         std::vector<std::uint32_t> cands;
         if (auto o = ops.find(r.op); o != ops.end()) cands.push_back(o->second);
         else if (auto sh = byCode.shared.find(r.op); sh != byCode.shared.end()) cands = sh->second;
-        if (cands.empty()) { fd.status = Outcome::NoOp; rep << "  " << r.name << ": operation " << r.op << " not recognised\n"; g_cache.found.push_back(fd); continue; }
-        bool ambiguous = false, missing = false, first = true;
+        if (cands.empty()) { t.status = Outcome::NoOp; return t; }
+        bool first = true;
         for (const std::uint32_t op : cands) {
             auto h = handlers.find(op);
-            if (h == handlers.end()) { missing = true; break; }
+            if (h == handlers.end()) { t.value = 0; t.status = Outcome::NoHandler; return t; }
             auto next = std::upper_bound(starts.begin(), starts.end(), h->second);
             std::uint32_t at = h->second, end = next != starts.end() ? *next : pe.textRva + pe.textSize;
             if (r.wrap) {
-                // the shape sits in the callback the wrapper hands on; a handler that is no wrapper is read as is
-                if (const std::uint32_t cb = WrapperCallback(pe, at)) { at = cb; end = cb + 0x140; }
+                // the shape sits in the callback the wrapper hands on, and nowhere past its end; a
+                // handler that is no wrapper is read as is
+                if (const std::uint32_t cb = WrapperCallback(pe, at)) { at = cb; end = RoutineEnd(pe, cb, 0x140, functions); }
+            }
+            if (r.call >= 0) {
+                // the shape sits in the routine the handler's call names, and nowhere past its end
+                const std::uint32_t cb = CallTarget(pe, at, end, r.call, functions);
+                if (!cb) { t.value = 0; t.status = Outcome::NotFound; return t; }
+                at = cb; end = RoutineEnd(pe, cb, r.span, functions);
             }
             bool amb = false;
             const std::uint32_t v = FindDisp(pe, at, end, r, amb);
-            if (amb || (!first && v != fd.found)) { ambiguous = true; break; }
-            fd.found = v; first = false;
+            if (amb || (!first && v != t.value)) { t.value = 0; t.status = Outcome::Ambiguous; return t; }
+            t.value = v; first = false;
         }
-        if (missing) { fd.found = 0; fd.status = Outcome::NoHandler; rep << "  " << r.name << ": no handler for " << r.op << " (number " << cands[0] << ")\n"; g_cache.found.push_back(fd); continue; }
-        if (ambiguous) fd.found = 0;
-        fd.status = ambiguous ? Outcome::Ambiguous : fd.found ? Outcome::Found : Outcome::NotFound;
+        t.status = t.value ? Outcome::Found : Outcome::NotFound;
+        return t;
+    };
+    // the rules by name, in table order
+    std::vector<const Rule*> order;
+    std::map<std::string, std::vector<const Rule*>> byName;
+    for (const Rule& r : kRules) { auto& v = byName[r.name]; if (v.empty()) order.push_back(&r); v.push_back(&r); }
+    static const char* kWord[] = { "found", "moved", "not found", "more than one candidate", "not recognised", "no handler" };
+    for (const Rule* lead : order) {
+        const auto& group = byName[lead->name];
+        Found fd{ lead->name, lead->compiled, 0, lead->op, Outcome::NotFound };
+        fd.ref = lead->compiled != 0;
+        fd.what = lead->what;
+        Try leadTry; bool conflict = false;
+        std::string failed, values;   // the rules that found nothing, and every value found, for the report
+        for (std::size_t i = 0; i < group.size(); ++i) {
+            const Rule& r = *group[i];
+            const Try t = try_rule(r);
+            if (i == 0) leadTry = t;
+            // two rules of a name on one operation are told apart by their shape
+            std::string who = r.op;
+            for (const Rule* o : group)
+                if (o != &r && std::strcmp(o->op, r.op) == 0) { who += std::string(" [") + r.head + "]"; break; }
+            char note[200];
+            if (t.value) {
+                std::snprintf(note, sizeof(note), "%s 0x%X", who.c_str(), t.value);
+                values += std::string(values.empty() ? "" : ", ") + note;
+                if (!fd.found) { fd.found = t.value; fd.op = r.op; }
+                else if (t.value != fd.found) conflict = true;
+            } else {
+                std::snprintf(note, sizeof(note), "%s %s", who.c_str(), kWord[(int)t.status]);
+                failed += std::string(failed.empty() ? "" : ", ") + note;
+            }
+        }
+        if (conflict) { fd.found = 0; fd.status = Outcome::Ambiguous; }
+        else if (fd.found) fd.status = Outcome::Found;
+        else fd.status = leadTry.status;
         if (fd.ref && fd.status == Outcome::Found && fd.found != fd.compiled) fd.status = Outcome::Moved;
-        char line[200];
-        if (ambiguous) std::snprintf(line, sizeof(line), "  %s: not found, more than one candidate (from %s)\n", r.name, r.op);
-        else if (fd.ref) std::snprintf(line, sizeof(line), "  %s: %s0x%X (from %s; compiled 0x%X)\n", r.name, fd.found ? "" : "not found ", fd.found, r.op, fd.compiled);
-        else std::snprintf(line, sizeof(line), "  %s: %s0x%X (from %s)\n", r.name, fd.found ? "" : "not found, wanted ", fd.found, r.op);
+        char line[400];
+        if (conflict) std::snprintf(line, sizeof(line), "  %s: not found, the rules disagree (%s)\n", fd.name, values.c_str());
+        else if (!fd.found && fd.ref) std::snprintf(line, sizeof(line), "  %s: not found (%s; compiled 0x%X)\n", fd.name, failed.c_str(), fd.compiled);
+        else if (!fd.found) std::snprintf(line, sizeof(line), "  %s: not found (%s)\n", fd.name, failed.c_str());
+        else if (fd.ref) std::snprintf(line, sizeof(line), "  %s: 0x%X (from %s; compiled 0x%X%s%s)\n", fd.name, fd.found, fd.op, fd.compiled, failed.empty() ? "" : "; ", failed.c_str());
+        else std::snprintf(line, sizeof(line), "  %s: 0x%X (from %s%s%s)\n", fd.name, fd.found, fd.op, failed.empty() ? "" : "; ", failed.c_str());
         rep << line;
         g_cache.found.push_back(fd);
     }

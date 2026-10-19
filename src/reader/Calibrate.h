@@ -109,6 +109,19 @@ bool ParsePe(const std::vector<std::uint8_t>& f, Pe& pe);
 const std::uint8_t* At(const Pe& pe, std::uint32_t rva, std::size_t n);   // file bytes at an RVA, null when outside the raw data
 const Section* SectionOf(const Pe& pe, std::uint32_t rva);
 bool Handlers(const Pe& pe, std::map<std::uint32_t, std::uint32_t>& outByOp);   // op -> handler RVA
+// Each operation's operand width in a script, by this build's number: 1 or 4 bytes, 0 = not
+// registered. Empty when the registrar is not recognised.
+std::vector<std::uint8_t> ScriptOperandWidths(const Pe& pe);
+// The actor's overhead object (hitsplats and head bars): the actor field the client loads just
+// before indexing the head-bar vector (imul by its 0x1B0 element size). 0 when the code does not
+// give exactly one.
+std::uint32_t OverheadFromCode(const Pe& pe);
+// Where the game gives the arrow manager its turn every frame (the companion's arrow-frame hook):
+// both marker managers inside the root and the size of their slots; and, from the arrow message
+// routine, where the arrow manager keeps its request records (0 when not read). ok is false unless
+// the site is found exactly once with root-sized displacements.
+struct ArrowSite { bool ok = false; std::uint32_t arrow = 0, trail = 0, slot = 0, requests = 0, requestSize = 0; };
+ArrowSite ArrowSiteFromCode(const Pe& pe);
 bool OpTable(const std::wstring& path, std::map<std::string, std::uint32_t>& out);
 std::string ExeBuild(const std::wstring& path);
 std::wstring FileKey(const std::wstring& path);

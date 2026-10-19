@@ -4439,7 +4439,7 @@
     var int45 = (-1 | 0);
     if ((((!R.eq(int0, (-1 | 0))) && (!R.eq(int1, (-1 | 0)))) && (R.len(string0) > 0))) {
       int44 = R.call(7235, [int1, int3, int4, int44, string0, string7]);
-      if ((R.eq(int3, 96797558) && R.eq(int4, 96797561))) {
+      if ((R.eq(int3, 96797571) && R.eq(int4, 96797574))) {
         int44 = R.call(20487, [int3, int4, int44]);
         int45 = int44;
       }
@@ -10018,7 +10018,7 @@
     }
     return int0;
   };
-  V[10881] = { vb: [], vp: [5050, 5051, 5052, 5053, 5054, 6537, 6538, 6762, 6763, 7105, 7106, 7645, 7646, 7849, 7850, 7851, 7852, 8170, 8228, 8353, 8550, 8692, 9014, 9111, 9112, 9202, 9203, 9461, 9549, 9550, 9718, 9743, 9780, 9846, 9872, 9873, 10162, 10301, 10312, 10379, 10398, 10399, 10622, 10639, 10640, 10641, 10779, 10780, 11327, 11453, 11454, 11455, 11456, 11471, 11580, 11586, 11587, 11696, 11697, 11698, 11699, 11905, 11976, 11988, 12029, 12085, 12177, 12178, 12209, 12228, 12429, 12436, 12527, 12528, 12796, 12872, 13487, 13652], vc: [], calls: [42, 2156, 12478] };
+  V[10881] = { vb: [], vp: [5050, 5051, 5052, 5053, 5054, 6537, 6538, 6762, 6763, 7105, 7106, 7645, 7646, 7849, 7850, 7851, 7852, 8170, 8228, 8353, 8550, 8692, 9014, 9111, 9112, 9202, 9203, 9461, 9549, 9550, 9718, 9743, 9780, 9846, 9872, 9873, 10162, 10301, 10312, 10379, 10398, 10399, 10622, 10639, 10640, 10641, 10779, 10780, 11327, 11453, 11454, 11455, 11456, 11471, 11580, 11586, 11587, 11696, 11697, 11698, 11699, 11905, 11976, 11988, 12029, 12085, 12177, 12178, 12209, 12228, 12429, 12436, 12527, 12528, 12796, 12872, 13487, 13652, 13752], vc: [], calls: [42, 2156, 12478] };
   S[10881] = function (int0) {
     var int1 = R.structParam(int0, 8684);
     if ((!R.eq(int1, (-1 | 0)))) {
@@ -10349,6 +10349,10 @@
       case 77:
       {
         return R.testbit(R.vp(13652), int4);
+      }
+      case 78:
+      {
+        return R.testbit(R.vp(13752), int4);
       }
     }
     R.call(12478, [`Unable to get unlocked parent struct ${R.s(R.structParam(int0, 2533))} with ID ${R.s(R.str(int3, 10))} | Var no. ${R.s(R.str(int5, 10))}`]);
@@ -11125,12 +11129,12 @@
       }
       case 53508:
       {
-        string0 = `<br>- Increases damage received by Lord Ghrazi by <col=ffffff>${R.s(R.str(8, 10))}%</col> for each stack.`;
+        string0 = `<br>- Increases damage received by Lord Ghrazi by <col=ffffff>${R.s(R.str(4, 10))}%</col> for each stack.`;
         break;
       }
       case 53509:
       {
-        string0 = `<br>- Increases damage received by Lady Ghrazi by <col=ffffff>${R.s(R.str(8, 10))}%</col> for each stack.`;
+        string0 = `<br>- Increases damage received by Lady Ghrazi by <col=ffffff>${R.s(R.str(4, 10))}%</col> for each stack.`;
         break;
       }
       case 53530:
@@ -14050,7 +14054,7 @@
       }
     }
     var int24 = 0;
-    if (R.eq(int2, 96797561)) {
+    if (R.eq(int2, 96797574)) {
       int24 = ((10) + (R.idiv(16, 4)) | 0);
     }
     if ((int12 > 0)) {
@@ -15497,7 +15501,7 @@
     switch (R.key(R.ifNeg())) {
       case 744:
       {
-        return 48759142;
+        return 48759143;
       }
       case 906:
       {
@@ -15505,7 +15509,7 @@
       }
     }
     if (R.eq(int0, 1)) {
-      return 96797492;
+      return 96797504;
     }
     return 96796719;
   };
@@ -20660,7 +20664,7 @@
     if (((int2 > 0) && R.eq(R.ifNone(int1, ((int2) - (1) | 0)), 1))) {
       int3 = ((R.ifZero()) + (R.ifZero()) | 0);
     }
-    R.ifNoop(96797560, 5, R.ifZero(96797560));
+    R.ifNoop(96797573, 5, R.ifZero(96797573));
     R.ifNoop(0, 2, 1, 0);
     R.ifNoop(0, ((int3) + (5) | 0), 1, 0);
     R.ifNoop(35516);

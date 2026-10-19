@@ -5,6 +5,20 @@
   function refreshFail(msg) { if (msg === _refreshFailMsg) return; _refreshFailMsg = msg; console.error('rtx refresh: ' + msg); }
   // Per-account fullscreen preference: applied once the host window exists (retried for ~15 s).
   let _fsPrefPid = 0, _fsPrefTries = 0;
+  // Outbound packet capture is a persisted developer setting: when rtxOutboundCapture is '1', arm it
+  // once per client at start so the companion installs the builder hook near boot (no panel needed).
+  let _obPrefPid = 0;
+  function outboundCapturePrefApply() {
+    const pid = myPid();
+    if (!pid || _obPrefPid === pid) return;
+    const b = bridge();
+    if (!b || typeof b.outboundPacketArm !== 'function') return;
+    _obPrefPid = pid;
+    let want = false;
+    try { want = (typeof prefGet === 'function' ? prefGet('rtxOutboundCapture', '0') : '0') === '1'; } catch (e) {}
+    if (want) { try { b.outboundPacketArm(pid, true); } catch (e) {} }
+  }
+
   function fullscreenPrefApply() {
     const pid = myPid();
     if (!pid || _fsPrefPid === pid || !lastSnap || !lastSnap.display_name) return;
@@ -141,6 +155,7 @@
     try { acctStoresCheck(); } catch (e) {}
     try { if (typeof ovReflectRenderer === 'function') ovReflectRenderer(); } catch (e) {}   // rows that only apply to one renderer
     try { fullscreenPrefApply(); } catch (e) {}
+    try { outboundCapturePrefApply(); } catch (e) {}
     try { pluginGrantsEnsure(); } catch (e) {}
     if ((metroVisual() || metroAudio()) && myPid() !== _metroAppliedPid) applyMetroOverlay();
     if ((xpOn || _xpAppliedPid) && myPid() && myPid() !== _xpAppliedPid) applyXpOverlay();
@@ -283,8 +298,8 @@
     rtxEventsPoll.busy = true;
     try {
       const pid = myPid();
-      if (pid !== rtxEventsPoll.pid) { rtxEventsPoll.pid = pid; rtxEventsPoll.seq = 0; rtxEventsPoll.tick = -1; }
-      const d = await rtxData.call('state.events', rtxEventsPoll.seq);
+      if (pid !== rtxEventsPoll.pid) { rtxEventsPoll.pid = pid; rtxEventsPoll.seq = 0; rtxEventsPoll.tick = -1; rtxGameEvents.reset(); }
+      const d = await rtxData.call('host.packetEvents', rtxEventsPoll.seq);
       rtxEventsPoll.polls++;
       if (!d || d.ok === false) { if (rtxEventsPoll.ok) rtxEventsPoll.fails++; return; }
       rtxEventsPoll.ok = true;
@@ -292,13 +307,16 @@
         const now = performance.now();
         const dt = rtxEventsPoll.tick >= 0 ? now - rtxEventsPoll.tickAt : 0;
         rtxEventsPoll.tick = d.tick; rtxEventsPoll.tickAt = now;
-        rtxEvents.emit('gameTick', { kind: 'gameTick', tick: d.tick, dtMs: dt });
+        const tk = { kind: 'gameTick', tick: d.tick, dtMs: dt };
+        rtxEvents.emit('gameTick', tk);
+        rtxGameEvents.push(tk);
       }
       const evs = Array.isArray(d.events) ? d.events : [];
       for (const ev of evs) {
         if (!(ev.seq > rtxEventsPoll.seq)) continue;   // served() may replay the previous span
         rtxEventsPoll.seq = ev.seq;
         rtxEvents.emit(ev.kind || 'raw', ev);
+        rtxGameEvents.push(ev);
       }
       if (typeof d.seq === 'number' && d.seq > rtxEventsPoll.seq) rtxEventsPoll.seq = d.seq;
     } catch (e) { rtxEventsPoll.fails++; }

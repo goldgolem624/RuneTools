@@ -44,6 +44,8 @@ public:
     Row& Add(const char* group, const std::string& id, const std::string& key, int ok, const std::string& detail,
              const std::string& features = {}, const std::string& exp = {}, const std::string& got = {},
              const std::string& dep = {});
+    // Puts a finished row in place of the row with its id, or appends it when there is none.
+    void Put(const Row& r);
     void Fact(const std::string& key, const std::string& value);
     void Section(const std::string& name, const std::string& json);   // top-level object, raw JSON
     void SetBuild(const BuildChange& b) { build_ = b; }

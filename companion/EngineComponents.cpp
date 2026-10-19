@@ -1,3 +1,4 @@
+#include "CompOffsets.h"
 #include "EngineComponents.h"
 #include "Signatures.h"
 #include "MainDataOffsets.h"
@@ -557,7 +558,7 @@ void HookSetText() {
 constexpr ULONGLONG kTextWaitMs = 3000;   // the launcher sees a changed game state within this
 
 bool InWorld(const std::uint8_t* root) {
-    __try { return *reinterpret_cast<const std::int8_t*>(root + rtx::md::kStatus) == 30; }
+    __try { return *reinterpret_cast<const std::int8_t*>(root + rtx::coff::status) == 30; }
     __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
 }
 bool TextGroupAllowed(std::int32_t parent, std::int32_t sub) {

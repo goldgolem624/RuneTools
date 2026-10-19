@@ -11,6 +11,9 @@
   let npFilter = '';                 // hex/dec opcode, "0x10-0x20" range, or name substring
   let npAt = 0;
   const NP_CAP = 5000;
+  // Outbound (client -> server) feed, captured at the builder hook. Same record shape as inbound.
+  // The hook is OFF by default; npOutCapture toggles it (the companion attaches the hook on demand).
+  let npOutRecords = [], npOutCursor = 0, npOutMeta = null, npOutAt = 0, npOutCapture = false;
   // {name: opcode} comes from the host (state.serverOps, the table the reader itself decodes with),
   // so the panel never carries a copy of the opcodes that can go stale. Empty until the host answers.
   const SOPS = {};
@@ -51,6 +54,59 @@
         for (const p of d.packets) npEnum[p.op] = { len: p.len, kind: p.kind, handler: p.handler };
       } else { npEnumErr = d.reason || 'unavailable'; npEnumTried = false; }   // retry next poll
     } catch (e) { npEnumTried = false; }
+  }
+
+  function npOutArm(on) {
+    try { if (bridge() && bridge().outboundPacketArm) rtxData.sync('act.outboundPacketArm', on); } catch (e) {}
+  }
+
+  async function npOutFetch() {
+    if (npPaused) return;
+    if (!bridge() || !bridge().outboundPacketFeed) return;
+    const now = Date.now();
+    if (now - npOutAt < 120) return;
+    npOutAt = now;
+    // No auto-arm: the hook stays off until the Capture toggle turns it on.
+    let d = null;
+    try { d = JSON.parse(await rtxData.raw('host.outboundPacketFeed', npOutCursor) || 'null'); } catch (e) { return; }
+    if (!d || !d.ok) { npOutMeta = d || null; paneRun('netprobe', npUpdateDynamic); return; }
+    npOutMeta = d;
+    npOutCapture = !!d.enable;                 // reflect the real state
+    if (Array.isArray(d.packets)) {
+      for (const r of d.packets) {
+        if (r.seq <= npOutCursor) continue;
+        npOutCursor = r.seq;
+        r._out = true;
+        npOutRecords.push(r);
+      }
+      if (npOutRecords.length > NP_CAP) npOutRecords.splice(0, npOutRecords.length - NP_CAP);
+    }
+    paneRun('netprobe', npUpdateDynamic);
+  }
+
+  // Copy the captured outbound packets for decoding. JSON: {at, pid, packets:[{seq,t,op,len,hex}]}.
+  // Text: one line per packet "#seq -Tms op 0xNN (N) len L  <hex>  <ascii>". hex/op are plaintext
+  // (the opcode is the real opcode; the payload is the bytes after it).
+  async function npOutCopy(asJson) {
+    const recs = npOutRecords.slice().filter(r => npMatch(r.op, npParseFilter()));
+    let text;
+    if (asJson) {
+      const out = recs.map(r => ({ seq: r.seq, t: r.t, op: r.op, len: r.len, hex: r.hex || '' }));
+      text = JSON.stringify({ at: new Date().toISOString(), dir: 'outbound',
+        pid: (bridge() && bridge().pid) ? bridge().pid : 0, count: out.length, packets: out }, null, 1);
+    } else {
+      const t0 = recs.length ? recs[recs.length - 1].t : 0;
+      text = recs.map(r =>
+        '#' + r.seq + ' -' + Math.max(0, t0 - r.t) + 'ms  op ' + npHex2(r.op) + ' (' + r.op + ')  len ' + r.len
+        + '  ' + npHexSpaced(r.hex || '') + '  ' + npAsciiOf(r.hex || '')).join('\n');
+    }
+    const cap = 65536;
+    const over = text.length > cap;
+    if (over) text = text.slice(0, cap - 80) + '\n... trimmed at 65536 characters (' + recs.length + ' packets)';
+    let ok = false;
+    try { ok = (await rtxData.call('clipboard.copy', text)) !== null; } catch (e) { ok = false; }
+    try { uiNotify(ok ? ('Copied ' + recs.length + ' outbound packets' + (asJson ? ' as JSON' : '') + (over ? ' (trimmed)' : '') + '.')
+                      : 'Copy failed: the host has no clipboard binding.', { ttl: 2500 }); } catch (e) {}
   }
 
   async function npFetch() {
@@ -412,7 +468,7 @@
     if (!r.kept) return r.len === 0 ? '(empty)' : '';
     const body = npAscii ? npAsciiOf(r.hex) : npHexSpaced(r.hex);
     const more = (r.len > r.kept) ? ' ...(+' + (r.len - r.kept) + 'B)' : '';
-    const dec = npDecoders[r.op] ? npDecoders[r.op](npParseBytes(r)) : '';
+    const dec = (!r._out && npDecoders[r.op]) ? npDecoders[r.op](npParseBytes(r)) : '';
     const hint = dec ? ('<span style="color:#7ec699">' + htmlEsc(dec) + '</span>  ') : npNumHint(r);
     return hint + htmlEsc(body) + more;
   }
@@ -443,13 +499,33 @@
   }
   window.npRename = npRename;
 
+  // Outbound health line: builder hook status + counters (diag[0] = packets captured).
+  function npOutHealthHtml() {
+    if (!npOutMeta) return '<span style="color:var(--text-dim)">waiting</span>';
+    if (npOutMeta.ok === false) {
+      return '<span style="color:#e6a23c">' + htmlEsc(npOutMeta.reason || 'feed unavailable')
+           + '</span> <span style="color:var(--text-dim)">(companion feed off or not loaded)</span>';
+    }
+    const on = (npOutMeta.flags & 1) !== 0;
+    const label = on ? 'capturing (hook installed)' : 'capture off (hook not installed)';
+    const col = on ? 'var(--good, #67c23a)' : 'var(--text-dim, #999)';
+    const d = npOutMeta.diag || [0, 0, 0, 0];
+    return '<span style="color:' + col + '">' + label + '</span>'
+      + ' <span style="color:var(--text-dim)">builder rva ' + htmlEsc(npOutMeta.builderRva || '0x0')
+      + ' x' + (npOutMeta.sites | 0)
+      + ' | seen ' + (npOutMeta.seen | 0) + ' | written ' + (npOutMeta.written | 0)
+      + ' | fired ' + (d[0] | 0) + ' | pending ' + (d[1] | 0) + ' | badpos ' + (d[2] | 0) + '(' + (d[3] | 0) + ')</span>';
+  }
+
   function renderNetProbe() {
-    npFetch();
+    if (npView === 'out') npOutFetch(); else npFetch();
     if ($('np-body')) npUpdateDynamic(); else npPaint();
   }
   function npUpdateDynamic() {
-    const h = $('np-health'); if (h) h.innerHTML = npHealthHtml();
-    const b = $('np-body'); if (b) b.innerHTML = (npView === 'protocol') ? npProtocolRows(npParseFilter()) : npLiveRows(npParseFilter());
+    const h = $('np-health'); if (h) h.innerHTML = (npView === 'out') ? npOutHealthHtml() : npHealthHtml();
+    const b = $('np-body');
+    if (b) b.innerHTML = (npView === 'protocol') ? npProtocolRows(npParseFilter())
+      : (npView === 'out') ? npOutRows(npParseFilter()) : npLiveRows(npParseFilter());
   }
 
   function npPaint() {
@@ -459,21 +535,33 @@
     let html = '';
     html += '<div class="pane" style="display:flex;flex-direction:column;height:100%;min-height:0">';
     html += '<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;padding:2px 0 6px">';
-    html += npTab('live', 'Live feed') + npTab('protocol', 'Protocol');
+    html += npTab('live', 'Live feed') + npTab('protocol', 'Protocol') + npTab('out', 'Outbound');
     html += '<span style="flex:0 0 10px"></span>';
-    if (npView === 'live') {
+    if (npView === 'out') {
+      const capOn = npOutCapture;
+      html += '<button id="np-out-capture" style="background:' + (capOn ? '#b5473a' : 'var(--accent,#3a6df0)')
+        + ';color:#fff;border:1px solid var(--border,#333);border-radius:4px;padding:3px 10px;cursor:pointer;font:inherit">'
+        + (capOn ? 'Stop capture' : 'Start capture') + '</button>';
+    }
+    if (npView === 'live' || npView === 'out') {
       html += npBtn('np-pause', npPaused ? 'Resume' : 'Pause');
       html += npBtn('np-clear', 'Clear');
       html += npBtn('np-ascii', npAscii ? 'Hex' : 'ASCII');
+    }
+    if (npView === 'out') {
+      html += npBtn('np-out-copy', 'Copy');
+      html += npBtn('np-out-copyjson', 'Copy JSON');
     }
     html += '<input id="np-filter" placeholder="filter opcode: 0x5C, 92, 0x10-0x20, name" '
           + 'value="' + htmlEsc(npFilter) + '" '
           + 'style="flex:1;min-width:140px;background:var(--bg-2,#1c1c22);border:1px solid var(--border,#333);'
           + 'color:var(--text,#ddd);border-radius:4px;padding:3px 6px;font:inherit">';
     html += '</div>';
-    html += '<div id="np-health" style="font-size:11px;padding:0 0 6px;line-height:1.5">' + npHealthHtml() + '</div>';
+    html += '<div id="np-health" style="font-size:11px;padding:0 0 6px;line-height:1.5">'
+          + ((npView === 'out') ? npOutHealthHtml() : npHealthHtml()) + '</div>';
 
     if (npView === 'protocol') html += npProtocolHtml(flt);
+    else if (npView === 'out') html += npOutHtml(flt);
     else html += npLiveHtml(flt);
 
     html += '</div>';
@@ -482,9 +570,22 @@
     const bind = (id, fn) => { const e = $(id); if (e) e.onclick = fn; };
     bind('np-tab-live', () => { npView = 'live'; npPaint(); });
     bind('np-tab-protocol', () => { npView = 'protocol'; npPaint(); });
+    bind('np-tab-out', () => { npView = 'out'; npPaint(); });
+    bind('np-out-capture', () => {
+      npOutCapture = !npOutCapture;
+      try { if (typeof prefSet === 'function') prefSet('rtxOutboundCapture', npOutCapture ? '1' : '0'); } catch (e) {}
+      npOutArm(npOutCapture);
+      npPaint();
+    });
     bind('np-pause', () => { npPaused = !npPaused; npPaint(); });
-    bind('np-clear', () => { npRecords = []; npCounts = {}; npBytes = {}; npPaint(); });
+    bind('np-clear', () => {
+      if (npView === 'out') { npOutRecords = []; }
+      else { npRecords = []; npCounts = {}; npBytes = {}; }
+      npPaint();
+    });
     bind('np-ascii', () => { npAscii = !npAscii; npPaint(); });
+    bind('np-out-copy', () => { npOutCopy(false); });
+    bind('np-out-copyjson', () => { npOutCopy(true); });
     const fe = $('np-filter');
     if (fe) fe.oninput = () => { npFilter = fe.value; npPaintBodyOnly(flt); };
   }
@@ -492,7 +593,8 @@
   function npPaintBodyOnly() {
     const holder = $('np-body'); if (!holder) { npPaint(); return; }
     const flt = npParseFilter();
-    holder.innerHTML = (npView === 'protocol') ? npProtocolRows(flt) : npLiveRows(flt);
+    holder.innerHTML = (npView === 'protocol') ? npProtocolRows(flt)
+      : (npView === 'out') ? npOutRows(flt) : npLiveRows(flt);
   }
 
   function npTab(id, label) {
@@ -546,6 +648,41 @@
     return rows || '<tr><td colspan="5" style="padding:14px;color:var(--text-dim,#999)">No packets match the filter.</td></tr>';
   }
 
+  function npOutHtml(flt) {
+    return '<div style="flex:1;min-height:0;overflow-y:auto;overflow-x:hidden;border:1px solid var(--border,#26262c);border-radius:4px">'
+      + '<table style="width:100%;table-layout:fixed;border-collapse:collapse;font:12px/1.4 ui-monospace,Consolas,monospace">'
+      + '<colgroup><col style="width:52px"><col style="width:56px"><col style="width:112px"><col style="width:44px"><col></colgroup>'
+      + '<thead><tr>'
+      + '<th style="' + NP_TH + '">#</th><th style="' + NP_TH + '">t(ms)</th>'
+      + '<th style="' + NP_TH + '">opcode</th><th style="' + NP_TH + '">len</th>'
+      + '<th style="' + NP_TH + '">payload</th></tr></thead>'
+      + '<tbody id="np-body">' + npOutRows(flt) + '</tbody></table></div>';
+  }
+  function npOutRows(flt) {
+    if (!npOutRecords.length) {
+      const msg = (npOutMeta && npOutMeta.ok === false) ? 'Companion feed not available (see above).'
+        : 'Waiting for outbound packets (walk, interact, or chat to generate traffic)';
+      return '<tr><td colspan="5" style="padding:14px;color:var(--text-dim,#999)">' + htmlEsc(msg) + '</td></tr>';
+    }
+    const t0 = npOutRecords[npOutRecords.length - 1].t;
+    let rows = '', shown = 0;
+    for (let i = npOutRecords.length - 1; i >= 0 && shown < 600; i--) {
+      const r = npOutRecords[i];
+      if (!npMatch(r.op, flt)) continue;
+      shown++;
+      const opCell = '<span style="color:var(--accent,#7aa2ff)">' + npHex2(r.op) + '</span>'
+        + ' <span style="color:var(--text-dim,#777)">' + r.op + '</span>';
+      rows += '<tr>'
+        + '<td style="' + NP_TD + ';color:var(--text-dim,#777)">' + r.seq + '</td>'
+        + '<td style="' + NP_TD + ';color:var(--text-dim,#777)">-' + Math.max(0, t0 - r.t) + '</td>'
+        + '<td style="' + NP_TD + ';overflow-wrap:anywhere">' + opCell + '</td>'
+        + '<td style="' + NP_TD + ';color:var(--text-dim,#999)">' + r.len + '</td>'
+        + '<td style="' + NP_TD + ';white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-all;color:#cdd6a5">' + npPayload(r) + '</td>'
+        + '</tr>';
+    }
+    return rows || '<tr><td colspan="5" style="padding:14px;color:var(--text-dim,#999)">No packets match the filter.</td></tr>';
+  }
+
   function npProtocolHtml(flt) {
     return '<div style="flex:1;min-height:0;overflow:auto;border:1px solid var(--border,#26262c);border-radius:4px">'
       + '<table style="width:100%;border-collapse:collapse;font:12px/1.4 ui-monospace,Consolas,monospace">'
@@ -583,5 +720,10 @@
   }
 
 Object.assign(window, { npRename });
-registerTab({ id: 'netprobe', render: renderNetProbe, open: function () { try { npArm(true); npFetch(); } catch (e) {} }, close: function () { try { npArm(false); } catch (e) {} } });
+registerTab({ id: 'netprobe', render: renderNetProbe,
+  // Inbound arms on open (low-cost framer hook, always installed) and disarms on close. Outbound is
+  // governed by the persisted rtxOutboundCapture setting (applied at client start), so closing the
+  // panel does NOT stop an enabled capture; only the toggle does.
+  open: function () { try { npArm(true); npFetch(); npOutFetch(); } catch (e) {} },
+  close: function () { try { npArm(false); } catch (e) {} } });
 })();

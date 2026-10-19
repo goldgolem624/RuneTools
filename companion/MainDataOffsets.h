@@ -28,6 +28,8 @@ inline constexpr std::uint32_t kIfaceOwner   = 0x19900;   // open interface grou
 inline constexpr std::uint32_t kLoginMgr     = 0x19910;   // login manager: state +0x10, root back pointer +0x18, login reply +0x16C, lobby reply +0x1B8
 inline constexpr std::uint32_t kVarcStore    = 0x19920;   // input state: modifier keys +0x4F0, mouse +0x46D8, skills +0x7618, client var store +0x7620 (map +0x7630), clan var store +0x77B0
 inline constexpr std::uint32_t kInputProc    = 0x19928;   // minimenu: open byte +0x68, entries +0x90, hover record slots +0x13E0..
+inline constexpr std::uint32_t kEntityLookup = 0x19930;   // entities by uid (the zone event registry; EventZone.h)
+inline constexpr std::uint32_t kGroundItems  = 0x19938;   // ground item tree, rebased with the map (no handler of a named op reads it)
 inline constexpr std::uint32_t kPlayerGroup  = 0x19948;   // player group vars
 inline constexpr std::uint32_t kPlayers      = 0x19950;   // player registry by world index
 inline constexpr std::uint32_t kProjectiles  = 0x19960;
@@ -62,12 +64,12 @@ inline constexpr Entry kTable[] = {
     { "Tracker",      kTracker,      "md::kTracker",      "Trackers (unsurfaced)" },
     { "ChatStore",    kChatStore,    "md::kChatStore",    "Chat log" },
     { "ClanSettings", kClanSettings, "md::kClanSettings", "Clan vars" },
-    { "MiniMap",      kMiniMap,      nullptr,           "Walk destination" },
+    { "MiniMap",      kMiniMap,      "md::kMiniMap",    "Walk destination" },
     { "MapMgr",       kMapMgr,       "md::kMapMgr",       "Map base, loading, zone events" },
     { "InputReport",  kInputReport,  "md::kInputReport",  "Idle timer" },
     { "Connection",   kConnection,   "md::kConnection",   "Packet events" },
     { "VarWatch",     kVarWatch,     "md::kVarWatch",   "Update check" },
-    { "WalkMgr",      kWalkMgr,      nullptr,           "Walk marker" },
+    { "WalkMgr",      kWalkMgr,      "md::kWalkMgr",    "Walk marker" },
     { "FriendsChat",  kFriendsChat,  "md::kFriendsChat",  "Update check" },
     { "ArrowMgr",     kArrowMgr,     nullptr,           "Engine markers, clue scan" },
     { "TrailMgr",     kTrailMgr,     nullptr,           "Engine markers" },
@@ -75,6 +77,8 @@ inline constexpr Entry kTable[] = {
     { "LoginMgr",     kLoginMgr,     "md::kLoginMgr",     "Update check" },
     { "VarcStore",    kVarcStore,    "kOffVarcStore",   "Varcs, skills, mouse, keys" },
     { "InputProc",    kInputProc,    "md::kInputProc",    "Hover" },
+    { "EntityLookup", kEntityLookup, "md::kEntityLookup", "Zone events" },
+    { "GroundItems",  kGroundItems,  nullptr,           "Update check" },
     { "PlayerGroup",  kPlayerGroup,  "md::kPlayerGroup",  "Group vars" },
     { "Players",      kPlayers,      "md::kPlayers",      "Local player, in-frame labels" },
     { "Projectiles",  kProjectiles,  nullptr,           "Projectiles" },

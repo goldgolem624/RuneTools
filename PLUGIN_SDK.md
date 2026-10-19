@@ -249,49 +249,56 @@ rtx.plugin.events.off(kind, fn);
 
 ### Game events
 
+Events carry the official client API's names and fields where it has the event. The rest are
+RuneTools events in the same style.
+
+- Tiles are `coordGrid: {x, z, level}`: `z` is the north axis, `level` the floor.
+- A field the official API types as an enumeration (SkillType, LocShapeType, RotationType,
+  GrandExchangeOfferStage, GrandExchangeOfferType) holds the number, with its name beside it in
+  `<field>Name`.
+- An old value not seen since the stream started is `null`.
+- Every event also has `kind` and `seq`.
+
 | Kind | Fields | Fires when |
 |---|---|---|
-| `obj_add` | `x, y, plane, item, qty, owner?` | an item appeared on a tile (drop, spawn) |
-| `obj_del` | `x, y, plane, item` | an item left a tile (picked up, despawned) |
-| `obj_count` | `x, y, plane, item, from, qty` | a ground stack changed quantity |
-| `loc_add` | `x, y, plane, loc, type, rot` | a map object was placed or replaced |
-| `loc_del` | `x, y, plane, type, rot` | a map object was removed |
-| `spotanim` | `x, y, plane, gfx, height, delay` | a graphic played on a tile |
-| `spotanim_actor` | `target` (player, npc or tile), `index?, x?, y?, gfx, height, delay, slot` | a graphic played on an actor |
-| `projectile` | `form, gfx` and more; fields still being confirmed live | a projectile launched |
-| `sound` | `id` and more | a sound effect |
-| `area_sound` | `x, y, plane, id, loops, radius` | a positional sound |
-| `zone_base` | as captured | the zone the following tile events refer to |
-| `zone_clear` | as captured | a zone was cleared |
-| `zone_update` | `x, y, plane, items[]` | several tile events batched for one 8x8 zone |
-| `skill_update` | `seq, t, wall, op, len, kind, skill, name, level, xp` | a skill level or xp changed |
-| `container_update` | `container, flags, slots[] (slot, item, qty), partial` | a container changed |
-| `container_full` | `container, flags, other, count, slots[] (slot, item, qty), partial` | a whole container arrived (login, interface open); `other` = another player's side of a trade |
-| `container_reset` | `container, other` | the server reset a container |
-| `runclientscript` | `script, sig, args` | the server ran a client script |
-| `buff_update` | `struct, active, name` | a buff-bar entry was bound or cleared; pair with `state.buffs()` for its timer |
-| `varp_set` | `id, value` | the server changed a player variable |
-| `varbit_set` | `id, value` | the server set a varbit directly (a varbit is a bit range of its varp, see `cache.varbitDomains`) |
-| `varc_set` | `id, value, long?` | the server changed a client variable (`long: true` for a 64-bit value) |
-| `tracker_group` | `groupId, slot` | the game added a tracker group (1 skills, 2 combat, 3 loot) |
-| `tracker_values` | `cells[] (group, row, column, value, groupId?, rowId?, columnId?), partial` | the server's own tracker numbers (XP, XP/h, DPM, accuracy, GP/h); `value` null = none; the ids resolve the slot and indexes when the group definitions are readable (skills: rowId = skill id, columnId 1 XP, 2 XP/h, 4 ETA) |
-| `tracker_remove` | `slot, groupId?` | a tracker group was removed |
-| `tracker_clear` | `group, row, column, groupId?, rowId?, columnId?` | one tracker cell was cleared |
-| `tracker_column` | `group, column, shown, groupId?, columnId?` | a tracker column was shown or hidden |
-| `system_update` | `seconds` | a system update countdown started or changed |
-| `camera_target` | `x, y, plane, cleared` | the server pointed the camera at a tile (or released it) |
-| `cutscene` | `id` | a cutscene started |
-| `friends_loaded` | | the friends list finished loading |
-| `private_filter` | `value` | the private chat filter changed |
-| `minimap_state` | `value, mode, shown` | the minimap mode changed |
-| `run_energy` | `value` | run energy changed |
-| `run_weight` | `value` | carried weight changed |
-| `ping` | `a, b` | a server ping |
-| `ge_offer` | `market, slot, status, type, item, price, qty, filled, filledValue, cleared?, offer?` | a Grand Exchange offer changed (`type` 0 buy, 1 sell; `offer` = the slot as the client holds it) |
-| `zone_sub` | `sub, hex` | a zone item whose body has no decoder yet |
-| `raw` | `op, len, hex` | any other captured opcode |
-| `gameTick` | `tick, dtMs` | one per 600 ms server tick |
+| `SkillTransmit` | `skill, skillName, oldXP, newXP, oldGameplayLevel, newGameplayLevel` | a skill's level or xp changed |
+| `VarTransmit` | `var {domain, id, name, isVarBit}, oldValue, newValue` | the server set a var; `domain` `VarPlayer` (varps and varbits) or `VarClient`; a 64-bit value is a string |
+| `RunEnergyTransmit` | `oldRunEnergy, newRunEnergy` | run energy changed |
+| `RunWeightTransmit` | `oldRunWeight, newRunWeight` | carried weight changed |
+| `InventoryAdded` | `inv, other, full, slotsUpdated[], slots[] (slot, obj, count), partial` | a whole inventory arrived for the first time this session (login, interface open) |
+| `InventoryUpdated` | `inv, other, full?, slotsUpdated[], slots[] (slot, obj, count), partial` | an inventory changed; `other` = another player's side of a trade |
+| `InventoryRemoved` | `inv, other` | the server reset an inventory |
+| `ObjStackEntityAdded` | `objType, count, isOwner, ownerIndex, coordGrid` | an item appeared on a tile; `isOwner` is `null` (the packet names the owning player's index, not whether it is you) |
+| `ObjStackEntityRemoved` | `objType, count, isOwner, ownerIndex, coordGrid` | an item left a tile |
+| `ObjStackEntityChanged` | `objType, oldCount, newCount, isOwner, ownerIndex, coordGrid` | a ground stack changed quantity |
+| `LocAdded` | `config, shapeType, shapeTypeName, rotationType, rotationTypeName, coordGrid` | a map object was placed or replaced |
+| `LocRemoved` | `shapeType, shapeTypeName, rotationType, rotationTypeName, coordGrid` | a map object was removed |
+| `GrandExchangeOfferUpdated` | `market, slot, listing {stage, stageName, type, typeName, item, price, itemCount, soldCount, goldFromSale}` | a Grand Exchange offer changed; `slot` counts from 0; `listing` is `null` when the slot was cleared |
+| `ServerLogic` | `tick, dtMs` | one per 600 ms server tick |
+| `ZoneCleared` | `coordGrid` | an 8x8 zone dropped its ground items |
+| `SpotAnimAdded` | `spotAnim, target ("tile", "NPC", "PLAYER"), index, coordGrid, height, delay, slot?` | a graphic played on a tile or an entity |
+| `ProjectileAdded` | `spotAnim, coordGrid` and more; fields still being confirmed live | a projectile launched |
+| `SoundPlayed` | `sound` and more | a sound effect |
+| `AreaSoundPlayed` | `sound, coordGrid, loops, radius, volume` | a positional sound |
+| `ClientScriptRun` | `script, signature, args, partial` | the server ran a client script |
+| `BuffChanged` | `struct, active, name` | a buff-bar entry was bound or cleared; pair with `state.buffs()` for its timer |
+| `TrackerGroupAdded` | `groupId, slot` | the game added a tracker group (1 skills, 2 combat, 3 loot) |
+| `TrackerValuesChanged` | `cells[] (group, row, column, value, groupId?, rowId?, columnId?), partial` | the server's own tracker numbers (XP, XP/h, DPM, accuracy, GP/h); `value` null = none; skills: rowId = skill id, columnId 1 XP, 2 XP/h, 4 ETA |
+| `TrackerGroupRemoved` | `slot, groupId` | a tracker group was removed |
+| `TrackerCellCleared` | `group, row, column, groupId, rowId, columnId` | one tracker cell was cleared |
+| `TrackerColumnChanged` | `group, column, shown, groupId, columnId` | a tracker column was shown or hidden |
+| `SystemUpdate` | `seconds` | a system update countdown started or changed |
+| `CameraTargetChanged` | `coordGrid, cleared` | the server pointed the camera at a tile (or released it) |
+| `CutsceneStarted` | `cutscene` | a cutscene started |
+| `FriendsListLoaded` | | the friends list finished loading |
+| `PrivateFilterChanged` | `value` | the private chat filter changed |
+| `MiniMapStateChanged` | `value, mode, shown` | the minimap mode changed |
+| `ServerPing` | `a, b` | a server ping |
+| `UnknownZoneItem` | `sub, hex` | a zone item whose body has no decoder yet |
+| `UnknownPacket` | `op, len, hex` | any other captured packet |
 | `*` | the event | every kind |
+
+`state.events(sinceSeq)` returns the same events: `{seq, tick, events}`, the 512 newest after `sinceSeq`.
 
 ## API reference
 
@@ -659,6 +666,23 @@ await rtx.plugin.state.interfaceGroup(919);
 - `x` text, `s` sprite, `it` item id, `n` amount; `col` the fill, text or tint colour of rect,
   text and graphic widgets.
 - `v:1` marks widgets drawn right now; absent means hidden (its own entry or an ancestor).
+
+#### state.dialog()
+
+| Scope | Arguments | Returns |
+|---|---|---|
+| `state.read` | none | object below; `{}` when no option list is open |
+
+```js
+await rtx.plugin.state.dialog();
+// -> { group: 1188, header: "Select canoe destination", hasAbs: true,
+//      options: [ { n: 1, text: "Wendlewick (Farm)", x, y, w, h }, ... ] }
+```
+
+- The open option list (the "Select an option" box) with its header and every option.
+- `x, y, w, h` are screen rects, present when `hasAbs` is true.
+- An option already picked carries `<str>` in its `text`.
+- `overlay.highlightOption` boxes one of these options by text.
 
 #### state.gameTick()
 
@@ -1090,6 +1114,21 @@ await rtx.plugin.cache.itemParams(id);      // -> { ints:{ k:v }, strs:{ k:"v" }
 
 - `paramDef` is a param definition; `{}` while the host's param reader is unavailable.
 - `structParams` returns one struct's params; `itemParams` one item's op-249 params.
+
+#### cache.dbRows(table)
+
+| Scope | Arguments | Returns |
+|---|---|---|
+| `cache.read` | `table` int: db table id as CS2 uses it (subtable * 128 + table) | array below |
+
+```js
+await rtx.plugin.cache.dbRows(388);
+// -> [ { f: 20145, i: { "0":[6], "1":[140899] }, s: { "4":["Spider"] } }, ... ]
+```
+
+- One entry per row: `f` row id, `i` int columns, `s` string columns, keyed by column number.
+- A column with several values per row lists them in order.
+- Static: fetch once.
 
 #### cache.abilityConfigs(), abilityTips()
 
@@ -1793,9 +1832,9 @@ rtx.on("ready", function() end)             -- the first host tick after load
 rtx.on("tick", function() end)              -- about 4 times a second
 rtx.on("state", function(snapshot) end)     -- changed snapshot; state.read
 rtx.on("settings", function(values) end)    -- a settings value changed
-rtx.events.on("skill_update", function(ev) end)   -- same kinds and fields as JavaScript
+rtx.events.on("SkillTransmit", function(ev) end)  -- same kinds and fields as JavaScript
 rtx.events.on("*", function(ev) end)
-rtx.events.off("skill_update", fn)
+rtx.events.off("SkillTransmit", fn)
 
 local id = rtx.timer.after(5, function() end)     -- seconds; resolved on the host tick
 local id2 = rtx.timer.every(60, function() end)

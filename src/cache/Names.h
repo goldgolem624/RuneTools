@@ -16,6 +16,10 @@ namespace rtx::names {
 // material, interface, component (group << 16 | comp), sprite, model, sound, music, font, stylesheet.
 std::string Name(const std::string& kind, int id);
 
+// The id Jagex's table gives `name` in `kind`: -1 when no id carries it (or the table is not ready
+// yet), -2 when several ids of that kind carry it. The first call per kind indexes that kind.
+int Id(const std::string& kind, const std::string& name);
+
 struct KindStat {
     std::string kind;
     int named = 0;   // ids that carry a name

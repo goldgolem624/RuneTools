@@ -1756,6 +1756,9 @@
                background: var(--bg-elev); color: var(--accent-hi); font-size: 12px; font-weight: 700;
                cursor: pointer; transition: border-color 140ms, color 140ms; }
   .cont-link:hover { border-color: var(--accent); color: var(--text); }
+  .pof-wrap { display: flex; flex-direction: column; gap: 6px; }
+  .pof-pens { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 8px; }
+  .pof-unbuilt { opacity: 0.45; }
   .pof-group { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .6px; color: var(--text-mute); margin: 10px 2px 2px; }
   .pof-group:first-child { margin-top: 2px; }
   .pof-live { font-size: 9px; font-weight: 700; color: #79d6a6; vertical-align: middle; }

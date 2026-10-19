@@ -24,6 +24,7 @@
 #include "ChatFilter.h"
 #include "../../companion/FrameShare.h"
 #include "../../companion/NetProbeShare.h"
+#include "../../companion/PacketReads.h"
 #include "MenuSwap.h"
 #include "../../companion/MenuShare.h"
 #include "../cache/Achievements.h"
@@ -1159,6 +1160,14 @@ JSValueRef MapLocNames(JSContextRef ctx, JSObjectRef, JSObjectRef,
     return served(ctx, "maplocnames", "{}", [] { return rtx::cache::MapLocNamesJson(); });
 }
 
+// cache.locTiles(id): world tiles where a loc (and its morph variants) is placed, from the live cache.
+JSValueRef LocTiles(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                    size_t argc, const JSValueRef argv[], JSValueRef*) {
+    const int id = argc >= 1 ? (int)JSValueToNumber(ctx, argv[0], nullptr) : -1;
+    return served(ctx, "loctiles:" + std::to_string(id), "{\"tiles\":[]}",
+                  [id] { return rtx::cache::LocTilesJson(id); });
+}
+
 JSValueRef BankItems(JSContextRef ctx, JSObjectRef, JSObjectRef,
                      size_t argc, const JSValueRef argv[], JSValueRef*) {
     if (argc < 1) return utf8_to_js(ctx, fail_json("noargs"));
@@ -1539,6 +1548,23 @@ JSValueRef ServerPacketArm(JSContextRef ctx, JSObjectRef, JSObjectRef,
     auto pid = static_cast<std::uint32_t>(JSValueToNumber(ctx, argv[0], nullptr));
     bool on = JSValueToBoolean(ctx, argv[1]);
     return JSValueMakeBoolean(ctx, rtx::reader::ServerPacketFeedEnable(pid, on));
+}
+
+JSValueRef OutboundPacketFeed(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                              size_t argc, const JSValueRef argv[], JSValueRef*) {
+    if (argc < 1) return utf8_to_js(ctx, "{\"ok\":false}");
+    auto pid = static_cast<std::uint32_t>(JSValueToNumber(ctx, argv[0], nullptr));
+    std::uint64_t since = (argc >= 2)
+        ? (std::uint64_t)JSValueToNumber(ctx, argv[1], nullptr) : 0;
+    return utf8_to_js(ctx, rtx::reader::OutboundPacketFeedJson(pid, since));
+}
+
+JSValueRef OutboundPacketArm(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                             size_t argc, const JSValueRef argv[], JSValueRef*) {
+    if (argc < 2) return JSValueMakeBoolean(ctx, false);
+    auto pid = static_cast<std::uint32_t>(JSValueToNumber(ctx, argv[0], nullptr));
+    bool on = JSValueToBoolean(ctx, argv[1]);
+    return JSValueMakeBoolean(ctx, rtx::reader::OutboundPacketFeedEnable(pid, on));
 }
 
 JSValueRef Events(JSContextRef ctx, JSObjectRef, JSObjectRef,
@@ -3451,6 +3477,15 @@ void drain_events(std::uint32_t pid, Client& c, std::uint32_t clock, long long w
         std::memcpy(buf.data(), slot.payload, n);
         MemoryBarrier();
         if (slot.seq != want) continue;                              // rewritten during the copy
+        // a fixed-length packet in the reference build's wire form, the one the decoder reads
+        // (PacketReads.h); one whose layout was not read from its handler is not decoded
+        const auto lay = rtx::preads::StateOf(op);
+        if (lay == rtx::preads::kOff) continue;
+        if (lay == rtx::preads::kPaired) {
+            std::uint8_t tb[64];
+            if ((int)n != len || !rtx::preads::Translate(op, buf.data(), n, tb, sizeof(tb))) continue;
+            std::memcpy(buf.data(), tb, n);
+        }
         c.net.Decode(op, buf.data(), n, NetDecoder::FullWall(low, wallMs), evs);
     }
     r.cursor = written;
@@ -4814,6 +4849,13 @@ JSValueRef OfficialName(JSContextRef ctx, JSObjectRef, JSObjectRef,
                         size_t argc, const JSValueRef argv[], JSValueRef*) {
     if (argc < 2) return utf8_to_js(ctx, std::string());
     return utf8_to_js(ctx, rtx::names::Name(get_string_arg(ctx, argc, argv, 0), js_int(ctx, argv[1])));
+}
+
+// The id Jagex's table gives a name: -1 none (or the table still building), -2 several ids carry it.
+JSValueRef OfficialId(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                      size_t argc, const JSValueRef argv[], JSValueRef*) {
+    if (argc < 2) return JSValueMakeNumber(ctx, -1);
+    return JSValueMakeNumber(ctx, rtx::names::Id(get_string_arg(ctx, argc, argv, 0), get_string_arg(ctx, argc, argv, 1)));
 }
 
 JSValueRef Cs2Switches(JSContextRef ctx, JSObjectRef, JSObjectRef,
@@ -6671,6 +6713,7 @@ void AttachBridge(ultralight::View* view) {
     install_fn(ctx, ns, "mapCategories",     MapCategories);
     install_fn(ctx, ns, "mapSymbols",        MapSymbols);
     install_fn(ctx, ns, "mapLocNames",       MapLocNames);
+    install_fn(ctx, ns, "locTiles",          LocTiles);
     install_fn(ctx, ns, "achievements",      Achievements);
     install_fn(ctx, ns, "bankItems",         BankItems);
     install_fn(ctx, ns, "metalBankItems",    MetalBankItems);
@@ -6714,6 +6757,8 @@ void AttachBridge(ultralight::View* view) {
     install_fn(ctx, ns, "serverPackets",     ServerPackets);
     install_fn(ctx, ns, "serverPacketFeed",  ServerPacketFeed);
     install_fn(ctx, ns, "serverPacketArm",   ServerPacketArm);
+    install_fn(ctx, ns, "outboundPacketFeed", OutboundPacketFeed);
+    install_fn(ctx, ns, "outboundPacketArm",  OutboundPacketArm);
     install_fn(ctx, ns, "events",            Events);
     install_fn(ctx, ns, "eventsMask",        EventsMask);
     install_fn(ctx, ns, "renderToggle",      RenderToggle);
@@ -6877,6 +6922,7 @@ void AttachBridge(ultralight::View* view) {
     install_fn(ctx, ns, "cs2Names",          Cs2Names);
     install_fn(ctx, ns, "officialNames",     OfficialNames);
     install_fn(ctx, ns, "officialName",      OfficialName);
+    install_fn(ctx, ns, "officialId",        OfficialId);
     install_fn(ctx, ns, "cs2Switches",       Cs2Switches);
     install_fn(ctx, ns, "sidebarLoad",       SidebarLoad);
     install_fn(ctx, ns, "sidebarSave",       SidebarSave);

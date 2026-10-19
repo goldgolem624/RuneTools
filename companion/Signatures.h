@@ -78,11 +78,34 @@ inline constexpr unsigned char kPlDisMask[] = {
     1, 1, 1, 0, 1, 1, 1, 1, 1, 1,
 };
 
-// Render thread: mov rax,[rcx+8] ; mov r15,rcx ; mov r14,[rip+..]. The scene switch is the Jcc at
-// function +0x266. Present in the OpenGL client only.
+// Render thread: mov rax,[rcx+8] ; mov r15,rcx ; mov r14,[rip+..]. Present in the OpenGL client only.
+// The scene switch is the short Jcc of `call [rax+..] ; test al,al ; jcc ; cmp byte [reg+disp],r8 ;
+// je/jne far` in that function (SceneSwitch).
 inline constexpr unsigned char kRenderBody[] = {
     0x48, 0x8B, 0x41, 0x08, 0x4C, 0x8B, 0xF9, 0x4C, 0x8B, 0x35,
 };
+// The offset of the scene switch's Jcc byte in the `n` bytes of the render function at `p`, -1 when
+// the shape is not there exactly once.
+inline int SceneSwitch(const unsigned char* p, std::size_t n) {
+    int at = -1, hits = 0;
+    for (std::size_t i = 6; i + 14 < n; ++i) {
+        if (p[i] != 0x84 || p[i + 1] != 0xC0 || (p[i + 2] != 0x74 && p[i + 2] != 0x75)) continue;   // test al,al ; jcc short
+        std::size_t k = i + 4;
+        if ((p[k] & 0xF0) == 0x40) ++k;                                                           // cmp byte [reg+disp],r8
+        if (p[k] != 0x38) continue;
+        const unsigned char m = p[k + 1], mod = m >> 6;
+        if (mod == 3) continue;
+        k += 2 + ((m & 7) == 4 ? 1 : 0) + (mod == 1 ? 1 : mod == 2 ? 4 : 0);
+        if (k + 6 > n || p[k] != 0x0F || (p[k + 1] != 0x84 && p[k + 1] != 0x85)) continue;          // je/jne far
+        bool call = false;                                                                         // after a call through the vtable
+        if (p[i - 2] == 0xFF && (p[i - 1] & 0xF8) == 0x10) call = true;
+        if (p[i - 3] == 0xFF && (p[i - 2] & 0xF8) == 0x50) call = true;
+        if (i >= 6 && p[i - 6] == 0xFF && (p[i - 5] & 0xF8) == 0x90) call = true;
+        if (!call) continue;
+        at = (int)(i + 2); ++hits;
+    }
+    return hits == 1 ? at : -1;
+}
 
 // Inbound framer prologue; the test rcx,rcx / jz / cmp dword [rcx],2 tail makes it unique.
 inline constexpr unsigned char kFramerBody[] = {
@@ -94,6 +117,18 @@ inline constexpr unsigned char kFramerMask[] = {
     1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
     1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0,
     0, 0, 0, 1, 1, 1,
+};
+
+// Outbound builder (MakePacket): mov [rsp+0x18],rbp ; push rdi/r14/r15 ; sub rsp,0x30 ;
+// mov r15,rcx ; mov rdi,r9 ; lea rcx,[rip+str] (the lea displacement is wildcarded). Returns a
+// 16-byte SharedRef<OutPacket> by hidden pointer, so rcx = return slot, rdx/r8/r9 = the three refs.
+inline constexpr unsigned char kMakePacketBody[] = {
+    0x48, 0x89, 0x6C, 0x24, 0x18, 0x57, 0x41, 0x56, 0x41, 0x57, 0x48, 0x83, 0xEC, 0x30, 0x4C, 0x8B,
+    0xF9, 0x49, 0x8B, 0xF9, 0x48, 0x8D, 0x0D, 0x00, 0x00, 0x00, 0x00,
+};
+inline constexpr unsigned char kMakePacketMask[] = {
+    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+    1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0,
 };
 
 // Object submit: mov rcx,rdx ; mov r8d,0x47 ; mov r14,rdx ; call ; mov rcx,[rbx+0x140] ; cmp rcx,[rbx+0x148]
@@ -184,8 +219,8 @@ inline constexpr unsigned char kMenuBuildMask[] = {   // the frame size, the rbp
 
 // The routine every menu builder adds a row through, inside its body: the row count of the entry
 // vector against its cap. mov rax,[rcx+0x98] ; sub rax,[rcx+0x90] ; sar rax,4 ; cmp rax,700.
-// The hook is the function holding it, and the match sits kMenuAddRowAt bytes into that function
-// on the builds whose argument list is the one the hook passes on.
+// The hook is the function holding it, the match within kMenuAddRowAt bytes of its start. How many
+// arguments it takes (18 on 950-1, 14 on 951-1) is read from a call site (MenuProbe).
 inline constexpr unsigned char kMenuAddRow[] = {
     0x48, 0x8B, 0x81, 0x98, 0x00, 0x00, 0x00, 0x48, 0x2B, 0x81, 0x90, 0x00, 0x00, 0x00,
     0x48, 0xC1, 0xF8, 0x04, 0x48, 0x3D, 0xBC, 0x02, 0x00, 0x00,
@@ -193,7 +228,7 @@ inline constexpr unsigned char kMenuAddRow[] = {
 inline constexpr unsigned char kMenuAddRowMask[] = {   // where the entry vector sits in the manager is open
     1, 1, 1, 0, 0, 1, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
 };
-inline constexpr unsigned kMenuAddRowAt = 55;
+inline constexpr unsigned kMenuAddRowAt = 0x80;
 
 // Menu snapshot, inside its body: inc qword [rcx+0x21B0] (counter) ; lea reg,[rcx+0x1A80] (base).
 // It copies the top records into the left-click slots. The hook is the function holding it.
@@ -309,7 +344,33 @@ inline std::uint32_t ArrowSlotSize(const unsigned char* site) {
     const std::int32_t span = base == mgr ? disp - 0x10 : base == start ? disp : 0;
     return span > 0 && span % 8 == 0 ? (std::uint32_t)span / 8 : 0;
 }
-inline constexpr std::uint32_t kArrowSlotSize = 8;   // the slot layout the marker code knows
+inline constexpr std::uint32_t kArrowSlotSize = 8;   // the slot layout the 950-1 marker code was written for
+// The arrow request records, from the message routine that fills them: the record size, then where
+// the first sits in the manager. 950-1 stores them in place (imul reg,reg,0x2C ; movups
+// [reg+reg+0x90]); 951-1 computes slot * 0x60 (lea reg,[idx*2] ; add ; shl reg,5) and hands
+// manager + 0x170 to an assign routine (add rcx,0x170). False when neither shape is there.
+inline bool ArrowRequests(const unsigned char* fn, std::size_t n, std::uint32_t& base, std::uint32_t& size) {
+    base = size = 0;
+    std::size_t at = 0;
+    for (std::size_t i = 0; i + 12 <= n && !size; ++i) {
+        const unsigned char* p = fn + i;
+        if ((p[0] & 0xF8) == 0x48 && p[1] == 0x6B && (p[2] >> 6) == 3 && p[3] >= 0x20 && p[3] <= 0xC0) { size = p[3]; at = i + 4; break; }
+        if ((p[0] & 0xF8) == 0x48 && p[1] == 0x8D && (p[2] & 0xC7) == 0x04 && (p[3] >> 6) == 1 && (p[3] & 7) == 5 &&
+            p[4] == 0 && p[5] == 0 && p[6] == 0 && p[7] == 0) {
+            for (std::size_t j = i + 8; j < i + 24 && j + 4 <= n; ++j) {
+                const unsigned char* q = fn + j;
+                if ((q[0] & 0xF8) == 0x48 && q[1] == 0xC1 && (q[2] & 0xF8) == 0xE0 && q[3] >= 3 && q[3] <= 7) { size = 3u << q[3]; at = j + 4; break; }
+            }
+        }
+    }
+    if (!size) return false;
+    for (std::size_t j = at; j < at + 0x80 && j + 8 <= n; ++j) {
+        const unsigned char* q = fn + j;
+        if (q[0] == 0x48 && q[1] == 0x81 && q[2] == 0xC1) { std::memcpy(&base, q + 3, 4); break; }            // add rcx, imm32
+        if (q[0] == 0x0F && q[1] == 0x11 && (q[2] & 0xC7) == 0x84) { std::memcpy(&base, q + 4, 4); break; }   // movups [base+index+disp32]
+    }
+    return base >= 0x50 && base < 0x400;
+}
 inline constexpr int kArrowRefresh[] = {
     0x41, 0xB8, 0x45, 0x00, 0x00, 0x00,
 };
@@ -336,10 +397,38 @@ inline constexpr unsigned char kOpProjectKind3[] = {
 inline constexpr unsigned char kOpProjectView[] = {
     0x48, 0x8B, 0x89, 0xD0, 0x99, 0x01, 0x00,
 };
+// push reg ; sub rsp,30 ; mov rax,[rcx+<account>] ; mov reg,rdx ; test rax,rax. The register the
+// compiler picks for the state pointer changes between builds (rbx on 950-1, rdi on 951-1), so the
+// push and the mov's ModRM byte are open, like the account field (kOpSelfPosOpen).
 inline constexpr unsigned char kOpSelfPosHead[] = {
     0x40, 0x53, 0x48, 0x83, 0xEC, 0x30, 0x48, 0x8B, 0x81, 0xA8, 0x9F, 0x01, 0x00, 0x48, 0x8B, 0xDA,
     0x48, 0x85, 0xC0,
 };
+inline constexpr unsigned char kOpSelfPosOpen[] = {
+    0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 1,
+    0, 0, 0,
+};
+
+// The own-position op writes the player's position into the top value slot through the store
+// contract the companion relies on: a slot that already holds a position (kind 3 at +0x18) is
+// overwritten in place, not released. 950-1 tests that inline (cmp byte [reg+0x18],3); 951-1 calls
+// a store routine whose first test it is. `at(addr, n)` gives n readable bytes at addr or nullptr;
+// addr is an RVA for the reader and an address for the companion, the same arithmetic either way.
+template <class At> bool StoresKindThree(At at, std::uint64_t fn) {
+    const std::uint8_t* b = at(fn, 0x140);
+    if (!b) return false;
+    for (int i = 0; i + 4 <= 0x140; ++i)
+        if (b[i] == 0x80 && (b[i + 1] & 0xC0) == 0x40 && b[i + 2] == 0x18 && b[i + 3] == 0x03) return true;
+    for (int i = 0; i + 5 <= 0x140; ++i) {
+        if (b[i] != 0xE8) continue;
+        std::int32_t rel; std::memcpy(&rel, b + i + 1, 4);
+        const std::uint8_t* h = at(fn + (std::uint64_t)(i + 5) + (std::uint64_t)(std::int64_t)rel, 0x20);
+        if (!h) continue;
+        for (int k = 0; k + 4 <= 0x20; ++k)
+            if (h[k] == 0x80 && h[k + 1] == 0x79 && h[k + 2] == 0x18 && h[k + 3] == 0x03) return true;
+    }
+    return false;
+}
 inline constexpr unsigned char kOpBindHead[] = {
     0x48, 0x89, 0x5C, 0x24, 0x08, 0x48, 0x89, 0x74, 0x24, 0x10, 0x57, 0x48, 0x83, 0xEC, 0x20, 0x8B,
     0x9A, 0xA0, 0x10, 0x00,
@@ -550,16 +639,32 @@ inline constexpr const char* kCheckNames[] = {
     "var-cache", "chat-tree",
 };
 
-// Engine ops called by their fixed number; the head must be that handler's first bytes.
-struct OpHead { const char* name; std::uint32_t op; const unsigned char* head; std::size_t len; const char* features; };
+// Engine ops the companion calls directly, found in each build by their own code: the one handler
+// named `codeName` by its code (OpPrints.h) when that name resolves, else the one handler whose
+// first bytes are `head`. The four bytes at `wildAt` are a root or script state field that moves
+// with updates, so they are left open. `op` is the number on 950-1, for the record only.
+// `open` (when set) marks further open bytes, one flag per head byte; `kindThree` asks for the
+// position store contract above as well.
+struct OpHead { const char* name; std::uint32_t op; const unsigned char* head; std::size_t len; const char* features; int wildAt; const char* codeName;
+                const unsigned char* open = nullptr; bool kindThree = false; };
 inline constexpr std::uint32_t kOpProject = 1738, kOpSelfPos = 1227, kOpBindEntity = 958, kOpOverlayHeight = 1002, kOpEntityScreen = 1668;
 inline constexpr OpHead kOpHeads[] = {
-    { "op-project",   kOpProject,       kOpProjectHead,      sizeof(kOpProjectHead),      "In-frame labels, engine projection" },
-    { "op-selfpos",   kOpSelfPos,       kOpSelfPosHead,      sizeof(kOpSelfPosHead),      "In-frame labels: own position" },
-    { "op-bind",      kOpBindEntity,    kOpBindHead,         sizeof(kOpBindHead),         "Overhead anchors" },
-    { "op-height",    kOpOverlayHeight, kOpHeightHead,       sizeof(kOpHeightHead),       "Overhead anchors" },
-    { "op-entscreen", kOpEntityScreen,  kOpEntityScreenHead, sizeof(kOpEntityScreenHead), "Overhead anchors" },
+    { "op-project",   kOpProject,       kOpProjectHead,      sizeof(kOpProjectHead),      "In-frame labels, engine projection", -1, nullptr },
+    { "op-selfpos",   kOpSelfPos,       kOpSelfPosHead,      sizeof(kOpSelfPosHead),      "In-frame labels: own position", -1, nullptr, kOpSelfPosOpen, true },
+    { "op-bind",      kOpBindEntity,    kOpBindHead,         sizeof(kOpBindHead),         "Overhead anchors", -1, nullptr },
+    { "op-height",    kOpOverlayHeight, kOpHeightHead,       sizeof(kOpHeightHead),       "Overhead anchors", 9, "GET_ENTITY_OVERLAY_HEIGHT" },
+    { "op-entscreen", kOpEntityScreen,  kOpEntityScreenHead, sizeof(kOpEntityScreenHead), "Overhead anchors", 19, "GET_ENTITY_SCREEN_POSITION" },
 };
+enum OpHeadIdx { kHeadProject, kHeadSelfPos, kHeadBind, kHeadHeight, kHeadEntScreen };
+// The head at `b` (at least h.len bytes), the open bytes left out.
+inline bool HeadMatches(const std::uint8_t* b, const OpHead& h) {
+    for (std::size_t i = 0; i < h.len; ++i) {
+        if (h.wildAt >= 0 && (int)i >= h.wildAt && (int)i < h.wildAt + 4) continue;
+        if (h.open && h.open[i]) continue;
+        if (b[i] != h.head[i]) return false;
+    }
+    return true;
+}
 
 // Component setters, found among the op handlers by a run of bytes each alone contains ("??" = any).
 // text: the handler names itself in an error string instead.

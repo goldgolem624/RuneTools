@@ -51,6 +51,10 @@
     pluginMounts.delete(id);
     if (!keepHolder && typeof pluginHolderDrop === 'function') pluginHolderDrop(id);
     if (typeof ovPointAt === 'function') { try { ovPointAt('plugin:' + id, '', ''); } catch (e) {} }   // its arrow goes with it
+    if (pluginGuideOwner && pluginGuideOwner.id === id) {   // and its guide tiles
+      try { bridge().guideMarks(pluginGuideOwner.pid, ''); } catch (e) {}
+      pluginGuideOwner = null;
+    }
   }
 
   // A frame plugin that failed to load or broke a rule stays stopped, with the reason in its window, until
@@ -113,7 +117,7 @@
   }
 
   function pluginBrokerInit() {
-    rtxEvents.on('*', function (ev) { if (pluginMounts.size && pluginEventQueue.length < 4096) pluginEventQueue.push(ev); });
+    rtxGameEvents.on(function (ev) { if (pluginMounts.size && pluginEventQueue.length < 4096) pluginEventQueue.push(ev); });
     // focus leaving a frame (a click in the game blurs it) or entering one: check the keyboard claims at once
     const kbSoon = () => setTimeout(pluginKbSync, 0);
     document.addEventListener('focusin', kbSoon);

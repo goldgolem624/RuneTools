@@ -1,6 +1,7 @@
 // Right-click menu probe rvas: string-init 0x161C10, clear(bool) 0x164880, add 0x160AB0, finalize 0x1661E0, item decoder 0x2DCDF0. Poll() reads on the companion thread while ApplyOrder writes on the game thread, so lane reads can tear.
 // mgr+0x90/+0x98 entries: 16-byte {control block*, entry*}, entry = control block + 0x20 unless menus merge (see kRecTarget), REVERSE display order. mgr+0x1380/+0x1388 stride 0x2E8 hover-target list; subset lanes +0x0d30 all-but-Cancel, +0x06e0 targeted; hover block +0x000 = entity handle ((x<<16)|y world object, index actor). Control block: +0x08 refcount, +0x0c = 1, +0x20 EASTL target, +0x38 EASTL verb.
 
+#include "CompOffsets.h"
 #include "SceneOffsets.h"
 #include "MenuProbe.h"
 #include "Signatures.h"
@@ -1230,6 +1231,10 @@ typedef void(__fastcall* AddRow_t)(std::uint64_t mgr, const char* verb, const ch
                                    std::uint64_t a7, std::uint64_t a8, std::uint64_t a9, std::uint64_t a10, std::uint64_t a11, std::uint64_t a12,
                                    std::uint64_t a13, std::uint64_t a14, std::uint64_t a15, std::uint64_t a16, std::uint64_t a17, std::uint64_t a18);
 AddRow_t g_origAddRow = nullptr;
+// The routine's argument count, from a call site: 18 on 950-1, 14 on 951-1 (four fewer between the
+// placement ints and the last, the row's kind byte). Our rows copy the game's row's arguments and
+// set the actor, the placement ints and the kind; with 14 the kind is the 14th.
+int g_addRowArgs = 0;
 
 // A row of ours, of one of the classes first..last, for this actor or tile already in the list being built.
 bool RowPresent(std::uint64_t mgr, std::uint64_t actor, int first, int last) {
@@ -1260,12 +1265,12 @@ void __fastcall Detour_AddRow(std::uint64_t mgr, const char* verb, const char* t
         std::uint32_t n = sh->markCount;
         if (n > (std::uint32_t)rtx::menu::kMaxMarkTiles) n = rtx::menu::kMaxMarkTiles;
         for (std::uint32_t i = 0; i < n; ++i) if (sh->markTiles[i] == ((x << 16) | y)) { marked = true; break; }
-        if (!RowPresent(mgr, key, kRowTile, kRowTile + 1))
-            g_origAddRow(mgr, marked ? "Unmark tile" : "Mark tile", "", ~0ull, (std::uint64_t)&g_rowClass[kRowTile + (marked ? 1 : 0)], (std::uint64_t)s_none,
-                         x, y, 0, 0, a11, a12, a13, a14, a15, 0, a17, 2);
-        if (marked && !RowPresent(mgr, key, kRowTile + 2, kRowTile + 2))
-            g_origAddRow(mgr, "Customize tile", "", ~0ull, (std::uint64_t)&g_rowClass[kRowTile + 2], (std::uint64_t)s_none,
-                         x, y, 0, 0, a11, a12, a13, a14, a15, 0, a17, 2);
+        auto add = [&](const char* verb, int row) {
+            if (g_addRowArgs == 14) g_origAddRow(mgr, verb, "", ~0ull, (std::uint64_t)&g_rowClass[row], (std::uint64_t)s_none, x, y, 0, 0, a11, a12, a13, 2, 0, 0, 0, 0);
+            else g_origAddRow(mgr, verb, "", ~0ull, (std::uint64_t)&g_rowClass[row], (std::uint64_t)s_none, x, y, 0, 0, a11, a12, a13, a14, a15, 0, a17, 2);
+        };
+        if (!RowPresent(mgr, key, kRowTile, kRowTile + 1)) add(marked ? "Unmark tile" : "Mark tile", kRowTile + (marked ? 1 : 0));
+        if (marked && !RowPresent(mgr, key, kRowTile + 2, kRowTile + 2)) add("Customize tile", kRowTile + 2);
         return;
     }
     if (!sh->hideRows || !actorRef || !target) return;
@@ -1276,8 +1281,12 @@ void __fastcall Detour_AddRow(std::uint64_t mgr, const char* verb, const char* t
     const bool hidden = rtx::renderhide::Hidden(actor, k == 1);
     // Under the same subject as the row just added (its target text and the three placement
     // arguments), with no actor of its own: the actor rides in two of the row's ints.
-    g_origAddRow(mgr, hidden ? "Show" : "Hide", target, ~0ull, (std::uint64_t)&g_rowClass[k + (hidden ? 2 : 0)], (std::uint64_t)s_none,
-                 (std::uint32_t)actor, (std::uint32_t)(actor >> 32), 0, 0, a11, a12, a13, a14, a15, 0, a17, 2);
+    if (g_addRowArgs == 14)
+        g_origAddRow(mgr, hidden ? "Show" : "Hide", target, ~0ull, (std::uint64_t)&g_rowClass[k + (hidden ? 2 : 0)], (std::uint64_t)s_none,
+                     (std::uint32_t)actor, (std::uint32_t)(actor >> 32), 0, 0, a11, a12, a13, 2, 0, 0, 0, 0);
+    else
+        g_origAddRow(mgr, hidden ? "Show" : "Hide", target, ~0ull, (std::uint64_t)&g_rowClass[k + (hidden ? 2 : 0)], (std::uint64_t)s_none,
+                     (std::uint32_t)actor, (std::uint32_t)(actor >> 32), 0, 0, a11, a12, a13, a14, a15, 0, a17, 2);
 }
 
 }  // namespace
@@ -1305,7 +1314,40 @@ bool Install() {
     // the add-row routine, only where it has the shape the hook was written against
     const std::uint64_t addHit = Scan(rtx::sig::kMenuAddRow, rtx::sig::kMenuAddRowMask, sizeof(rtx::sig::kMenuAddRow));
     std::uint64_t addRow = rtx::codefind::FunctionStart(g_base, addHit);
-    if (addRow && addHit - addRow != rtx::sig::kMenuAddRowAt) addRow = 0;
+    if (addRow && addHit - addRow > rtx::sig::kMenuAddRowAt) addRow = 0;
+    if (addRow) {
+        // its argument count from its call sites: at each, the highest outgoing stack slot written
+        // in the stretch before the call (mov [rsp+disp],...), four register arguments below; the
+        // count most sites agree on (a site can also write a local above its arguments)
+        g_addRowArgs = 0;
+        auto dos = (const IMAGE_DOS_HEADER*)g_base;
+        auto nt  = (const IMAGE_NT_HEADERS*)(g_base + dos->e_lfanew);
+        const std::uint8_t* t = (const std::uint8_t*)(g_base + nt->OptionalHeader.BaseOfCode);
+        const std::size_t n = nt->OptionalHeader.SizeOfCode;
+        int votes[32] = {};
+        for (std::size_t i = 0xC0; i + 5 <= n; ++i) {
+            if (t[i] != 0xE8) continue;
+            std::int32_t rel; std::memcpy(&rel, t + i + 1, 4);
+            if ((std::uint64_t)(t + i + 5 + rel) != addRow) continue;
+            int top = 0;
+            for (std::size_t j = i - 0xC0; j + 7 <= i; ++j) {
+                // mov r/m,reg (88/89) or mov r/m,imm (C6/C7) at [rsp+disp8] or [rsp+disp32]
+                const std::uint8_t op = t[j];
+                if (!(op == 0x88 || op == 0x89 || op == 0xC6 || op == 0xC7) || t[j + 2] != 0x24) continue;
+                std::int32_t d;
+                if ((t[j + 1] & 0xC7) == 0x44) d = t[j + 3];
+                else if ((t[j + 1] & 0xC7) == 0x84) std::memcpy(&d, t + j + 3, 4);
+                else continue;
+                if (d >= 0x20 && d <= 0xA0 && d % 8 == 0 && d > top) top = d;
+            }
+            const int args = top ? 4 + (top - 0x20) / 8 + 1 : 0;
+            if (args > 0 && args < 32) ++votes[args];
+        }
+        int best = 0;
+        for (int k = 1; k < 32; ++k) if (votes[k] > votes[best]) best = k;
+        if (best == 14 || best == 18) g_addRowArgs = best;
+        if (!g_addRowArgs) addRow = 0;
+    }
     Log("=== RuneToolsX menu probe ===");
     Log("string-init: %s", init  ? "found" : "NOT FOUND");
     Log("clear()    : %s", clear ? "found" : "NOT FOUND");
@@ -1334,8 +1376,8 @@ bool Install() {
         if (d[0] && d[1] == d[0] + 8 && d[0] < 0x4000) { g_tgtBegin = d[0]; g_tgtEnd = d[1]; }
         note("snapshot counter", d[2], rtx::sig::kMenuSnapCounter);
         note("snapshot base", d[3], rtx::sig::kMenuSnapBase);
-        note("game state field", d[4], rtx::md::kStatus);
-        note("language index field", d[5], rtx::md::kLanguage);
+        note("game state field", d[4], rtx::coff::status);
+        note("language index field", d[5], rtx::coff::language);
         g_staticKind = moved ? "moved" : "";
         std::snprintf(g_static, sizeof(g_static), "%s", moved ? s : "the hits name the compiled displacements");
     }
@@ -1349,7 +1391,7 @@ bool Install() {
     if (snap)  { g_origSnap  = (Snap_t)snap;   DetourAttach(&(PVOID&)g_origSnap,  (PVOID)Detour_Snap); }
     Log("executor   : %s", exec ? "found" : "NOT FOUND");
     if (exec)  { g_origExec  = (Exec_t)exec;   DetourAttach(&(PVOID&)g_origExec,  (PVOID)Detour_Exec); }
-    Log("add row    : %s", addRow ? "found" : "NOT FOUND  (no rows of our own)");
+    Log("add row    : %s (%d arguments)", addRow ? "found" : "NOT FOUND  (no rows of our own)", g_addRowArgs);
     if (addRow && exec) { g_origAddRow = (AddRow_t)addRow; DetourAttach(&(PVOID&)g_origAddRow, (PVOID)Detour_AddRow); }
     if (DetourTransactionCommit() != NO_ERROR) {
         g_origInit = nullptr; g_origClear = nullptr; g_origAddRow = nullptr;

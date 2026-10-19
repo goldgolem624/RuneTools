@@ -19,6 +19,9 @@
 #include "../reader/CodeScan.h"
 #include "../reader/HealthRun.h"
 #include "../reader/Pins.h"
+#include "../../companion/PacketIds.h"
+#include "../../companion/PacketRefTable.h"
+#include "../../companion/PacketReads.h"
 #include "../cache/CacheReader.h"
 #include "../cache/Names.h"
 #include "WinNotify.h"
@@ -527,6 +530,60 @@ int APIENTRY wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
             { std::ofstream f("op-prints.txt", std::ios::binary | std::ios::trunc); f << log; }
             return headless_exit(table.empty() ? 1 : 0);
         }
+        // --pkt-ref <out.h> <exe>: the reference packet table (companion/PacketRefTable.h) from that
+        // exe, the build ServerOps.h numbers packets by; log to pkt-ref.txt.
+        if (argv && argc >= 4 && std::wstring(argv[1]) == L"--pkt-ref") {
+            std::ifstream in(argv[3], std::ios::binary);
+            std::vector<std::uint8_t> file((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+            std::vector<rtx::pktid::Row> t; std::vector<rtx::pktid::ZoneRow> zt; std::string why;
+            const bool ok = rtx::pktid::Table(file.data(), file.size(), t, &why, &zt);
+            char stamp[16] = "?";
+            if (file.size() > 0x40) { std::uint32_t lf; std::memcpy(&lf, file.data() + 0x3C, 4); if (file.size() > lf + 12ull) { std::uint32_t st; std::memcpy(&st, file.data() + lf + 8, 4); std::snprintf(stamp, sizeof(stamp), "%08x", st); } }
+            if (ok) { std::ofstream f(argv[2], std::ios::binary | std::ios::trunc); f << rtx::pktid::RefTableText(t, std::string("the client exe with stamp ") + stamp, &zt); }
+            { std::ofstream f("pkt-ref.txt", std::ios::binary | std::ios::trunc); f << (ok ? std::to_string(t.size()) + " packets, " + std::to_string(zt.size()) + " zone sub-packets\n" : "nothing written: " + why + "\n"); }
+            return headless_exit(ok ? 0 : 1);
+        }
+        // --pkt-reads <out.h> <exe>: the reference packets' read programs (companion/PacketReadsRef.h)
+        // from the exe PacketRefTable.h was made from; log to pkt-reads.txt.
+        // --pkt-reads-diff <out.txt> <reference exe> <live exe>: both builds' programs and the pairing.
+        // --pkt-reads-trace <out.txt> <exe> <handler rva hex> <length>: one handler's run, instruction by instruction.
+        if (argv && argc >= 6 && std::wstring(argv[1]) == L"--pkt-reads-trace") {
+            std::ifstream in(argv[3], std::ios::binary);
+            std::vector<std::uint8_t> a((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+            rtx::pktid::detail::Pe pe; std::string tr;
+            if (rtx::pktid::detail::Open(a.data(), a.size(), pe)) {
+                rtx::preads::Program p;
+                const bool ok = rtx::preads::Extract(pe, (std::uint32_t)std::wcstoul(argv[4], nullptr, 16), _wtoi(argv[5]), p, &tr);
+                tr += std::string(ok ? "ok" : "not read: " + p.why) + "\n" + rtx::preads::ProgramText(p) + "\n";
+            }
+            { std::ofstream f(argv[2], std::ios::binary | std::ios::trunc); f << tr; }
+            return headless_exit(0);
+        }
+        if (argv && argc >= 4 && (std::wstring(argv[1]) == L"--pkt-reads" || (argc >= 5 && std::wstring(argv[1]) == L"--pkt-reads-diff"))) {
+            auto slurp = [](const wchar_t* p) { std::ifstream in(p, std::ios::binary); return std::vector<std::uint8_t>((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>()); };
+            const std::vector<std::uint8_t> a = slurp(argv[3]);
+            std::string out, log;
+            if (std::wstring(argv[1]) == L"--pkt-reads") {
+                char stamp[16] = "?";
+                if (a.size() > 0x40) { std::uint32_t lf; std::memcpy(&lf, a.data() + 0x3C, 4); if (a.size() > lf + 12ull) { std::uint32_t st; std::memcpy(&st, a.data() + lf + 8, 4); std::snprintf(stamp, sizeof(stamp), "%08x", st); } }
+                out = rtx::preads::RefReadsText(a.data(), a.size(), std::string("the client exe with stamp ") + stamp, log);
+            } else {
+                const std::vector<std::uint8_t> b = slurp(argv[4]);
+                out = rtx::preads::DiffText(a.data(), a.size(), b.data(), b.size(), rtx::pktid::kRef, rtx::pktid::kRefCount, rtx::pktid::kZoneRef, rtx::pktid::kZoneRefCount);
+                log = "written\n";
+            }
+            if (!out.empty()) { std::ofstream f(argv[2], std::ios::binary | std::ios::trunc); f << out; }
+            { std::ofstream f("pkt-reads.txt", std::ios::binary | std::ios::trunc); f << (out.empty() ? "nothing written\n" : "") << log; }
+            return headless_exit(out.empty() ? 1 : 0);
+        }
+        // script pins: the operand widths of the client exe the launcher starts
+        auto script_operands = []() {
+            std::vector<std::uint8_t> f, widths;
+            rtx::calib::Pe pe;
+            if (rtx::calib::ReadFile(L"C:\\ProgramData\\Jagex\\launcher\\rs2client.exe", f) && rtx::calib::ParsePe(f, pe)) widths = rtx::calib::ScriptOperandWidths(pe);
+            rtx::cache::UseScriptOperands(std::move(widths));
+        };
+        if (argv && argc >= 2 && (std::wstring(argv[1]) == L"--pins-check" || std::wstring(argv[1]) == L"--pins-record")) script_operands();
         if (argv && argc >= 2 && std::wstring(argv[1]) == L"--pins-check") {
             const std::string out = rtx::pins::CheckText(argc >= 3 ? std::wstring(argv[2]) : std::wstring());
             { std::ofstream f("pins-check.txt", std::ios::binary | std::ios::trunc); f << out; }
