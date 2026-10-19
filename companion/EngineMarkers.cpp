@@ -742,7 +742,7 @@ bool Install() {
                       g_checkKind[0] ? "MOVED: " : "",
                       (unsigned long long)(arrow - im.base), arrowAt ? (arrowAnchor == arrow ? "signature, descriptor 0x62 agrees" : arrowAnchor ? "signature, descriptor 0x62 differs" : "signature") : "descriptor 0x62, signature missed",
                       (unsigned long long)(trail - im.base), trailAt ? (trailAnchor == trail ? "signature, descriptor 0x3a agrees" : trailAnchor ? "signature, descriptor 0x3a differs" : "signature") : "descriptor 0x3a, signature missed",
-                      g_arrowDisp, g_trailDisp, (g_arrowDisp != rtx::md::kArrowMgr || g_trailDisp != rtx::md::kTrailMgr) ? " (compiled 0x198f0/0x198f8, the frame site's in use)" : "", slotSize, g_requests, g_requestSize);
+                      g_arrowDisp, g_trailDisp, (g_arrowDisp != rtx::md::kArrowMgr || g_trailDisp != rtx::md::kTrailMgr) ? " (compiled 0x198f8/0x19908, the frame site's in use)" : "", slotSize, g_requests, g_requestSize);
         SayCheck("SKIP", g_checkKind, g_exp, g_got, "a marker request from the launcher", d);
     }
     // how the game has a moved node show it: read out of the frame routine, an extra as well

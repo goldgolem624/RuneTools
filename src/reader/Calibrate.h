@@ -61,9 +61,12 @@ std::vector<Found> References();
 std::string CheckText(const std::wstring& exePath, const std::wstring& opcodesJson);
 
 // --op-prints: the table operations are named from (companion/OpPrintsTable.h), as a header,
-// made from exes whose script export is at hand: {exe, its opcodes.json} each. Empty when a file
-// cannot be read or an export is not its exe's; `log` says what each build gave.
-std::string OpPrintsTable(const std::vector<std::pair<std::wstring, std::wstring>>& builds, std::string& log);
+// made from exes whose script export is at hand: {exe, its opcodes.json} each. With `basePath`,
+// the shipped table, its rows are built on: a name keeps its handler while that handler's code is
+// still found in a build, the export names the rest, and the shipped placeholder labels stay (the
+// rules are keyed to them). Empty when a file cannot be read or an export is not its exe's; `log`
+// says what each build gave.
+std::string OpPrintsTable(const std::vector<std::pair<std::wstring, std::wstring>>& builds, const std::wstring& basePath, std::string& log);
 
 // Why nothing was calibrated, empty when the rules ran. Kept with the last Run.
 std::string Why();

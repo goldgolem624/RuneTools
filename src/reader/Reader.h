@@ -134,11 +134,11 @@ struct CombatActorSample {
     int  uid = -1, id = -1;        // actor uid; NPC current type id (-1 for players)
     std::string name;              // live name (NPCs: the cache name when the live one is empty)
     int  tx = 0, ty = 0, plane = 0;
-    int  anim = -1;                // sec+0xA90
-    bool haveAnimStart = false; int animCount = 0, animCycle = 0;   // NPCs: sec+0xAFC moves on every animation start, +0xB00 its cycle
-    int  targetUid = -1;           // sec+0x1B4 (players)
-    int  targetKind = -1;          // sec+0x228: what +0x1B4 indexes, 1 NPC, 2 player, 0x7F none (players and NPCs)
-    int  npcTarget = -1;           // sec+0x1364 (NPCs)
+    int  anim = -1;                // sec+0xAA0
+    bool haveAnimStart = false; int animCount = 0, animCycle = 0;   // NPCs: sec+0xB0C moves on every animation start, +0xB10 its cycle
+    int  targetUid = -1;           // sec+0x1C4 (players)
+    int  targetKind = -1;          // sec+0x238: what +0x1C4 indexes, 1 NPC, 2 player, 0x7F none (players and NPCs)
+    int  npcTarget = -1;           // sec+0x1374 (NPCs)
     int  combat = -1;              // players
     bool haveStats = false; int stats[7] = {}, base[7] = {}; int vis = -1;   // NPCs
     int  lp = -1, lpMax = -1;      // NPC stats[3] / base[3]

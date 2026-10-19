@@ -15,15 +15,15 @@ constexpr int kAny = -1;
 // value is a MOVED field: the module reports it (boot record check lines) and reads the hit's value
 // where it can.
 inline constexpr std::size_t   kPlDisFieldAt = 3;          // player-display: mov rax,[rcx+field]
-inline constexpr std::uint32_t kPlDisField = 0x1078;
+inline constexpr std::uint32_t kPlDisField = 0x1088;
 inline constexpr std::size_t   kMenuInitLanguageAt = 35;   // menu-init: mov rdx,[rax+Language] (md::kLanguage)
 inline constexpr std::size_t   kMenuClearEndAt = 10, kMenuClearBeginAt = 20;   // menu-clear: the targets vector end, then begin
-inline constexpr std::uint32_t kMenuTargetsBegin = 0x1380, kMenuTargetsEnd = 0x1388;
+inline constexpr std::uint32_t kMenuTargetsBegin = 0x1388, kMenuTargetsEnd = 0x1390;
 inline constexpr std::size_t   kMenuSnapCounterAt = 3, kMenuSnapBaseAt = 10;   // menu-snap: inc qword [rcx+counter] ; lea reg,[rcx+base]
-inline constexpr std::uint32_t kMenuSnapCounter = 0x21B0, kMenuSnapBase = 0x1A80;
+inline constexpr std::uint32_t kMenuSnapCounter = 0x21D0, kMenuSnapBase = 0x1AA0;
 inline constexpr std::size_t   kMenuExecStatusAt = 15;     // menu-exec: cmp dword [rax+status],0x28 (md::kStatus)
 inline constexpr std::size_t   kSoundSynthCtxAt = 23;      // sound-synth: mov rcx,[rcx+SoundCtx] (md::kSoundCtx)
-inline constexpr std::uint32_t kMenuLeftClickSlot = 0x13E0; // the slot FindMenuAssign names on 950-1 (0x13E8 on the plugin client)
+inline constexpr std::uint32_t kMenuLeftClickSlot = 0x13E8; // the slot FindMenuAssign names on 951-1 (0x13E0 on 950-1)
 inline std::uint32_t HitDisp(const unsigned char* hit, std::size_t at) { std::uint32_t d; std::memcpy(&d, hit + at, 4); return d; }
 
 // The var push handlers pushvar (op 1495, kVarpBody) and pushvarbit (op 1564, kVarcBody): the same
@@ -69,8 +69,8 @@ inline constexpr unsigned char kStackMarkMask[] = {
     1, 1, 1, 0, 1, 1, 0, 0, 0, 0, 1, 1, 1, 0, 0, 1, 1, 1, 1, 0, 1, 1, 0, 0, 1, 1, 1,
 };
 
-// Player visibility: mov rax,[rcx+0x1078] ; mov rbp,r9. The actor field's low byte is open
-// (0x1088 on the plugin client).
+// Player visibility: mov rax,[rcx+0x1088] ; mov rbp,r9. The actor field's low byte is open
+// (0x1078 on 950-1; the bytes below are 950-1's).
 inline constexpr unsigned char kPlDisBody[] = {
     0x48, 0x8B, 0x81, 0x78, 0x10, 0x00, 0x00, 0x49, 0x8B, 0xE9,
 };
@@ -161,8 +161,8 @@ inline constexpr unsigned char kT13DisplayBody[] = {
     0x00, 0x00,
 };
 
-// Menu string-init: the language-index load at MainData+0x19B10 (low byte open: 0x19B30 on the
-// plugin client).
+// Menu string-init: the language-index load at MainData+0x19B30 (low byte open: 0x19B10 on 950-1,
+// whose bytes these are).
 inline constexpr unsigned char kMenuInit[] = {
     0x40, 0x57, 0x48, 0x83, 0xEC, 0x30, 0x48, 0x8B, 0x41, 0x08, 0x48, 0x8B, 0xF9, 0x48, 0x8D, 0x0D,
     0x00, 0x00, 0x00, 0x00, 0x48, 0x89, 0x5C, 0x24, 0x40, 0x48, 0x8D, 0x99, 0x00, 0x00, 0x00, 0x00,
@@ -184,8 +184,9 @@ inline constexpr unsigned char kMenuInitMask[] = {
     0, 0, 0, 0, 1, 1, 1, 1,
 };
 
-// Menu clear(), inside its body: mov byte [rcx+0x68],0 ; movzx ebp,dl ; mov rsi,[rcx+0x1388] (end) ;
-// mov rdi,rcx ; mov rbx,[rcx+0x1380] (begin) ; cmp rbx,rsi ; je. The hook is the function holding it.
+// Menu clear(), inside its body: mov byte [rcx+0x68],0 ; movzx ebp,dl ; mov rsi,[rcx+0x1390] (end) ;
+// mov rdi,rcx ; mov rbx,[rcx+0x1388] (begin) ; cmp rbx,rsi ; je. The hook is the function holding it.
+// The vector's low bytes are open (0x1380/0x1388 on 950-1, whose bytes these are).
 inline constexpr unsigned char kMenuClear[] = {
     0xC6, 0x41, 0x68, 0x00, 0x0F, 0xB6, 0xEA, 0x48, 0x8B, 0xB1, 0x88, 0x13, 0x00, 0x00, 0x48, 0x8B,
     0xF9, 0x48, 0x8B, 0x99, 0x80, 0x13, 0x00, 0x00, 0x48, 0x3B, 0xDE, 0x74,
@@ -230,8 +231,9 @@ inline constexpr unsigned char kMenuAddRowMask[] = {   // where the entry vector
 };
 inline constexpr unsigned kMenuAddRowAt = 0x80;
 
-// Menu snapshot, inside its body: inc qword [rcx+0x21B0] (counter) ; lea reg,[rcx+0x1A80] (base).
-// It copies the top records into the left-click slots. The hook is the function holding it.
+// Menu snapshot, inside its body: inc qword [rcx+0x21D0] (counter) ; lea reg,[rcx+0x1AA0] (base).
+// It copies the top records into the left-click slots. The hook is the function holding it. The
+// low bytes are open (0x21B0/0x1A80 on 950-1, whose bytes these are).
 inline constexpr unsigned char kMenuSnap[] = {
     0x48, 0xFF, 0x81, 0xB0, 0x21, 0x00, 0x00, 0x48, 0x8D, 0xB1, 0x80, 0x1A, 0x00, 0x00,
 };
@@ -251,8 +253,8 @@ inline constexpr unsigned char kMenuExecMask[] = {
 };
 
 // Inside the snapshot, the left-click slot assigns: lea rcx,[reg+slot] ; call assign. The first
-// one in the body names the slot the lift hooks (0x13E0, 0x13E8 on the plugin client); a later one
-// with a higher slot must call the same routine.
+// one in the body names the slot the lift hooks (0x13E8, 0x13E0 on 950-1); a later one with a
+// higher slot must call the same routine.
 inline constexpr std::uint32_t kMenuSlotLo = 0x13C0, kMenuSlotHi = 0x1420;
 inline constexpr std::size_t kMenuSnapSpan = 0x1400;
 struct MenuAssign { std::size_t site = 0, check = 0; std::uint32_t slot = 0; std::int64_t target = 0; bool ok = false; };   // offsets into the body; target relative to it
@@ -443,7 +445,7 @@ inline constexpr unsigned char kOpEntityScreenHead[] = {
 };
 
 // Sound synth op: the call after it is the play routine. The SoundCtx field's low byte is open
-// (0x19A50 on the plugin client).
+// (0x19A50 on 951-1, 0x19A30 on 950-1, whose bytes these are).
 inline constexpr unsigned char kSoundSynth[] = {
     0x48, 0x81, 0xEC, 0x88, 0x00, 0x00, 0x00, 0x83, 0x82, 0xA0, 0x10, 0x00, 0x00, 0xFD, 0x8B, 0x82,
     0xA0, 0x10, 0x00, 0x00, 0x48, 0x8B, 0x89, 0x30, 0x9A, 0x01, 0x00, 0x4C, 0x8D, 0x04, 0x82, 0x48,
@@ -502,8 +504,8 @@ inline constexpr unsigned char kMainAnchor[] = {
 inline constexpr unsigned char kTickInc[] = {
     0xFF, 0x81, 0xF0, 0xDB, 0x00, 0x00,
 };
-// The engine clock (u64 ms) is a global just after the root global: +0x10 on 950-1 Vulkan, +0x8 on
-// 950-1 OpenGL, +0x30 on the plugin client. Three routines read it with mov reg,[rip+disp] (the disp
+// The engine clock (u64 ms) is a global just after the root global: +0x18 on 951-1, +0x10 on 950-1
+// Vulkan, +0x8 on 950-1 OpenGL, +0x30 on the plugin client. Three routines read it with mov reg,[rip+disp] (the disp
 // at +3); each matches once, and those found must name one place. Read by the reader's calibration.
 inline constexpr int kClockReadA[] = {   // mov rax,[clock] ; add rax,1Eh ; mov [rdi+48h],rax ; add rsp,20h ; pop rdi ; ret
     0x48, 0x8B, 0x05, kAny, kAny, kAny, kAny, 0x48, 0x83, 0xC0, 0x1E, 0x48, 0x89, 0x47, 0x48, 0x48,

@@ -518,13 +518,18 @@ int APIENTRY wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
             { std::ofstream f("calib-check.txt", std::ios::binary | std::ios::trunc); f << out; }
             return headless_exit(0);
         }
-        // --op-prints <out.h> <exe> <opcodes.json> [<exe> <opcodes.json> ...]: the table operations are
-        // named from, made from those exes and their script exports; log to op-prints.txt.
+        // --op-prints <out.h> [--base <table.h>] <exe> <opcodes.json> [<exe> <opcodes.json> ...]: the
+        // table operations are named from, made from those exes and their script exports, built on the
+        // shipped table when --base names it (a game update: the one new exe and its export); log to
+        // op-prints.txt.
         if (argv && argc >= 5 && std::wstring(argv[1]) == L"--op-prints") {
             std::vector<std::pair<std::wstring, std::wstring>> builds;
-            for (int i = 3; i + 1 < argc; i += 2) builds.emplace_back(argv[i], argv[i + 1]);
+            std::wstring base;
+            int i = 3;
+            if (argc >= 7 && std::wstring(argv[3]) == L"--base") { base = argv[4]; i = 5; }
+            for (; i + 1 < argc; i += 2) builds.emplace_back(argv[i], argv[i + 1]);
             std::string log;
-            const std::string table = rtx::calib::OpPrintsTable(builds, log);
+            const std::string table = rtx::calib::OpPrintsTable(builds, base, log);
             if (!table.empty()) { std::ofstream f(argv[2], std::ios::binary | std::ios::trunc); f << table; }
             else log += "nothing written\n";
             { std::ofstream f("op-prints.txt", std::ios::binary | std::ios::trunc); f << log; }

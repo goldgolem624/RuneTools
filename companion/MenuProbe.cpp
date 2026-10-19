@@ -1,5 +1,5 @@
 // Right-click menu probe rvas: string-init 0x161C10, clear(bool) 0x164880, add 0x160AB0, finalize 0x1661E0, item decoder 0x2DCDF0. Poll() reads on the companion thread while ApplyOrder writes on the game thread, so lane reads can tear.
-// mgr+0x90/+0x98 entries: 16-byte {control block*, entry*}, entry = control block + 0x20 unless menus merge (see kRecTarget), REVERSE display order. mgr+0x1380/+0x1388 stride 0x2E8 hover-target list; subset lanes +0x0d30 all-but-Cancel, +0x06e0 targeted; hover block +0x000 = entity handle ((x<<16)|y world object, index actor). Control block: +0x08 refcount, +0x0c = 1, +0x20 EASTL target, +0x38 EASTL verb.
+// mgr+0x90/+0x98 entries: 16-byte {control block*, entry*}, entry = control block + 0x20 unless menus merge (see kRecTarget), REVERSE display order. mgr+0x1388/+0x1390 stride 0x2E8 hover-target list; subset lanes +0x0d30 all-but-Cancel, +0x06e0 targeted; hover block +0x000 = entity handle ((x<<16)|y world object, index actor). Control block: +0x08 refcount, +0x0c = 1, +0x20 EASTL target, +0x38 EASTL verb.
 
 #include "CompOffsets.h"
 #include "SceneOffsets.h"
@@ -57,7 +57,7 @@ void SayCheck(const char* status, const char* kind, const char* exp, const char*
 constexpr std::uint64_t kTargetStride = 0x2E8;
 struct Vec { std::uint64_t begin, end; std::uint64_t stride; const char* name; };
 const Vec kVecs[] = {
-    { 0x1380, 0x1388, kTargetStride, "targets" },
+    { 0x1388, 0x1390, kTargetStride, "targets" },
     { 0x0090, 0x0098, 0,     "v_0x90"   },
     { 0x03B8, 0x03C0, 0,     "v_0x3b8"  },
     { 0x06E0, 0x06E8, 0,     "v_0x6e0"  },
@@ -65,8 +65,8 @@ const Vec kVecs[] = {
     { 0x0D30, 0x0D38, 0,     "v_0xd30"  },
     { 0x1058, 0x1060, 0,     "v_0x1058" },
     { 0x13A0, 0x13A8, 0,     "v_0x13a0" },
-    { 0x1468, 0x1470, 0,     "v_0x1468" },
-    { 0x1790, 0x1798, 0,     "v_0x1790" },
+    { 0x1470, 0x1478, 0,     "v_0x1470" },
+    { 0x1798, 0x17A0, 0,     "v_0x1798" },
 };
 
 std::mutex g_logMu;
@@ -94,12 +94,12 @@ void Log(const char* fmt, ...) {
     std::fclose(f);
 }
 
-// String-init: +0x19b10 language-index load (+0x19ad0 through 949-5), stores into mgr+0x10..0x38.
+// String-init: +0x19b30 language-index load (+0x19b10 on 950-1, +0x19ad0 through 949-5), stores into mgr+0x10..0x38.
 constexpr const auto& kInit = rtx::sig::kMenuInit;
 constexpr const auto& kInitMask = rtx::sig::kMenuInitMask;
 static_assert(sizeof(kInit) == sizeof(kInitMask), "init pattern/mask length mismatch");
 
-// clear(): found by its [rcx+0x1388] end / [rcx+0x1380] begin loads; the hook is the function holding them.
+// clear(): found by its [rcx+0x1390] end / [rcx+0x1388] begin loads; the hook is the function holding them.
 constexpr const auto& kClear = rtx::sig::kMenuClear;
 constexpr const auto& kClearMask = rtx::sig::kMenuClearMask;
 static_assert(sizeof(kClear) == sizeof(kClearMask), "clear pattern/mask length mismatch");
@@ -109,7 +109,7 @@ constexpr const auto& kBuild = rtx::sig::kMenuBuild;
 constexpr const auto& kBuildMask = rtx::sig::kMenuBuildMask;
 static_assert(sizeof(kBuild) == sizeof(kBuildMask), "build pattern/mask length mismatch");
 
-// Snapshot (rcx = manager): copies the last +0x90 record into mgr+0x13f0, second-from-top into 0x13e0.
+// Snapshot (rcx = manager): copies the last +0x90 record into mgr+0x13f8, second-from-top into 0x13e8.
 // Found inside its body; the hook is the function holding the match.
 constexpr const auto& kSnap = rtx::sig::kMenuSnap;
 constexpr const auto& kSnapMask = rtx::sig::kMenuSnapMask;
@@ -182,7 +182,7 @@ void ScanHoverSlotRefs() {
             ++hits;
         }
     } __except (EXCEPTION_EXECUTE_HANDLER) {}
-    Log("  [slotref] %d instruction(s) reference +0x13F8", hits);
+    Log("  [slotref] %d instruction(s) reference +0x1400", hits);
 }
 
 bool Rd(std::uint64_t a, void* out, std::size_t n) {
@@ -494,7 +494,7 @@ int LaneCount(std::uint64_t mgr, const Vec& v, std::uint64_t& begin) {
     return (int)(span / kRecSize);
 }
 
-// Never write the hover slot mgr+0x13F8 directly: the snapshot rewrites 0x13f0/0x13f8 as a pair,
+// Never write the hover slot mgr+0x1400 directly: the snapshot rewrites 0x13f8/0x1400 as a pair,
 // and reordering before it runs is sufficient.
 void ApplyOrder(std::uint64_t mgr) {
     if (!g_share || !g_recordOk) return;
@@ -590,7 +590,7 @@ int RuleOrder(std::uint64_t begin, int n, const int* rank, const bool* fixedSlot
 
 
 // Gated to the interface demoted class (1007). Loc classes 1001/1002 have ordinary twins 6/7 with the
-// same click callable, which the game only uses inside the box flagged at wv+0xE8428 (set by server
+// same click callable, which the game only uses inside the box flagged at wv+0xE8B20 (set by server
 // packet 216; the swap has not been observed); 1003 not examined.
 // kDemotedIface is declared with kPromoted above.
 
@@ -830,15 +830,15 @@ void LogLaneTops(std::uint64_t mgr, const char* when) {
     }
 }
 
-// Hover record slots mgr+0x13e0/0x13f0/0x1400/0x1410 hold {base, display}; display = base+0x20, verb @display+0x18, target @display+0x00, type @*(display+0x38)+0x44.
-// The CS2 hover-info op reads 0x13e0 or 0x1410 by a settings byte; the snap rebuilds +0x1468/+0x1790 from +0x90/+0x13a0 when mgr+0x1420 is set, and empties +0x3b8 each tick.
+// Hover record slots mgr+0x13e8/0x13f8/0x1408/0x1418 hold {base, display}; display = base+0x20, verb @display+0x18, target @display+0x00, type @*(display+0x38)+0x44.
+// The CS2 hover-info op reads 0x13e8 or 0x1418 by a settings byte; the snap rebuilds +0x1470/+0x1798 from +0x90/+0x13a0 when mgr+0x1420 is set, and empties +0x3b8 each tick.
 int g_slotLog = 0;                        // budget, re-armed when the panel is opened
 
 void DumpHoverSlots(std::uint64_t mgr) {
     if (g_slotLog <= 0) return;
     char verbs[4][64], tgt0[96];
     std::int32_t tys[4];
-    static const std::uint64_t kSlots[] = { 0x13E0, 0x13F0, 0x1400, 0x1410 };
+    static const std::uint64_t kSlots[] = { 0x13E8, 0x13F8, 0x1408, 0x1418 };
     for (int i = 0; i < 4; ++i) {
         verbs[i][0] = 0; tys[i] = -1;
         std::uint64_t q1 = 0;
@@ -890,7 +890,7 @@ void DumpHoverSlots(std::uint64_t mgr) {
     int at = 0;
     static const struct { std::uint64_t begin, end; const char* nm; } kCnt[] = {
         { 0x0090, 0x0098, "90" }, { 0x03B8, 0x03C0, "3b8" },
-        { 0x1468, 0x1470, "1468" }, { 0x1790, 0x1798, "1790" }, { 0x13A0, 0x13A8, "13a0" },
+        { 0x1470, 0x1478, "1470" }, { 0x1798, 0x17A0, "1798" }, { 0x13A0, 0x13A8, "13a0" },
     };
     for (const auto& v : kCnt) {
         std::uint64_t b = 0, e = 0;
@@ -909,7 +909,7 @@ void DumpHoverSlots(std::uint64_t mgr) {
 // ---- left-click lift ----
 // The game's snapshot (exe+0x166980 on 950-1) pulls every row whose class priority is below 1000 out
 // of +0x90 and appends them on top, re-sorts, then copies the top rows into the left-click slots
-// (+0x13f0 = top, +0x1400 = second, +0x13e0 = top or second by a setting) through a refcounted
+// (+0x13f8 = top, +0x1408 = second, +0x13e8 = top or second by a setting) through a refcounted
 // assign helper. That is why a demoted rule row ("Deposit all fish", class 1001) never became the
 // default and "Walk here" jumped above it. Changing the class is not an option for NPC, player and
 // ground-item rows (the class selects which option is sent), so instead, after the snapshot, the
@@ -920,9 +920,9 @@ typedef void(__fastcall* Assign_t)(std::uint64_t slot, std::uint64_t src);
 Assign_t g_assign = nullptr;
 
 // Call site of the left-click slot assign inside the snapshot: `lea rcx,[reg+slot]; call rel32`,
-// slot 0x13e0 (0x13e8 on the plugin client).
+// slot 0x13e8 (0x13e0 on 950-1).
 std::uint64_t g_siteCall = 0;          // address of the E8 byte
-std::uint32_t g_siteSlot = 0x13E0;     // the slot that call assigns, from its lea
+std::uint32_t g_siteSlot = 0x13E8;     // the slot that call assigns, from its lea
 std::int32_t  g_siteRel  = 0;          // original rel32, restored on uninstall
 void*         g_siteTramp = nullptr;   // near trampoline: mov rax, imm64; jmp rax
 bool          g_sitePatched = false;
@@ -981,7 +981,7 @@ bool RotateRuleTop(std::uint64_t mgr) {
     return true;
 }
 
-// Replaces the snapshot's `call assign(mgr+0x13e0, src)`. The snapshot has just sorted +0x90 and
+// Replaces the snapshot's `call assign(mgr+0x13e8, src)`. The snapshot has just sorted +0x90 and
 // points src at its top (or second) record, and the click is processed later in the same call from
 // these slots. Rotating the list here, before the three slot assigns, makes the game itself copy the
 // rule's row into every slot and run it on click. src is an address inside +0x90 and the rotation
@@ -1160,11 +1160,11 @@ void __fastcall Detour_Exec(std::uint64_t mgr, std::uint64_t rec, std::uint64_t 
         ++g_execLog;
         char a[160], b[160];
         DescribeRec(rec, a, sizeof(a));
-        DescribeRec(mgr + 0x13E0, b, sizeof(b));
+        DescribeRec(mgr + 0x13E8, b, sizeof(b));
         const std::uint64_t ret = (std::uint64_t)_ReturnAddress();
-        Log("[exec] caller rva 0x%llx rec=%s%s | slot13e0=%s",
+        Log("[exec] caller rva 0x%llx rec=%s%s | slot13e8=%s",
             (unsigned long long)(ret - g_base), a,
-            rec == mgr + 0x13E0 ? " (slot 13e0)" : rec == mgr + 0x1400 ? " (slot 1400)" :
+            rec == mgr + 0x13E8 ? " (slot 13e8)" : rec == mgr + 0x1408 ? " (slot 1408)" :
             rec == mgr + 0x17B0 ? " (deferred 17b0)" : "", b);
     }
     g_origExec(mgr, rec, pos);

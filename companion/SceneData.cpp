@@ -1326,7 +1326,7 @@ void ResolveRenderHooks() {
         g_renderShare->installed = 0;
     }
     // npc-display: mov rax,[rcx]; mov rdi,r9; mov rsi,r8; mov rbp,rdx; mov rbx,rcx; call [rax+0x110]
-    // player-vis : mov rax,[rcx+0x1078]; mov rbp,r9 (the field's low byte open)
+    // player-vis : mov rax,[rcx+0x1088]; mov rbp,r9 (the field's low byte open; 0x1078 on 950-1, the pattern's bytes)
     // render-thr : mov rax,[rcx+8]; mov r15,rcx; mov r14,[rip+..]
     using rtx::sig::kNpcDisBody;
     using rtx::sig::kPlDisBody;

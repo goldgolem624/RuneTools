@@ -1194,7 +1194,7 @@ void Recorder::Feed(const Tick& t) {
             int tgt = a.npcTarget < 0 ? -1 : indexOfUid(a.npcTarget);
             if (a.npcTarget >= 0 && (tgt < 0 || actors_[(std::size_t)tgt].row.type == "npc")) tgt = -a.npcTarget - 2;
             if (a.npcTarget < 0 && a.targetUid >= 0 && (a.targetKind == 1 || a.targetKind == 2)) {
-                // no player target: its interacting target (+0x1B4, kind 1 NPC, 2 player). A familiar or pet targets
+                // no player target: its interacting target (+0x1C4, kind 1 NPC, 2 player). A familiar or pet targets
                 // its owner while idle and what it attacks while fighting
                 tgt = indexOfUid(a.targetUid);
                 const bool wantNpc = a.targetKind == 1;

@@ -84,17 +84,17 @@ const Rule kRules[] = {
     { "md::kFps",          "FPS_STATS",                        "F3 44 0F 2C 89", 0x100, 0x2000, 0, rtx::md::kFps },   // cvttss2si r9d,[rcx+disp]
     { "md::kVarWatch",     "popvar",                           "49 8B 9E", kMdLo, kMdHi, 0, rtx::md::kVarWatch, false, nullptr, 0x280 },   // mov rbx,[r14+disp], after the var is looked up
     // references: offsets written out in the reader and the companion
-    { "dbMgr",             "DB_FIND_GET",                      "48 8B B1", kMdLo, kMdHi, 0, 0x19980, false, "ScriptRunner" },
-    { "dbOther",           "DB_LISTALL",                       "48 8B 89", kMdLo, kMdHi, 0, 0x198C0, false, "DbDatabase" },
+    { "dbMgr",             "DB_FIND_GET",                      "48 8B B1", kMdLo, kMdHi, 0, 0x19998, false, "ScriptRunner" },
+    { "dbOther",           "DB_LISTALL",                       "48 8B 89", kMdLo, kMdHi, 0, 0x198C8, false, "DbDatabase" },
     // the script string stack: cc_settext's callback adds the stack base to the state and counts the pointer down
     { "stringStack",       "CC_SETTEXT",                       "49 81 C1", kInLo, kInHi, 0, 0x10A8, true, "string stack base in the script state" },
     { "stringSp",          "CC_SETTEXT",                       "41 FF 89", kInLo, kInHi, 0, 0x8DA8, true, "string stack pointer in the script state" },
-    { "varcMouseX",        "GET_MOUSEX",                       "44 0F 2C 80", kInLo, kInHi, 0, 0x46D8 },   // cvttss2si r8d,[rax+disp], in the store
-    { "varcMouseY",        "GET_MOUSEY",                       "44 0F 2C 80", kInLo, kInHi, 0, 0x46DC },
-    { "varcButtons",       "GET_MOUSEBUTTONS",                 "44 38 80", kInLo, kInHi, 0, 0x46E8 },
-    { "varcClan",          "CLANPROFILE_FIND",                 "48 39 90", kInLo, kInHi, 0, 0x77B0 },
-    { "stateEntityRef",    "GET_ENTITY_BOUNDING_BOX",          "48 8B 9A", kInLo, kInHi, 0, 0xC3B0 },      // the script state (rdx)
-    { "stateEntityObj",    "GET_ENTITY_OVERLAY_HEIGHT",        "48 8B 8A", kInLo, kInHi, 0, 0xC3B8 },
+    { "varcMouseX",        "GET_MOUSEX",                       "44 0F 2C 80", kInLo, kInHi, 0, 0x43A8 },   // cvttss2si r8d,[rax+disp], in the store
+    { "varcMouseY",        "GET_MOUSEY",                       "44 0F 2C 80", kInLo, kInHi, 0, 0x43AC },
+    { "varcButtons",       "GET_MOUSEBUTTONS",                 "44 38 80", kInLo, kInHi, 0, 0x43B8 },
+    { "varcClan",          "CLANPROFILE_FIND",                 "48 39 90", kInLo, kInHi, 0, 0x7480 },
+    { "stateEntityRef",    "GET_ENTITY_BOUNDING_BOX",          "48 8B 9A", kInLo, kInHi, 0, 0xC3B8 },      // the script state (rdx)
+    { "stateEntityObj",    "GET_ENTITY_OVERLAY_HEIGHT",        "48 8B 8A", kInLo, kInHi, 0, 0xC3C0 },
     { "scn::kCombat",      "COMLEVEL_ACTIVE",                  "8B 91",    kInLo, kInHi, 0, (std::uint32_t)rtx::scn::kCombat },   // in the player's actor
     // references: MainData fields the reader and the companion read with no rule until now. Every
     // operation below is named by its handler's own code on the builds checked (unk<id> is the
@@ -102,33 +102,34 @@ const Rule kRules[] = {
     // and does not change between builds).
     { "md::kMiniMap",      "unk11190",                         "48 8B 81", kMdLo, kMdHi, 0, rtx::md::kMiniMap, false, "minimap: mask shape +0x38, walk destination +0x14/+0x18/+0x1C" },
     { "md::kWalkMgr",      "unk11014",                         "48 8B 89", kMdLo, kMdHi, 0, rtx::md::kWalkMgr, false, "walk marker appearance: ids +0x68/+0x6C, sprite +0x70, model +0x80" },
-    { "md::kEntityLookup", "unk11164",                         "48 8B 89", 0x19930, 0x19948, 0, rtx::md::kEntityLookup, false, "entity lookup by uid (the zone event registry)" },
+    { "md::kEntityLookup", "unk11164",                         "48 8B 89", 0x19930, 0x19948, 0, rtx::md::kEntityLookup, false, "entity lookup by uid (the zone event registry)" },   // 950-1 value; not found on 951-1 yet
     { "md::kOptionsArray", "CLIENTOPTION_GET",                 "48 8B 8C F8", kInLo, kInHi, 0, 0x2DA8, false, "client option objects in the options object, 8 bytes per id" },
     { "md::kOptionsArray", "unk11116",                         "48 8B 8C C8", kInLo, kInHi, 0, 0x2DA8 },
-    { "map.loadA",         "MAP_LOADEDPERCENT",                "44 8B 80", 0x700, 0x800, 0, 0x710, false, "map manager loading counter (reader data.input2)" },
-    { "map.loadB",         "MAP_LOADEDPERCENT",                "8B 90",    0x700, 0x800, 0, 0x714, false, "map manager loading counter (reader data.input2)" },
-    { "map.loadScreen",    "MAP_LOADINGSCREEN_ISOPEN",         "0F B6 90", 0x700, 0x800, 0, 0x71C, false, "map manager loading screen flag (reader data.input2)" },
+    { "map.loadA",         "MAP_LOADEDPERCENT",                "44 8B 80", 0x700, 0x800, 0, 0x740, false, "map manager loading counter (reader data.input2)" },
+    { "map.loadB",         "MAP_LOADEDPERCENT",                "8B 90",    0x700, 0x800, 0, 0x744, false, "map manager loading counter (reader data.input2)" },
+    { "map.loadScreen",    "MAP_LOADINGSCREEN_ISOPEN",         "0F B6 90", 0x700, 0x800, 0, 0x74C, false, "map manager loading screen flag (reader data.input2)" },
     // the actor (scene entity object): what the NPC ops read through the state's entity slot
     { "scn::kConfig",      "unk11134",                         "8B 90",    kInLo, kInHi, 0, (std::uint32_t)rtx::scn::kConfig, false, "NPC base type id in the actor" },
-    { "npc.visLevel",      "CHATCAT_UNK11187",                 "8B 90",    kInLo, kInHi, 0, 0x1178, false, "NPC visible combat level in the actor (the reader's kNpcVisLevel)" },
-    { "npc.statCur",       "unk11135",                         "8B 8C 81", kInLo, kInHi, 0, 0x1140, false, "NPC current stats in the actor, 4 bytes per stat; life points at +0xC (scn::kLpCur)" },
-    { "npc.statBase",      "unk11135",                         "44 8B 84 81", kInLo, kInHi, 0, 0x115C, false, "NPC base stats in the actor; life points at +0xC (scn::kLpMax)" },
-    { "actor.npcType",     "unk11136",                         "48 8B 88", kInLo, kInHi, 0, 0x10A8, false, "NPC type object in the actor (the reader's overhead height chain)" },
+    { "npc.visLevel",      "CHATCAT_UNK11187",                 "8B 90",    kInLo, kInHi, 0, 0x1188, false, "NPC visible combat level in the actor (the reader's kNpcVisLevel)" },
+    { "npc.statCur",       "unk11135",                         "8B 8C 81", kInLo, kInHi, 0, 0x1150, false, "NPC current stats in the actor, 4 bytes per stat; life points at +0xC (scn::kLpCur)" },
+    { "npc.statBase",      "unk11135",                         "44 8B 84 81", kInLo, kInHi, 0, 0x116C, false, "NPC base stats in the actor; life points at +0xC (scn::kLpMax)" },
+    { "actor.npcType",     "unk11136",                         "48 8B 88", kInLo, kInHi, 0, 0x10B8, false, "NPC type object in the actor (the reader's overhead height chain)" },   // 0x10A8 on 950-1; between scn::kNpcCur and scn::kCombat, both moved +0x10
     { "actor.nameString",  "CHAT_PLAYERNAME",                  "48 8D 91", 0x80, 0x100, 0, 0x90, false, "the actor's name string object; the reader's kName 0xB8 is its inline buffer", 0x140, 0 },
     // the game world (worldView): the screen-position helper's matrix reads and the area box
-    { "wv.projDepth",      "GET_OBJ_SCREEN_POSITION",          "F3 41 0F 59 A8", 0x13000, 0x14000, 0, 0x13128, false, "view-projection depth column in the worldView (kMatrixOffDefault + 0x98)", 0x140, 1 },
+    { "wv.projDepth",      "GET_OBJ_SCREEN_POSITION",          "F3 41 0F 59 A8", 0x13000, 0x14000, 0, 0x13808, false, "view-projection depth column in the worldView (kMatrixOffDefault + 0x98)", 0x140, 1 },
     { "wv.areaEntries",    "unk10994",                         "4C 2B 81", 0xE0000, 0xF0000, 0, (std::uint32_t)rtx::scn::kWvBox + 0x28, false, "area box: entries vector (kWvBox + 0x28)" },
     { "wv.areaEntriesEnd", "unk10994",                         "4C 8B 81", 0xE0000, 0xF0000, 0, (std::uint32_t)rtx::scn::kWvBox + 0x30, false, "area box: entries vector end (kWvBox + 0x30)" },
     { "wv.areaSpawnFlag",  "TEXTINPUT_BLUR",                   "80 B9",    0xE8000, 0xE9000, 0, (std::uint32_t)rtx::scn::kWvBox + 0x40, false, "area box: spawn point set flag (kWvBox + 0x40)" },
     { "wv.areaSpawn",      "TEXTINPUT_BLUR",                   "F2 0F 11 81", 0xE8000, 0xE9000, 0, (std::uint32_t)rtx::scn::kWvBox + 0x4C, false, "area box: spawn point (kWvBox + 0x4C)" },
+    // the two below were read on 950-1 (0xE8458 / 0xE8464); no 951-1 anchor yet
     { "wv.areaMin",        "unk10993",                         "3B 91",    0xE8450, 0xE8460, 0, (std::uint32_t)rtx::scn::kWvBox + 0x70, false, "area box: min corner (kWvBox + 0x70)", 0x200 },
     { "wv.areaMax",        "unk10993",                         "3B 91",    0xE8460, 0xE8470, 0, (std::uint32_t)rtx::scn::kWvBox + 0x7C, false, "area box: max corner (kWvBox + 0x7C)", 0x200 },
     // the script state and the interface manager
-    { "state.settingsCtx", "ACTIVECLANSETTINGS_GETAFFINEDCOUNT", "48 8B 82", 0xC000, 0xD000, 0, 0xC828, false, "clan settings context in the script state (the companion's settings context)" },
-    { "state.settingsCtx", "ACTIVECLANSETTINGS_GETCLANNAME",   "48 8B 92", 0xC000, 0xD000, 0, 0xC828 },
-    { "state.settingsCtx", "ACTIVECLANSETTINGS_FIND_LISTENED", "48 8B 9F", 0xC000, 0xD000, 0, 0xC828 },
-    { "iface.subBuckets",  "IF_HASSUB",                        "48 8B 99", 0x80, 0x200, 0, 0xE0, false, "interface owner: sub table buckets (the reader's kIfaceSubBuckets)", 0x140, 0 },
-    { "iface.subCount",    "IF_HASSUB",                        "44 8B 89", 0x80, 0x200, 0, 0xE8, false, "interface owner: sub table bucket count", 0x140, 0 },
+    { "state.settingsCtx", "ACTIVECLANSETTINGS_GETAFFINEDCOUNT", "48 8B 82", 0xC000, 0xD000, 0, 0xC830, false, "clan settings context in the script state (the companion's settings context)" },
+    { "state.settingsCtx", "ACTIVECLANSETTINGS_GETCLANNAME",   "48 8B 92", 0xC000, 0xD000, 0, 0xC830 },
+    { "state.settingsCtx", "ACTIVECLANSETTINGS_FIND_LISTENED", "48 8B 9F", 0xC000, 0xD000, 0, 0xC830 },
+    { "iface.subBuckets",  "IF_HASSUB",                        "48 8B 99", 0x80, 0x200, 0, 0x118, false, "interface owner: sub table buckets (the reader's kIfaceSubBuckets)", 0x140, 0 },
+    { "iface.subCount",    "IF_HASSUB",                        "44 8B 89", 0x80, 0x200, 0, 0x120, false, "interface owner: sub table bucket count", 0x140, 0 },
     // the component object (the reader's interface node + 0x20): the getter and setter callbacks
     // the cc_ and if_ wrappers hand on
     { "iface.compWidth",   "CC_GETWIDTH",                      "8B 90",    0x80, 0x84, 0, 0x80, true, "component width; the reader's node offset is this + 0x20" },
@@ -144,17 +145,17 @@ const Rule kRules[] = {
     { "menu.entriesEnd",   "unk11099",                         "48 8B 90", 0x80, 0x100, 0, 0x98, false, "minimenu entry vector end (MenuProbe kEntriesEnd)" },
     { "menu.slotLeft",     "MINIMENU_CLOSE",                   "48 8B BB", 0x13E0, 0x13F0, 0, rtx::sig::kMenuLeftClickSlot, false, "minimenu left-click record slot (the lift's slot)", 0x140, 0 },
     { "menu.slotLeft",     "FORMATMINIMENU",                   "48 8B BB", 0x13E0, 0x13F0, 0, rtx::sig::kMenuLeftClickSlot, false, nullptr, 0x140, 0 },
-    { "menu.slotSecond",   "MINIMENU_CLOSE",                   "48 8B BB", 0x1400, 0x1410, 0, 0x1400, false, "minimenu second option record slot", 0x140, 0 },
-    { "menu.slotSecond",   "FORMATMINIMENU",                   "48 8B BB", 0x1400, 0x1410, 0, 0x1400, false, nullptr, 0x140, 0 },
+    { "menu.slotSecond",   "MINIMENU_CLOSE",                   "48 8B BB", 0x1400, 0x1410, 0, 0x1408, false, "minimenu second option record slot", 0x140, 0 },
+    { "menu.slotSecond",   "FORMATMINIMENU",                   "48 8B BB", 0x1400, 0x1410, 0, 0x1408, false, nullptr, 0x140, 0 },
     // the chat store
-    { "chat.buckets",      "unk11195",                         "49 8B 9B", 0x800, 0x900, 0, 0x880, false, "chat store: record hash buckets (reader chat_store_json, companion Unlink)" },
-    { "chat.buckets",      "printmessage",                     "4D 8B 96", 0x800, 0x900, 0, 0x880, false, nullptr, 0x200, 4 },
-    { "chat.bucketCount",  "unk11195",                         "41 8B 8B", 0x800, 0x900, 0, 0x888, false, "chat store: bucket count" },
-    { "chat.bucketCount",  "printmessage",                     "41 8B 8E", 0x800, 0x900, 0, 0x888, false, nullptr, 0x200, 4 },
-    { "chat.recordCount",  "printmessage",                     "48 FF 8E", 0x800, 0x900, 0, 0x890, false, "chat store: record count", 0x300, 5 },
+    { "chat.buckets",      "unk11195",                         "49 8B 9B", 0x800, 0x900, 0, 0x8C0, false, "chat store: record hash buckets (reader chat_store_json, companion Unlink)" },
+    { "chat.buckets",      "printmessage",                     "4D 8B 96", 0x800, 0x900, 0, 0x8C0, false, nullptr, 0x200, 4 },
+    { "chat.bucketCount",  "unk11195",                         "41 8B 8B", 0x800, 0x900, 0, 0x8C8, false, "chat store: bucket count" },
+    { "chat.bucketCount",  "printmessage",                     "41 8B 8E", 0x800, 0x900, 0, 0x8C8, false, nullptr, 0x200, 4 },
+    { "chat.recordCount",  "printmessage",                     "48 FF 8E", 0x800, 0x900, 0, 0x8D0, false, "chat store: record count", 0x300, 5 },
     { "chat.recordNext",   "unk11195",                         "48 8B 80", 0x80, 0x100, 0, 0xB8, false, "chat record: next in the bucket chain" },
     { "chat.recordNext",   "printmessage",                     "48 8B 80", 0x80, 0x100, 0, 0xB8, false, nullptr, 0x200, 4 },
-    { "chat.recordText",   "printmessage",                     "0F 10 9A", 0x80, 0x100, 0, 0x90, false, "chat record: message text", 0x400, 4 },
+    { "chat.recordText",   "printmessage",                     "0F 10 9A", 0x80, 0x100, 0, 0x90, false, "chat record: message text", 0x400, 4 },   // 950-1 value; not found on 951-1 yet
     // One-byte fields (d8). The game world list, the account and the players registry: the chain
     // the scene root and the local player are read through.
     { "scn::kActiveIdx",   "unk10994",                   "49 63 41", 0x60, 0x80, 0, (std::uint32_t)rtx::scn::kActiveIdx, false, "game world list: i32 current world index", 0x140, -1, true },
@@ -227,14 +228,14 @@ const Rule kRules[] = {
     { "menu.open",         "MINIMENU_CLOSE",             "C6 43",    0x60, 0x70, 0, 0x68, false, nullptr, 0x140, 0, true },
     { "menu.open",         "FORMATMINIMENU",             "C6 43",    0x60, 0x70, 0, 0x68, false, nullptr, 0x140, 0, true },
     { "menu.open",         "unk11164",                   "80 7A",    0x60, 0x70, 0, 0x68, false, nullptr, 0x140, -1, true },
-    { "menu.recentBegin",  "MINIMENU_CLOSE",             "48 8B 8B", 0x1400, 0x1500, 0, 0x1468, false, "minimenu: recent rows lane begin (16-byte records)", 0x200, 0 },
-    { "menu.recentBegin",  "FORMATMINIMENU",             "48 8B 8B", 0x1400, 0x1500, 0, 0x1468, false, nullptr, 0x200, 0 },
-    { "menu.recentEnd",    "MINIMENU_CLOSE",             "48 8B 93", 0x1400, 0x1500, 0, 0x1470, false, "minimenu: recent rows lane end", 0x200, 0 },
-    { "menu.recentEnd",    "FORMATMINIMENU",             "48 8B 93", 0x1400, 0x1500, 0, 0x1470, false, nullptr, 0x200, 0 },
-    { "menu.groupsBegin",  "UNKNOWN_COMMAND_174",        "48 8B 90", 0x1700, 0x1800, 0, 0x1790, false, "minimenu: groups lane begin (16-byte records)" },
-    { "menu.groupsBegin",  "MINIMENU_CLOSE",             "48 8B 8B", 0x1700, 0x1800, 0, 0x1790, false, nullptr, 0x200, 0 },
-    { "menu.groupsEnd",    "UNKNOWN_COMMAND_174",        "48 8B 88", 0x1700, 0x1800, 0, 0x1798, false, "minimenu: groups lane end" },
-    { "menu.groupsEnd",    "MINIMENU_CLOSE",             "48 8B 93", 0x1700, 0x1800, 0, 0x1798, false, nullptr, 0x200, 0 },
+    { "menu.recentBegin",  "MINIMENU_CLOSE",             "48 8B 8B", 0x1400, 0x1500, 0, 0x1470, false, "minimenu: recent rows lane begin (16-byte records)", 0x200, 0 },
+    { "menu.recentBegin",  "FORMATMINIMENU",             "48 8B 8B", 0x1400, 0x1500, 0, 0x1470, false, nullptr, 0x200, 0 },
+    { "menu.recentEnd",    "MINIMENU_CLOSE",             "48 8B 93", 0x1400, 0x1500, 0, 0x1478, false, "minimenu: recent rows lane end", 0x200, 0 },
+    { "menu.recentEnd",    "FORMATMINIMENU",             "48 8B 93", 0x1400, 0x1500, 0, 0x1478, false, nullptr, 0x200, 0 },
+    { "menu.groupsBegin",  "UNKNOWN_COMMAND_174",        "48 8B 90", 0x1700, 0x1800, 0, 0x1798, false, "minimenu: groups lane begin (16-byte records)" },
+    { "menu.groupsBegin",  "MINIMENU_CLOSE",             "48 8B 8B", 0x1700, 0x1800, 0, 0x1798, false, nullptr, 0x200, 0 },
+    { "menu.groupsEnd",    "UNKNOWN_COMMAND_174",        "48 8B 88", 0x1700, 0x1800, 0, 0x17A0, false, "minimenu: groups lane end" },
+    { "menu.groupsEnd",    "MINIMENU_CLOSE",             "48 8B 93", 0x1700, 0x1800, 0, 0x17A0, false, nullptr, 0x200, 0 },
     { "menu.entryDisplay", "UNKNOWN_COMMAND_180",        "48 8B 50", 0x8, 0x10, 0, 0x8, false, "minimenu entry record (16 bytes): the display object at +8, its control block at +0", 0x140, -1, true },
     { "menu.entryDisplay", "UNKNOWN_COMMAND_181",        "48 8B 48", 0x8, 0x10, 0, 0x8, false, nullptr, 0x140, -1, true },
     { "menu.entryDisplay", "MINIMENUOPEN",               "48 8B 48", 0x8, 0x10, 0, 0x8, false, nullptr, 0x140, 0, true },
@@ -769,6 +770,21 @@ ArrowSite ArrowSiteFromCode(const Pe& pe) {
     return a;
 }
 
+// The exporter's placeholders (unk11190, UNKNOWN_COMMAND_500, CHATCAT_UNK11187): numbered in sequence
+// per export, so one operation more or less renumbers every one after it, and the same label names
+// another handler in the next export.
+static bool Placeholder(const std::string& n) {
+    const auto digits_from = [&](std::size_t at) {
+        if (at >= n.size()) return false;
+        for (std::size_t i = at; i < n.size(); ++i) if (n[i] < '0' || n[i] > '9') return false;
+        return true;
+    };
+    if (n.rfind("unk", 0) == 0 && digits_from(3)) return true;
+    if (n.rfind("UNKNOWN_COMMAND_", 0) == 0 && digits_from(16)) return true;
+    const std::size_t u = n.rfind("UNK");
+    return u != std::string::npos && digits_from(u + 3);
+}
+
 // name -> scrambled number, from the launcher's export: [{"op":N,"id":..,"name":"X"},...]
 bool OpTable(const std::wstring& path, std::map<std::string, std::uint32_t>& out) {
     std::vector<std::uint8_t> f;
@@ -895,27 +911,15 @@ static const std::vector<Found>& RunLocked(const std::wstring& exePath, const st
         if (note.empty()) {
             std::set<std::string> ruled;
             for (const Rule& r : kRules) ruled.insert(r.op);
-            // The exporter's placeholders (unk11190, UNKNOWN_COMMAND_500) are numbered in sequence and
-            // shift whenever an operation is added, so a placeholder the code learned from an earlier
-            // export names another handler in this one. Only real names are compared.
-            auto placeholder = [](const std::string& n) {
-                const auto digits_from = [&](std::size_t at) {
-                    if (at >= n.size()) return false;
-                    for (std::size_t i = at; i < n.size(); ++i) if (n[i] < '0' || n[i] > '9') return false;
-                    return true;
-                };
-                if (n.rfind("unk", 0) == 0 && digits_from(3)) return true;
-                if (n.rfind("UNKNOWN_COMMAND_", 0) == 0 && digits_from(16)) return true;
-                const std::size_t u = n.rfind("UNK");
-                return u != std::string::npos && digits_from(u + 3);
-            };
+            // Only real names are compared: a placeholder the code learned from an earlier export names
+            // another handler in this one.
             int differ = 0, differRuled = 0, compared = 0;
             std::map<std::uint32_t, std::string> exportedByOp;
             for (const auto& kv : exported) exportedByOp.emplace(kv.second, kv.first);
             std::set<std::uint32_t> codeOps;
             for (const auto& kv : byCode.byName) {
                 codeOps.insert(kv.second);
-                if (placeholder(kv.first)) continue;
+                if (Placeholder(kv.first)) continue;
                 ++compared;
                 const auto it = exported.find(kv.first);
                 if (it != exported.end() && it->second != kv.second) {
@@ -929,7 +933,7 @@ static const std::vector<Found>& RunLocked(const std::wstring& exePath, const st
             // placeholders are left out, a rule keyed to one reads the handler the code gave it.
             std::map<std::string, std::uint32_t> merged = byCode.byName;
             for (const auto& kv : exported)
-                if (!codeOps.count(kv.second) && !placeholder(kv.first)) merged.insert(kv);
+                if (!codeOps.count(kv.second) && !Placeholder(kv.first)) merged.insert(kv);
             // An export of this build names its handlers as their code does (0 differ on 950-1). One
             // whose version resource matches but whose names mostly disagree is another build's: the
             // plugin beta client carries the live version string on other operation numbers.
@@ -1038,8 +1042,26 @@ static const std::vector<Found>& RunLocked(const std::wstring& exePath, const st
         rep << line;
         g_cache.found.push_back(fd);
     }
+    // A name the code and the export give to different handlers counts against the table only where
+    // a rule keyed to it found nothing: a rule that found its field in the handler the code names has
+    // settled which of the two is that operation.
+    if (g_cache.table.differRuled) {
+        int open = 0;
+        for (const auto& d : g_cache.differs) {
+            bool ruled = false, missing = false;
+            for (const Rule& r : kRules) {
+                if (d.name != r.op) continue;
+                ruled = true;
+                for (const Found& f : g_cache.found) if (std::strcmp(f.name, r.name) == 0 && !f.found) missing = true;
+            }
+            if (ruled && missing) ++open;
+        }
+        g_cache.table.differRuled = open;
+    }
     {   // the varp hash map, derived from the varp manager the QUEST_FINISHED handler names
-        Found fd{ "kOffVarpHash", 0, 0, "QUEST_FINISHED (varp manager + 0x1C0C8)", Outcome::NotFound };
+        static char from[64];
+        std::snprintf(from, sizeof(from), "QUEST_FINISHED (varp manager + 0x%X)", kVarpHashFromMgr);
+        Found fd{ "kOffVarpHash", 0, 0, from, Outcome::NotFound };
         for (const auto& f : g_cache.found)
             if (std::strcmp(f.name, "md::kVarpMgr") == 0 && f.found) { fd.found = f.found + kVarpHashFromMgr; fd.status = Outcome::Found; }
         char line[160];
@@ -1147,9 +1169,49 @@ TableState Table() {
     return g_cache.table;
 }
 
-std::string OpPrintsTable(const std::vector<std::pair<std::wstring, std::wstring>>& builds, std::string& log) {
+// The rows of a table header TableText wrote, as `    { "NAME", depth, unique, 0x...ull },` lines,
+// and its "Made from" builds. Rows of one name sit together (the header is written sorted).
+struct TableRow { std::string name; int depth = 0, unique = 0; std::uint64_t print = 0; };
+static bool ReadTable(const std::wstring& path, std::vector<TableRow>& rows, std::string& from) {
+    std::vector<std::uint8_t> f;
+    if (!ReadFile(path, f)) return false;
+    std::string s(f.begin(), f.end());
+    std::size_t at = 0;
+    while (at < s.size()) {
+        std::size_t nl = s.find('\n', at);
+        if (nl == std::string::npos) nl = s.size();
+        const std::string line = s.substr(at, nl - at);
+        at = nl + 1;
+        if (const std::size_t m = line.find("Made from: "); m != std::string::npos) {
+            from = line.substr(m + 11);
+            while (!from.empty() && (from.back() == '\r' || from.back() == ' ')) from.pop_back();
+            continue;
+        }
+        char name[128]; int depth = 0, unique = 0; unsigned long long print = 0;
+        if (std::sscanf(line.c_str(), " { \"%127[^\"]\", %d, %d, 0x%llx", name, &depth, &unique, &print) == 4)
+            rows.push_back({ name, depth, unique, print });
+    }
+    return !rows.empty();
+}
+
+std::string OpPrintsTable(const std::vector<std::pair<std::wstring, std::wstring>>& builds, const std::wstring& basePath, std::string& log) {
     std::set<std::string> rows;
     std::string from;
+    std::vector<TableRow> base;
+    std::vector<rtx::opprints::Ref> baseRefs;
+    if (!basePath.empty()) {
+        if (!ReadTable(basePath, base, from)) { log += "the table to build on is not readable\n"; return {}; }
+        std::stable_sort(base.begin(), base.end(), [](const TableRow& a, const TableRow& b) { return a.name < b.name; });
+        char buf[64];
+        for (const TableRow& r : base) {
+            baseRefs.push_back({ r.name.c_str(), (std::uint8_t)r.depth, (std::uint8_t)r.unique, r.print });
+            std::snprintf(buf, sizeof(buf), "\t%d\t%d\t%016llx", r.depth, r.unique, (unsigned long long)r.print);
+            rows.insert(r.name + buf);
+        }
+        char line[200];
+        std::snprintf(line, sizeof(line), "building on %zu rows (made from %s)\n", rows.size(), from.c_str());
+        log += line;
+    }
     for (const auto& b : builds) {
         std::vector<std::uint8_t> f; Pe pe{};
         std::map<std::uint32_t, std::uint32_t> handlers; std::map<std::string, std::uint32_t> names;
@@ -1172,13 +1234,35 @@ std::string OpPrintsTable(const std::vector<std::pair<std::wstring, std::wstring
         if (checked < 3) { log += "fewer than 3 self-naming handlers to hold the export against\n"; return {}; }
         rtx::opprints::Prints pr;
         rtx::opprints::Take(im, handlers, pr);
+        int placeholders = 0, kept = 0;
+        if (!base.empty()) {
+            // The exporter labels operations by what their scripts do with them, and a label moves to
+            // another handler between exports. A shipped name keeps its handler as long as that
+            // handler's code is still found in this build: the client reads by code, and the rules
+            // were proved on it. The export names what the shipped rows no longer find. Placeholders
+            // are per-export labels and none of this build's go in beside the shipped ones.
+            rtx::opprints::Named shipped;
+            rtx::opprints::Resolve(pr, baseRefs.data(), baseRefs.size(), shipped);
+            for (auto it = names.begin(); it != names.end(); ) {
+                const auto s = shipped.byName.find(it->first);
+                if (Placeholder(it->first)) { ++placeholders; it = names.erase(it); }
+                else if (s != shipped.byName.end() && s->second != it->second) {
+                    ++kept;
+                    std::snprintf(line, sizeof(line), "  %s: the shipped rows name operation %u, the export %u; the shipped handler stands\n", it->first.c_str(), s->second, it->second);
+                    log += line;
+                    it = names.erase(it);
+                } else ++it;
+            }
+        }
         const std::size_t before = rows.size();
         rtx::opprints::RowsOf(pr, names, rows);
         int alone = 0;
         for (const auto& kv : names) { const auto p = pr.of[rtx::opprints::kDeepest].find(kv.second); if (p != pr.of[rtx::opprints::kDeepest].end() && pr.at[rtx::opprints::kDeepest].at(p->second).size() == 1) ++alone; }
         const std::string ver = ExeBuildImpl(b.first);
-        std::snprintf(line, sizeof(line), "%s %08x: %zu handlers, %zu names, %d alone in their code, %zu rows added\n", ver.c_str(), pe.stamp, handlers.size(), names.size(), alone, rows.size() - before);
+        std::snprintf(line, sizeof(line), "%s %08x: %zu handlers, %zu names, %d alone in their code, %zu rows added", ver.c_str(), pe.stamp, handlers.size(), names.size(), alone, rows.size() - before);
         log += line;
+        if (!base.empty()) { std::snprintf(line, sizeof(line), "; %d placeholders left out, %d names kept as shipped", placeholders, kept); log += line; }
+        log += "\n";
         std::snprintf(line, sizeof(line), "%s%s %08x", from.empty() ? "" : ", ", ver.c_str(), pe.stamp);
         from += line;
     }

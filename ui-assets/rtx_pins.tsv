@@ -1,98 +1,100 @@
 #pins	2
 #made	2026-10-19	
-#kinds	archive=2;build=3;ceiling=11;dbtable=20;disp=3;enum=73;iface=68;index=13;inv=16;item=403;live=13;loc=639;model=3;npc=827;op=53;ophist=361;param=742;rva=3;script=665;sig=30;spotanim=6;sprite=183;struct=708;varbit=1742;varc=1202;varp=376
+#kinds	archive=2;build=4;ceiling=11;dbtable=20;disp=4;enum=73;iface=68;index=13;inv=16;item=403;live=13;loc=639;model=3;npc=827;op=53;ophist=361;param=742;rva=3;script=665;sig=30;spotanim=6;sprite=183;struct=708;varbit=1742;varc=1202;varp=376
 build	6a9986f8	flavour=vulkan;version=950.1.0.0;size=0x1740000;validated=2026-10-19	
-sig	main-anchor	6a9986f8=1@0x1B090;6a998810=1@0x1B300;6acf7b0a=1@0x1D180	Everything that reads the game
-sig	tick-anchor	6a9986f8=1@0x10AEE0;6a998810=1@0x10AE40;6acf7b0a=1@0x36A294	Game tick, tick timers
-sig	varp-observer	6a9986f8=1@0xA76E6;6a998810=1@0xA78D6;6acf7b0a=1@0x30DEC6	Live variable changes
-sig	varc-observer	6a9986f8=1@0xA8156;6a998810=1@0xA8346;6acf7b0a=1@0x30E936	Live variable changes
-sig	ccdrag-observer	6a9986f8=1@0x1D11F4;6a998810=1@0x1D1244;6acf7b0a=1@0x6F1AD4	Interface drag tracking
-sig	npc-display	6a9986f8=1@0x31A7D4;6a998810=1@0x31A9D4;6acf7b0a=1@0xC53884	Rendering: hide NPCs
-sig	player-display	6a9986f8=1@0x1301C8;6a998810=1@0x1300E8;6acf7b0a=1@0x412778	Rendering: hide players
-sig	stack-count	6a9986f8=1@0x11BB78;6a998810=1@0x11BA98;6acf7b0a=1@0x3FEEE8	Rendering: a hidden actor on a shared tile
-sig	stack-mark	6a9986f8=1@0x11BE97;6a998810=1@0x11BDB7;6acf7b0a=1@0x3FF207	Rendering: a hidden actor on a shared tile
-sig	scene-blank	6a9986f8=0;6a998810=1@0x118745;6acf7b0a=0	Rendering: hide scene
-sig	framer	6a9986f8=1@0x1000B0;6a998810=1@0x100010;6acf7b0a=1@0x35FBA0	Chat capture, event channel, packet feed
-sig	spawn-hook	6a9986f8=1@0x4C80D0;6a998810=1@0x4C8580;6acf7b0a=1@0xE029C0	Scene objects, specials
-sig	del-hook	6a9986f8=1@0x4C8250;6a998810=1@0x4C8700;6acf7b0a=1@0xE02B40	Scene objects
-sig	t4-display	6a9986f8=1@0x3BC27D;6a998810=1@0x3BC67D;6acf7b0a=1@0xCDA6AD	Specials: graphic highlights, clue scan ring
-sig	t13-display	6a9986f8=1@0x135540;6a998810=1@0x135460;6acf7b0a=1@0x3ED20	Specials: walk and scan markers
-sig	menu-init	6a9986f8=1@0x1668B0;6a998810=1@0x1667E0;6acf7b0a=1@0x390DE0	Menu swaps
-sig	menu-clear	6a9986f8=1@0x169510;6a998810=1@0x169450;6acf7b0a=1@0x393DC0	Menu swaps
-sig	menu-build	6a9986f8=1@0x147FA0;6a998810=1@0x147EC0;6acf7b0a=1@0x371280	Menu swaps: reordering
-sig	menu-snap	6a9986f8=1@0x166A50;6a998810=1@0x166980;6acf7b0a=1@0x390F80	Menu swaps: left-click option
-sig	menu-exec	6a9986f8=1@0x167D50;6a998810=1@0x167C80;6acf7b0a=1@0x392740	Menu swaps: action log
-sig	menu-add-row	6a9986f8=1@0x16A8E0;6a998810=1@0x16A820;6acf7b0a=1@0x394E40	Right-click Hide entry
-sig	tooltip-stub	6a9986f8=2@0x200940;6a998810=2@0x200990;6acf7b0a=2@0x720C30	Tooltip text (item prices, levels)
-sig	outline-switch	6a9986f8=1@0x382631;6a998810=1@0x3828B1;6acf7b0a=1@0xCD7131	Native outlines
-sig	outline-table	6a9986f8=1@0x1C41F8;6a998810=1@0x1C4248;6acf7b0a=1@0x6E47A8	Native outlines: colours and modes
-sig	arrow-message	6a9986f8=1@0xFA140;6a998810=1@0xFA0A0;6acf7b0a=1@0x359430	Engine markers: hint arrows
-sig	trail-message	6a9986f8=1@0x1081E0;6a998810=1@0x108140;6acf7b0a=1@0x359890	Engine markers: tile trail
-sig	arrow-frame	6a9986f8=1@0x11DF50;6a998810=1@0x11DE70;6acf7b0a=1@0x402920	Engine markers|In-frame panels and text|Sounds, camera zoom and FOV|In-frame label anchors|Asks: achievements and quests
-sig	tile-draw	6a9986f8=1@0x12B730;6a998810=1@0x12B650;6acf7b0a=1@0x40D680	Engine markers: tile outline
-sig	sound-synth	6a9986f8=1@0x94930;6a998810=1@0x94B20;6acf7b0a=1@0x2FAFA0	Sounds panel, sound mute
-sig	chat-notify	6a9986f8=1@0x14C600;6a998810=1@0x14C530;6acf7b0a=1@0x3761A0	Chat mute
-rva	optable	6a9986f8=0xD98BB0;6a998810=0xC70BB0;6acf7b0a=0x1847278	Packet decoders, server opcodes
+sig	main-anchor	6a9986f8=1@0x1B090;6a998810=1@0x1B300;6acf7c69=1@0x1D3F0;6acf7b0a=1@0x1D180	Everything that reads the game
+sig	tick-anchor	6a9986f8=1@0x10AEE0;6a998810=1@0x10AE40;6acf7c69=1@0x36A474;6acf7b0a=1@0x36A294	Game tick, tick timers
+sig	varp-observer	6a9986f8=1@0xA76E6;6a998810=1@0xA78D6;6acf7c69=1@0x30E1A6;6acf7b0a=1@0x30DEC6	Live variable changes
+sig	varc-observer	6a9986f8=1@0xA8156;6a998810=1@0xA8346;6acf7c69=1@0x30EC16;6acf7b0a=1@0x30E936	Live variable changes
+sig	ccdrag-observer	6a9986f8=1@0x1D11F4;6a998810=1@0x1D1244;6acf7c69=1@0x6F1DB4;6acf7b0a=1@0x6F1AD4	Interface drag tracking
+sig	npc-display	6a9986f8=1@0x31A7D4;6a998810=1@0x31A9D4;6acf7c69=1@0xC53D94;6acf7b0a=1@0xC53884	Rendering: hide NPCs
+sig	player-display	6a9986f8=1@0x1301C8;6a998810=1@0x1300E8;6acf7c69=1@0x412A58;6acf7b0a=1@0x412778	Rendering: hide players
+sig	stack-count	6a9986f8=1@0x11BB78;6a998810=1@0x11BA98;6acf7c69=1@0x3FF1C8;6acf7b0a=1@0x3FEEE8	Rendering: a hidden actor on a shared tile
+sig	stack-mark	6a9986f8=1@0x11BE97;6a998810=1@0x11BDB7;6acf7c69=1@0x3FF4E7;6acf7b0a=1@0x3FF207	Rendering: a hidden actor on a shared tile
+sig	scene-blank	6a9986f8=0;6a998810=1@0x118745;6acf7c69=1@0x3FBD45;6acf7b0a=0	Rendering: hide scene
+sig	framer	6a9986f8=1@0x1000B0;6a998810=1@0x100010;6acf7c69=1@0x35FD80;6acf7b0a=1@0x35FBA0	Chat capture, event channel, packet feed
+sig	spawn-hook	6a9986f8=1@0x4C80D0;6a998810=1@0x4C8580;6acf7c69=1@0xE03870;6acf7b0a=1@0xE029C0	Scene objects, specials
+sig	del-hook	6a9986f8=1@0x4C8250;6a998810=1@0x4C8700;6acf7c69=1@0xE039F0;6acf7b0a=1@0xE02B40	Scene objects
+sig	t4-display	6a9986f8=1@0x3BC27D;6a998810=1@0x3BC67D;6acf7c69=1@0xCDAE6D;6acf7b0a=1@0xCDA6AD	Specials: graphic highlights, clue scan ring
+sig	t13-display	6a9986f8=1@0x135540;6a998810=1@0x135460;6acf7c69=1@0x3EFD0;6acf7b0a=1@0x3ED20	Specials: walk and scan markers
+sig	menu-init	6a9986f8=1@0x1668B0;6a998810=1@0x1667E0;6acf7c69=1@0x390FD0;6acf7b0a=1@0x390DE0	Menu swaps
+sig	menu-clear	6a9986f8=1@0x169510;6a998810=1@0x169450;6acf7c69=1@0x393FC0;6acf7b0a=1@0x393DC0	Menu swaps
+sig	menu-build	6a9986f8=1@0x147FA0;6a998810=1@0x147EC0;6acf7c69=1@0x371460;6acf7b0a=1@0x371280	Menu swaps: reordering
+sig	menu-snap	6a9986f8=1@0x166A50;6a998810=1@0x166980;6acf7c69=1@0x391170;6acf7b0a=1@0x390F80	Menu swaps: left-click option
+sig	menu-exec	6a9986f8=1@0x167D50;6a998810=1@0x167C80;6acf7c69=1@0x392930;6acf7b0a=1@0x392740	Menu swaps: action log
+sig	menu-add-row	6a9986f8=1@0x16A8E0;6a998810=1@0x16A820;6acf7c69=1@0x395040;6acf7b0a=1@0x394E40	Right-click Hide entry
+sig	tooltip-stub	6a9986f8=2@0x200940;6a998810=2@0x200990;6acf7c69=2@0x720F10;6acf7b0a=2@0x720C30	Tooltip text (item prices, levels)
+sig	outline-switch	6a9986f8=1@0x382631;6a998810=1@0x3828B1;6acf7c69=1@0xCD78F1;6acf7b0a=1@0xCD7131	Native outlines
+sig	outline-table	6a9986f8=1@0x1C41F8;6a998810=1@0x1C4248;6acf7c69=1@0x6E4A88;6acf7b0a=1@0x6E47A8	Native outlines: colours and modes
+sig	arrow-message	6a9986f8=1@0xFA140;6a998810=1@0xFA0A0;6acf7c69=1@0x359610;6acf7b0a=1@0x359430	Engine markers: hint arrows
+sig	trail-message	6a9986f8=1@0x1081E0;6a998810=1@0x108140;6acf7c69=1@0x359A70;6acf7b0a=1@0x359890	Engine markers: tile trail
+sig	arrow-frame	6a9986f8=1@0x11DF50;6a998810=1@0x11DE70;6acf7c69=1@0x402C00;6acf7b0a=1@0x402920	Engine markers|In-frame panels and text|Sounds, camera zoom and FOV|In-frame label anchors|Asks: achievements and quests
+sig	tile-draw	6a9986f8=1@0x12B730;6a998810=1@0x12B650;6acf7c69=1@0x40D960;6acf7b0a=1@0x40D680	Engine markers: tile outline
+sig	sound-synth	6a9986f8=1@0x94930;6a998810=1@0x94B20;6acf7c69=1@0x2FB280;6acf7b0a=1@0x2FAFA0	Sounds panel, sound mute
+sig	chat-notify	6a9986f8=1@0x14C600;6a998810=1@0x14C530;6acf7c69=1@0x376390;6acf7b0a=1@0x3761A0	Chat mute
+rva	optable	6a9986f8=0xD98BB0;6a998810=0xC70BB0;6acf7c69=0x1721228;6acf7b0a=0x1847278	Packet decoders, server opcodes
 disp	6a9986f8	0x100,0x104,0x108,0x118,0x130,0x138,0x178,0x180,0x184,0x188,0x190,0x198,0x1A0,0x1A8,0x1B0,0x1C0,0x1C8,0x1D8,0x1F8,0x218,0x238,0x278,0x294,0x298,0x29C,0x29D,0x29E,0x29F,0x2A0,0x2A1,0x2A8,0x310,0x330,0x334,0x348,0x34C,0x6F8,0x700,0xFA0,0x10A0,0x10A8,0x1520,0x17E8,0x1F40,0x7D00,0x8DB0,0x8DB8,0x18D58,0x18D60,0x18D68,0x18D80,0x18D88,0x19850,0x19870,0x19878,0x19880,0x19888,0x19898,0x198A0,0x198B8,0x198D8,0x198E0,0x19900,0x19910,0x19918,0x19920,0x19928,0x19930,0x19938,0x19948,0x19968,0x19970,0x19978,0x19980,0x19990,0x199A0,0x199A8,0x199B0,0x199C8,0x199D0,0x199D8,0x199E0,0x199E8,0x199F0,0x19A10,0x19A18,0x19A30,0x19B10,0x19C78,0x19C80,0x19C8F,0x19F38,0x19F40,0x19F68,0x19FA0,0x19FA8,0x19FB8,0x535C8,0x535D0,0x535D8,0x536F8	MainData layout
 build	6a998810	flavour=opengl;version=950.1.0.0;size=0xF82000;validated=2026-10-19	
 disp	6a998810	0x100,0x104,0x108,0x118,0x130,0x138,0x178,0x184,0x188,0x190,0x198,0x1A0,0x1A8,0x1B0,0x1B8,0x1C0,0x1C8,0x1D8,0x1F8,0x218,0x238,0x278,0x294,0x298,0x29C,0x29D,0x29E,0x29F,0x2A0,0x2A1,0x2A8,0x310,0x330,0x334,0x348,0x34C,0x620,0x628,0xFA0,0x10A0,0x10A8,0x1520,0x17E8,0x1F40,0x7D00,0x8DB0,0x8DB8,0x18D58,0x18D60,0x18D68,0x18D80,0x18D88,0x19850,0x19870,0x19878,0x19880,0x19888,0x19898,0x198A0,0x198B8,0x198D8,0x198E0,0x19900,0x19910,0x19918,0x19920,0x19928,0x19930,0x19938,0x19948,0x19968,0x19970,0x19978,0x19980,0x19990,0x199A0,0x199A8,0x199B0,0x199C8,0x199D0,0x199D8,0x199E0,0x199E8,0x199F0,0x19A10,0x19A18,0x19A30,0x19B10,0x19C78,0x19C80,0x19C8F,0x19F38,0x19F40,0x19F68,0x19FA0,0x19FA8,0x19FB8,0x535C8,0x535D0,0x535D8,0x536F8	MainData layout
+build	6acf7c69	flavour=opengl;version=951.1.0.0;size=0x1AF2000;validated=2026-10-19	
+disp	6acf7c69	0x100,0x104,0x108,0x10C,0x110,0x118,0x120,0x130,0x138,0x140,0x150,0x158,0x170,0x178,0x188,0x18C,0x190,0x198,0x1A0,0x1A8,0x1B0,0x1B8,0x1C0,0x1C8,0x1D8,0x1F0,0x1F8,0x218,0x220,0x228,0x238,0x294,0x298,0x29C,0x29D,0x29E,0x29F,0x2A0,0x2A1,0x2A8,0x310,0x330,0x334,0x348,0x34C,0x620,0x628,0x690,0x698,0x6A8,0x6B0,0xFA0,0x10A0,0x10A8,0x1520,0x17F0,0x1F40,0x7D00,0x8DB0,0x8DB8,0x18D58,0x18D60,0x18D68,0x18D80,0x18D88,0x19858,0x19878,0x19880,0x19888,0x19890,0x198A0,0x198A8,0x198C0,0x198E0,0x198E8,0x19910,0x19920,0x19928,0x19930,0x19938,0x19940,0x19948,0x19960,0x19980,0x19988,0x19990,0x19998,0x199A8,0x199B8,0x199C0,0x199C8,0x199E0,0x199E8,0x199F0,0x199F8,0x19A00,0x19A08,0x19A28,0x19A30,0x19A48,0x19A50,0x19B30,0x19C98,0x19CA0,0x19CAF,0x19F58,0x19F60,0x19F88,0x19FC0,0x19FC8,0x19FD8,0x55250,0x55258,0x55260,0x55380	MainData layout
 build	6acf7b0a	flavour=vulkan;version=951.1.0.0;size=0x22AD000;validated=2026-10-19	
 disp	6acf7b0a	0x100,0x104,0x108,0x10C,0x110,0x118,0x120,0x130,0x138,0x140,0x150,0x158,0x170,0x178,0x180,0x188,0x18C,0x190,0x198,0x1A0,0x1A8,0x1B0,0x1B8,0x1C0,0x1C8,0x1D8,0x1F0,0x1F8,0x218,0x220,0x228,0x238,0x294,0x298,0x29C,0x29D,0x29E,0x29F,0x2A0,0x2A1,0x2A8,0x310,0x330,0x334,0x348,0x34C,0x690,0x698,0x6A8,0x6B0,0x6F8,0x700,0xFA0,0x10A0,0x10A8,0x1520,0x17F0,0x1F40,0x7D00,0x8DB0,0x8DB8,0x18D58,0x18D60,0x18D68,0x18D80,0x18D88,0x19858,0x19878,0x19880,0x19888,0x19890,0x198A0,0x198A8,0x198C0,0x198E0,0x198E8,0x19910,0x19920,0x19928,0x19930,0x19938,0x19940,0x19948,0x19960,0x19980,0x19988,0x19990,0x19998,0x199A8,0x199B8,0x199C0,0x199C8,0x199E0,0x199E8,0x199F0,0x199F8,0x19A00,0x19A08,0x19A28,0x19A30,0x19A48,0x19A50,0x19B30,0x19C98,0x19CA0,0x19CAF,0x19F58,0x19F60,0x19F88,0x19FC0,0x19FC8,0x19FD8,0x55250,0x55258,0x55260,0x55380	MainData layout
 rva	vartableVt	6a998810=0xB609C0;6a9986f8=0xC6D818	Var domain stores
 rva	zoneSub	6a9986f8=0xD96B30	Zone events
-op	area_sound.0x5F	6a9986f8=0x5F/len=11/h=f553cf80;6acf7b0a=0x64/len=11/h=aa22b81c	Packet decoders
-op	area_sound.0xA4	6a9986f8=0xA4/len=10/h=542449c7;6acf7b0a=0xE0/len=10/h=542449c7	Packet decoders
-op	camera_target.0x35	6a9986f8=0x35/len=4/h=69e211dd;6acf7b0a=0x4F/len=4/h=6ad4f7f8	Packet decoders
-op	container_full.0x9	6a9986f8=0x9/len=-2/h=b111b85c;6acf7b0a=0x5/len=-2/h=6519fec2	Packet decoders
-op	container_reset.0x14	6a9986f8=0x14/len=3/h=3a8fe8f1;6acf7b0a=0x66/len=3/h=04a2967c	Packet decoders
-op	container_update.0x32	6a9986f8=0x32/len=-2/h=bf2d95a4;6acf7b0a=0x2E/len=-2/h=bf2d95a4	Packet decoders
-op	cutscene.0xCD	6a9986f8=0xCD/len=2/h=fc4c2a38;6acf7b0a=0x95/len=2/h=468b2a26	Packet decoders
-op	friends_loaded.0x5D	6a9986f8=0x5D/len=0/h=2d873da7;6acf7b0a=0x16/len=0/h=d828c6e7	Packet decoders
-op	ge_offer.0x54	6a9986f8=0x54/len=36/h=7ecdf2ce;6acf7b0a=0x6A/len=36/h=0940c9df	Packet decoders
-op	hint_arrow.0x62	6a9986f8=0x62/len=14/h=669e4cfd;6acf7b0a=0x7C/len=14/h=1eeb1eac	Packet decoders
-op	loc_add.0x4B	6a9986f8=0x4B/len=7/h=8ffda69d;6acf7b0a=0x6/len=7/h=89ceda56	Packet decoders
-op	loc_del.0x1A	6a9986f8=0x1A/len=2/h=c7d22e22;6acf7b0a=0x3C/len=2/h=53f82605	Packet decoders
-op	message_game.0x21	6a9986f8=0x21/len=-1/h=97aa1f49;6acf7b0a=0x21/len=-1/h=97aa1f49	Packet decoders
-op	minimap_state.0x20	6a9986f8=0x20/len=1/h=8d65db5c;6acf7b0a=0x32/len=1/h=8d65db5c	Packet decoders
-op	obj_add.0x33	6a9986f8=0x33/len=6/h=7824c12d;6acf7b0a=0xB/len=6/h=bc72fe4a	Packet decoders
-op	obj_count.0x46	6a9986f8=0x46/len=8/h=f16f58b6;6acf7b0a=0xC8/len=8/h=57a0cb56	Packet decoders
-op	obj_del.0x6D	6a9986f8=0x6D/len=4/h=e1ff3207;6acf7b0a=0x7B/len=4/h=8fe314ba	Packet decoders
-op	ping_echo.0xBE	6a9986f8=0xBE/len=8/h=ea3d1ef5;6acf7b0a=0xD3/len=8/h=554b55f1	Packet decoders
-op	private_filter.0x28	6a9986f8=0x28/len=1/h=154458bc;6acf7b0a=0x62/len=1/h=7fcfadb4	Packet decoders
-op	projectile.0x72	6a9986f8=0x72/len=20/h=ee998293;6acf7b0a=0x36/len=20/h=ee998293	Packet decoders
-op	projectile.0x9A	6a9986f8=0x9A/len=21/h=15a44fcf;6acf7b0a=0xC1/len=21/h=15a44fcf	Packet decoders
-op	projectile.0xA9	6a9986f8=0xA9/len=28/h=cbe38d6f;6acf7b0a=0xAF/len=28/h=cbe38d6f	Packet decoders
-op	projectile.0xC4	6a9986f8=0xC4/len=29/h=d4c58be3;6acf7b0a=0x90/len=29/h=d4c58be3	Packet decoders
-op	run_energy.0x15	6a9986f8=0x15/len=1/h=7c4fc7f8;6acf7b0a=0xD/len=1/h=118500d3	Packet decoders
-op	run_weight.0x7	6a9986f8=0x7/len=2/h=378f35aa;6acf7b0a=0x3B/len=2/h=01f6868e	Packet decoders
-op	runclientscript.0x23	6a9986f8=0x23/len=-2/h=677aef3e;6acf7b0a=0x23/len=-2/h=677aef3e	Packet decoders
-op	server_tick.0xA0	6a9986f8=0xA0/len=0/h=97d8b61a;6acf7b0a=0x8B/len=0/h=b5953f09	Packet decoders
-op	skill_update.0x5C	6a9986f8=0x5C/len=6/h=e8bfef5e;6acf7b0a=0x1B/len=6/h=83e661a0	Packet decoders
-op	sound.0x2C	6a9986f8=0x2C/len=8/h=fd9d232c;6acf7b0a=0x44/len=8/h=07d7ca12	Packet decoders
-op	spotanim.0xBC	6a9986f8=0xBC/len=14/h=9632877a;6acf7b0a=0x8D/len=14/h=9632877a	Packet decoders
-op	spotanim.0xE	6a9986f8=0xE/len=11/h=c128599b;6acf7b0a=0x24/len=11/h=c128599b	Packet decoders
-op	spotanim_actor.0x75	6a9986f8=0x75/len=12/h=88aee957;6acf7b0a=0x60/len=12/h=763bd255	Packet decoders
-op	spotanim_actor.0xC5	6a9986f8=0xC5/len=15/h=6318656c;6acf7b0a=0xD1/len=15/h=6c000fc7	Packet decoders
-op	system_update.0x1F	6a9986f8=0x1F/len=2/h=27ccffe1;6acf7b0a=0xE/len=2/h=69cbb2bb	Packet decoders
-op	tracker_clear.0xC1	6a9986f8=0xC1/len=3/h=05b1c44e;6acf7b0a=0x8C/len=3/h=c74b59a0	Packet decoders
-op	tracker_column.0x9D	6a9986f8=0x9D/len=3/h=6ba4ee01;6acf7b0a=0xBF/len=3/h=6bb118e0	Packet decoders
-op	tracker_group.0xB0	6a9986f8=0xB0/len=5/h=d4b4ef61;6acf7b0a=0xBB/len=5/h=b23d7948	Packet decoders
-op	tracker_remove.0xC2	6a9986f8=0xC2/len=1/h=df815c49;6acf7b0a=0x89/len=1/h=d7e588c6	Packet decoders
-op	tracker_values.0x82	6a9986f8=0x82/len=-2/h=752ef30f;6acf7b0a=0xCC/len=-2/h=526ae61e	Packet decoders
-op	varbit_byte.0x1C	6a9986f8=0x1C/len=3/h=29ad9047;6acf7b0a=0x65/len=3/h=acd318cc	Packet decoders
-op	varbit_int.0x52	6a9986f8=0x52/len=6/h=2917bdaf;6acf7b0a=0x2D/len=6/h=ed60aa63	Packet decoders
-op	varbit_set.0x74	6a9986f8=0x74/len=-1/h=f3bb8930;6acf7b0a=0x4E/len=-1/h=f3bb8930	Packet decoders
-op	varc_byte.0x7E	6a9986f8=0x7E/len=3/h=d4486c63;6acf7b0a=0x37/len=3/h=8e2028bf	Packet decoders
-op	varc_int.0x77	6a9986f8=0x77/len=6/h=513c4390;6acf7b0a=0x28/len=6/h=09706e14	Packet decoders
-op	varc_long.0xC8	6a9986f8=0xC8/len=10/h=7f34154f;6acf7b0a=0xA6/len=10/h=35273216	Packet decoders
-op	varp_byte.0x4F	6a9986f8=0x4F/len=3/h=88264ef5;6acf7b0a=0xF/len=3/h=c7659c5f	Packet decoders
-op	varp_int.0x4	6a9986f8=0x4/len=6/h=57db7bbf;6acf7b0a=0x27/len=6/h=6760675f	Packet decoders
-op	varp_long.0xA5	6a9986f8=0xA5/len=10/h=bf3340e2;6acf7b0a=0x9E/len=10/h=484ee87a	Packet decoders
-op	zone_base.0x60	6a9986f8=0x60/len=3/h=69f82b83;6acf7b0a=0x4/len=3/h=d3f7241a	Packet decoders
-op	zone_clear.0x2	6a9986f8=0x2/len=3/h=3404c396;6acf7b0a=0x54/len=3/h=1486a276	Packet decoders
-op	zone_sub14.0x90	6a9986f8=0x90/len=-1/h=9f4d2d7a;6acf7b0a=0xBD/len=-1/h=7694aa9d	Packet decoders
-op	zone_sub3.0xB5	6a9986f8=0xB5/len=5/h=8f309760;6acf7b0a=0xCD/len=5/h=08c5b146	Packet decoders
-op	zone_update.0x31	6a9986f8=0x31/len=-2/h=dab63d05;6acf7b0a=0x43/len=-2/h=e211c01c	Packet decoders
+op	area_sound.0x5F	6a9986f8=0x5F/len=11/h=f553cf80;6acf7b0a=0x64/len=11/h=aa22b81c;6acf7c69=0x64/len=11/h=aa22b81c	Packet decoders
+op	area_sound.0xA4	6a9986f8=0xA4/len=10/h=542449c7;6acf7b0a=0xE0/len=10/h=542449c7;6acf7c69=0xE0/len=10/h=542449c7	Packet decoders
+op	camera_target.0x35	6a9986f8=0x35/len=4/h=69e211dd;6acf7b0a=0x4F/len=4/h=6ad4f7f8;6acf7c69=0x4F/len=4/h=6ad4f7f8	Packet decoders
+op	container_full.0x9	6a9986f8=0x9/len=-2/h=b111b85c;6acf7b0a=0x5/len=-2/h=6519fec2;6acf7c69=0x5/len=-2/h=3584fe4c	Packet decoders
+op	container_reset.0x14	6a9986f8=0x14/len=3/h=3a8fe8f1;6acf7b0a=0x66/len=3/h=04a2967c;6acf7c69=0x66/len=3/h=4d1d80fe	Packet decoders
+op	container_update.0x32	6a9986f8=0x32/len=-2/h=bf2d95a4;6acf7b0a=0x2E/len=-2/h=bf2d95a4;6acf7c69=0x2E/len=-2/h=bf2d95a4	Packet decoders
+op	cutscene.0xCD	6a9986f8=0xCD/len=2/h=fc4c2a38;6acf7b0a=0x95/len=2/h=468b2a26;6acf7c69=0x95/len=2/h=468b2a26	Packet decoders
+op	friends_loaded.0x5D	6a9986f8=0x5D/len=0/h=2d873da7;6acf7b0a=0x16/len=0/h=d828c6e7;6acf7c69=0x16/len=0/h=d828c6e7	Packet decoders
+op	ge_offer.0x54	6a9986f8=0x54/len=36/h=7ecdf2ce;6acf7b0a=0x6A/len=36/h=0940c9df;6acf7c69=0x6A/len=36/h=0940c9df	Packet decoders
+op	hint_arrow.0x62	6a9986f8=0x62/len=14/h=669e4cfd;6acf7b0a=0x7C/len=14/h=1eeb1eac;6acf7c69=0x7C/len=14/h=1eeb1eac	Packet decoders
+op	loc_add.0x4B	6a9986f8=0x4B/len=7/h=8ffda69d;6acf7b0a=0x6/len=7/h=89ceda56;6acf7c69=0x6/len=7/h=b26ad884	Packet decoders
+op	loc_del.0x1A	6a9986f8=0x1A/len=2/h=c7d22e22;6acf7b0a=0x3C/len=2/h=53f82605;6acf7c69=0x3C/len=2/h=08c94817	Packet decoders
+op	message_game.0x21	6a9986f8=0x21/len=-1/h=97aa1f49;6acf7b0a=0x21/len=-1/h=97aa1f49;6acf7c69=0x21/len=-1/h=97aa1f49	Packet decoders
+op	minimap_state.0x20	6a9986f8=0x20/len=1/h=8d65db5c;6acf7b0a=0x32/len=1/h=8d65db5c;6acf7c69=0x32/len=1/h=8d65db5c	Packet decoders
+op	obj_add.0x33	6a9986f8=0x33/len=6/h=7824c12d;6acf7b0a=0xB/len=6/h=bc72fe4a;6acf7c69=0xB/len=6/h=bc72fe4a	Packet decoders
+op	obj_count.0x46	6a9986f8=0x46/len=8/h=f16f58b6;6acf7b0a=0xC8/len=8/h=57a0cb56;6acf7c69=0xC8/len=8/h=57a0cb56	Packet decoders
+op	obj_del.0x6D	6a9986f8=0x6D/len=4/h=e1ff3207;6acf7b0a=0x7B/len=4/h=8fe314ba;6acf7c69=0x7B/len=4/h=8fe314ba	Packet decoders
+op	ping_echo.0xBE	6a9986f8=0xBE/len=8/h=ea3d1ef5;6acf7b0a=0xD3/len=8/h=554b55f1;6acf7c69=0xD3/len=8/h=df2db750	Packet decoders
+op	private_filter.0x28	6a9986f8=0x28/len=1/h=154458bc;6acf7b0a=0x62/len=1/h=7fcfadb4;6acf7c69=0x62/len=1/h=7fcfadb4	Packet decoders
+op	projectile.0x72	6a9986f8=0x72/len=20/h=ee998293;6acf7b0a=0x36/len=20/h=ee998293;6acf7c69=0x36/len=20/h=ee998293	Packet decoders
+op	projectile.0x9A	6a9986f8=0x9A/len=21/h=15a44fcf;6acf7b0a=0xC1/len=21/h=15a44fcf;6acf7c69=0xC1/len=21/h=15a44fcf	Packet decoders
+op	projectile.0xA9	6a9986f8=0xA9/len=28/h=cbe38d6f;6acf7b0a=0xAF/len=28/h=cbe38d6f;6acf7c69=0xAF/len=28/h=cbe38d6f	Packet decoders
+op	projectile.0xC4	6a9986f8=0xC4/len=29/h=d4c58be3;6acf7b0a=0x90/len=29/h=d4c58be3;6acf7c69=0x90/len=29/h=d4c58be3	Packet decoders
+op	run_energy.0x15	6a9986f8=0x15/len=1/h=7c4fc7f8;6acf7b0a=0xD/len=1/h=118500d3;6acf7c69=0xD/len=1/h=118500d3	Packet decoders
+op	run_weight.0x7	6a9986f8=0x7/len=2/h=378f35aa;6acf7b0a=0x3B/len=2/h=01f6868e;6acf7c69=0x3B/len=2/h=86656fa5	Packet decoders
+op	runclientscript.0x23	6a9986f8=0x23/len=-2/h=677aef3e;6acf7b0a=0x23/len=-2/h=677aef3e;6acf7c69=0x23/len=-2/h=677aef3e	Packet decoders
+op	server_tick.0xA0	6a9986f8=0xA0/len=0/h=97d8b61a;6acf7b0a=0x8B/len=0/h=b5953f09;6acf7c69=0x8B/len=0/h=b5953f09	Packet decoders
+op	skill_update.0x5C	6a9986f8=0x5C/len=6/h=e8bfef5e;6acf7b0a=0x1B/len=6/h=83e661a0;6acf7c69=0x1B/len=6/h=83e661a0	Packet decoders
+op	sound.0x2C	6a9986f8=0x2C/len=8/h=fd9d232c;6acf7b0a=0x44/len=8/h=07d7ca12;6acf7c69=0x44/len=8/h=f6b1a8a4	Packet decoders
+op	spotanim.0xBC	6a9986f8=0xBC/len=14/h=9632877a;6acf7b0a=0x8D/len=14/h=9632877a;6acf7c69=0x8D/len=14/h=9632877a	Packet decoders
+op	spotanim.0xE	6a9986f8=0xE/len=11/h=c128599b;6acf7b0a=0x24/len=11/h=c128599b;6acf7c69=0x24/len=11/h=c128599b	Packet decoders
+op	spotanim_actor.0x75	6a9986f8=0x75/len=12/h=88aee957;6acf7b0a=0x60/len=12/h=763bd255;6acf7c69=0x60/len=12/h=763bd255	Packet decoders
+op	spotanim_actor.0xC5	6a9986f8=0xC5/len=15/h=6318656c;6acf7b0a=0xD1/len=15/h=6c000fc7;6acf7c69=0xD1/len=15/h=6c000fc7	Packet decoders
+op	system_update.0x1F	6a9986f8=0x1F/len=2/h=27ccffe1;6acf7b0a=0xE/len=2/h=69cbb2bb;6acf7c69=0xE/len=2/h=1a78c3b9	Packet decoders
+op	tracker_clear.0xC1	6a9986f8=0xC1/len=3/h=05b1c44e;6acf7b0a=0x8C/len=3/h=c74b59a0;6acf7c69=0x8C/len=3/h=c74b59a0	Packet decoders
+op	tracker_column.0x9D	6a9986f8=0x9D/len=3/h=6ba4ee01;6acf7b0a=0xBF/len=3/h=6bb118e0;6acf7c69=0xBF/len=3/h=6bb118e0	Packet decoders
+op	tracker_group.0xB0	6a9986f8=0xB0/len=5/h=d4b4ef61;6acf7b0a=0xBB/len=5/h=b23d7948;6acf7c69=0xBB/len=5/h=b23d7948	Packet decoders
+op	tracker_remove.0xC2	6a9986f8=0xC2/len=1/h=df815c49;6acf7b0a=0x89/len=1/h=d7e588c6;6acf7c69=0x89/len=1/h=d7e588c6	Packet decoders
+op	tracker_values.0x82	6a9986f8=0x82/len=-2/h=752ef30f;6acf7b0a=0xCC/len=-2/h=526ae61e;6acf7c69=0xCC/len=-2/h=3c1a08d7	Packet decoders
+op	varbit_byte.0x1C	6a9986f8=0x1C/len=3/h=29ad9047;6acf7b0a=0x65/len=3/h=acd318cc;6acf7c69=0x65/len=3/h=acd318cc	Packet decoders
+op	varbit_int.0x52	6a9986f8=0x52/len=6/h=2917bdaf;6acf7b0a=0x2D/len=6/h=ed60aa63;6acf7c69=0x2D/len=6/h=ed60aa63	Packet decoders
+op	varbit_set.0x74	6a9986f8=0x74/len=-1/h=f3bb8930;6acf7b0a=0x4E/len=-1/h=f3bb8930;6acf7c69=0x4E/len=-1/h=f3bb8930	Packet decoders
+op	varc_byte.0x7E	6a9986f8=0x7E/len=3/h=d4486c63;6acf7b0a=0x37/len=3/h=8e2028bf;6acf7c69=0x37/len=3/h=8e2028bf	Packet decoders
+op	varc_int.0x77	6a9986f8=0x77/len=6/h=513c4390;6acf7b0a=0x28/len=6/h=09706e14;6acf7c69=0x28/len=6/h=dba52e6d	Packet decoders
+op	varc_long.0xC8	6a9986f8=0xC8/len=10/h=7f34154f;6acf7b0a=0xA6/len=10/h=35273216;6acf7c69=0xA6/len=10/h=f398f081	Packet decoders
+op	varp_byte.0x4F	6a9986f8=0x4F/len=3/h=88264ef5;6acf7b0a=0xF/len=3/h=c7659c5f;6acf7c69=0xF/len=3/h=c7659c5f	Packet decoders
+op	varp_int.0x4	6a9986f8=0x4/len=6/h=57db7bbf;6acf7b0a=0x27/len=6/h=6760675f;6acf7c69=0x27/len=6/h=6760675f	Packet decoders
+op	varp_long.0xA5	6a9986f8=0xA5/len=10/h=bf3340e2;6acf7b0a=0x9E/len=10/h=484ee87a;6acf7c69=0x9E/len=10/h=484ee87a	Packet decoders
+op	zone_base.0x60	6a9986f8=0x60/len=3/h=69f82b83;6acf7b0a=0x4/len=3/h=d3f7241a;6acf7c69=0x4/len=3/h=a8a72e89	Packet decoders
+op	zone_clear.0x2	6a9986f8=0x2/len=3/h=3404c396;6acf7b0a=0x54/len=3/h=1486a276;6acf7c69=0x54/len=3/h=1486a276	Packet decoders
+op	zone_sub14.0x90	6a9986f8=0x90/len=-1/h=9f4d2d7a;6acf7b0a=0xBD/len=-1/h=7694aa9d;6acf7c69=0xBD/len=-1/h=1b867200	Packet decoders
+op	zone_sub3.0xB5	6a9986f8=0xB5/len=5/h=8f309760;6acf7b0a=0xCD/len=5/h=08c5b146;6acf7c69=0xCD/len=5/h=f421750e	Packet decoders
+op	zone_update.0x31	6a9986f8=0x31/len=-2/h=dab63d05;6acf7b0a=0x43/len=-2/h=e211c01c;6acf7c69=0x43/len=-2/h=e211c01c	Packet decoders
 ophist	achievements/1	n=4522	Achievements
 ophist	achievements/11	n=1279	Achievements
 ophist	achievements/12	n=394	Achievements

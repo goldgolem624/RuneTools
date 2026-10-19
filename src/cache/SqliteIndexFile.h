@@ -53,6 +53,10 @@ public:
 
     std::size_t CachedBytes()     const;
     int         FailedArchives()  const;
+    // Archives whose stored row is behind the reference table: an earlier download the game
+    // replaces when it next loads the archive. Not decode failures; their reads answer empty until then.
+    int         StaleArchives()   const;
+    std::string FirstStale()      const;
     // Why the first archive that failed to decode did ("container type 4 at archive 1234",
     // "lzma failed at archive 12", "file table layout changed ... at archive 7"); empty when none.
     std::string FirstFailure()    const;
@@ -61,6 +65,7 @@ private:
     enum class SlotState : std::uint8_t { NotLoaded, Loaded, Failed };
     struct Slot {
         SlotState                              state = SlotState::NotLoaded;
+        bool                                   stale = false;  // the row's version is behind the reference table
         std::uint64_t                          last_use = 0;   // LRU touch counter
         std::size_t                            bytes = 0;
         std::vector<std::vector<std::uint8_t>> files;
@@ -69,7 +74,8 @@ private:
 
     static const ReferenceTable& EmptyRefTable();
     std::vector<std::uint8_t> FetchReferenceTableBlob();
-    std::vector<std::uint8_t> FetchArchiveBlob(int archive_id);
+    // version: the row's VERSION column, the reference-table version the game stored it under; -1 when absent.
+    std::vector<std::uint8_t> FetchArchiveBlob(int archive_id, long long* version = nullptr);
     // True when the last FetchBlob could not read the db at all (locked/busy/io error, or the
     // connection would not open) as opposed to the key simply not being present. Transient: the
     // game client holds js5-2.jcache open and writes it while it downloads cache updates.
@@ -80,7 +86,7 @@ private:
     sqlite3_stmt* Prepare(const char* sql, sqlite3_stmt*& cached) const;
     void          DropDb() const;            // close + forget statements
     void          NoteResult(int rc) const;  // drop the connection on BUSY/LOCKED/IOERR
-    std::vector<std::uint8_t> FetchBlob(const char* sql, sqlite3_stmt*& cached, int key) const;
+    std::vector<std::uint8_t> FetchBlob(const char* sql, sqlite3_stmt*& cached, int key, long long* version = nullptr) const;
 
     void EvictToBudget(std::size_t incoming);   // caller holds archive_cache_mu_
 
@@ -107,6 +113,8 @@ private:
     std::size_t                    cached_bytes_  = 0;
     int                            failed_count_  = 0;
     std::string                    first_fail_;         // reason of the first failed decode (archive_cache_mu_)
+    int                            stale_count_   = 0;  // slots with stale set (archive_cache_mu_)
+    std::string                    first_stale_;        // the first stale row seen, both versions named
     std::uint64_t                  use_counter_   = 0;
 };
 

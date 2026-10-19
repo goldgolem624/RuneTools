@@ -8,7 +8,7 @@ inline constexpr int kMessageGame     = 0x21;   // 0x15 on 949   var-byte : [typ
 inline constexpr int kSkillUpdate     = 0x5C;   // 0x04 on 949   6 bytes  : [skill -b0][level -b1][xp u32 BE]
 inline constexpr int kContainerUpdate = 0x32;   // 0x2B on 949   var-short: [container u16 BE][flags u8] slots...
 inline constexpr int kRunClientScript = 0x23;   // 0x52 on 949   var-short : [sig][args reversed][script i32]; live 2026-09-12: 278/304 decode
-                                                //   (0x82 is NOT runclientscript: it carries tracker cell values for the tracker grid at MainData+0x19850)
+                                                //   (0x82 is NOT runclientscript: it carries tracker cell values for the tracker grid at MainData+0x19858)
 inline constexpr int kGeOffer         = 0x54;   // 0x51 on 949   36 bytes (949 also had a 35-byte 0x05; no 950-1 counterpart)
 inline constexpr int kRunEnergy       = 0x15;   // 0x5C on 949   1 byte   : [energy u8] -> skill block +0x18
 inline constexpr int kRunWeight       = 0x07;   // 0x00 on 949   2 bytes  : [weight i16 BE] -> skill block +0x1C
@@ -26,7 +26,7 @@ inline constexpr int kVarpLong        = 0xA5;   // 10 bytes : value = i64 hi=(b1
 inline constexpr int kVarbitByte      = 0x1C;   // 3 bytes  : value = (b0+0x80)&0xFF; varbit id = b1|(b2<<8) (same setter as 0x74)
 inline constexpr int kVarbitInt       = 0x52;   // 6 bytes  : value = i32 BE; varbit id = u16 LE at 4
 inline constexpr int kVarcLong        = 0xC8;   // 10 bytes : value = i64, hi = u32 LE at 0, lo = u32 LE at 4; varc id = u16 LE at 8
-// Trackers: the skill, combat and loot tracker feed (groups of 0x68 at [MainData+0x19850], each a
+// Trackers: the skill, combat and loot tracker feed (groups of 0x68 at [MainData+0x19858], each a
 // grid of i32 cells [row][column]; INT32_MIN = no value). Group, row and column bytes are indexes
 // into the groups vector and the group's row and column id lists.
 inline constexpr int kTrackerGroup    = 0xB0;   // 5 bytes  : group id = (b2<<24)|(b3<<16)|(b0<<8)|b1, slot = (int8)(b4+0x80)
@@ -34,7 +34,7 @@ inline constexpr int kTrackerValues   = 0x82;   // var-short: { group i8 (0xFF e
 inline constexpr int kTrackerRemove   = 0xC2;   // 1 byte   : slot = (int8)(-b0)
 inline constexpr int kTrackerClear    = 0xC1;   // 3 bytes  : group b0, column = -b1, row b2; the cell becomes INT32_MIN
 inline constexpr int kTrackerColumn   = 0x9D;   // 3 bytes  : group = 0x80-b0, column b1, shown = (b2 == 0x81)
-// Inventories: the manager at [MainData+0x199C8] keys its sorted entries by container id * 2 | other-player flag.
+// Inventories: the manager at [MainData+0x199E0] keys its sorted entries by container id * 2 | other-player flag.
 inline constexpr int kContainerFull   = 0x09;   // var-short: [container u16 BE][flags u8][count u16 BE] then count x [itemId+1 u24 BE][qty u8 | 0xFF u32 BE][variant if flags&2]; flags&1 = another player's
 inline constexpr int kContainerReset  = 0x14;   // 3 bytes  : other = (-b0)&1, container = ((b2-0x80)&0xFF)|(b1<<8)
 // Small state packets.
@@ -58,7 +58,7 @@ inline constexpr int kSpotAnim        = 0x0E;   // 11 bytes : graphic at a tile
 inline constexpr int kSpotAnim2       = 0xBC;   // 14 bytes : graphic at a tile with offsets
 inline constexpr int kSpotAnimActor   = 0x75;   // 12 bytes : graphic on a player, NPC or tile
 inline constexpr int kSpotAnimActor2  = 0xC5;   // 15 bytes : graphic on a player, NPC or tile, with offsets
-inline constexpr int kProjectile      = 0x9A;   // 21 bytes : projectile (manager at MainData+0x19960)
+inline constexpr int kProjectile      = 0x9A;   // 21 bytes : projectile (manager at MainData+0x19978, from the table order)
 inline constexpr int kSound           = 0x2C;   // 8 bytes  : sound effect
 inline constexpr int kAreaSound       = 0xA4;   // 10 bytes : sound at a zone tile
 inline constexpr int kAreaSoundAbs    = 0x5F;   // 11 bytes : sound at a packed world tile

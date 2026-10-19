@@ -66,7 +66,7 @@ sqlite3_stmt* SqliteIndexFile::Prepare(const char* sql, sqlite3_stmt*& cached) c
 }
 
 std::vector<std::uint8_t> SqliteIndexFile::FetchBlob(const char* sql, sqlite3_stmt*& cached,
-                                                     int key) const {
+                                                     int key, long long* version) const {
     std::vector<std::uint8_t> out;
     std::lock_guard<std::mutex> lk(db_mu_);
     db_error_ = false;
@@ -81,6 +81,8 @@ std::vector<std::uint8_t> SqliteIndexFile::FetchBlob(const char* sql, sqlite3_st
         if (blob && size > 0) {
             out.assign((const std::uint8_t*)blob, (const std::uint8_t*)blob + size);
         }
+        if (version && sqlite3_column_count(stmt) > 1 && sqlite3_column_type(stmt, 1) == SQLITE_INTEGER)
+            *version = sqlite3_column_int64(stmt, 1);
     }
     sqlite3_reset(stmt);   // release the read lock between calls
     NoteResult(rc);
@@ -178,8 +180,9 @@ std::vector<std::uint8_t> SqliteIndexFile::FetchReferenceTableBlob() {
     return FetchBlob("SELECT `DATA` FROM `cache_index` WHERE `KEY` = 1;", stmt_ref_table_, -1);
 }
 
-std::vector<std::uint8_t> SqliteIndexFile::FetchArchiveBlob(int archive_id) {
-    return FetchBlob("SELECT `DATA` FROM `cache` WHERE `KEY` = ?;", stmt_archive_, archive_id);
+std::vector<std::uint8_t> SqliteIndexFile::FetchArchiveBlob(int archive_id, long long* version) {
+    if (version) *version = -1;
+    return FetchBlob("SELECT `DATA`, `VERSION` FROM `cache` WHERE `KEY` = ?;", stmt_archive_, archive_id, version);
 }
 
 std::vector<std::uint8_t> SqliteIndexFile::ReadRawArchive(int archive_id) {
@@ -225,7 +228,8 @@ SqliteIndexFile::ReadFile(int archive_id, int file_id) {
         // Failed decodes are sticky, but a db that could not be read at all is not a failed decode:
         // the game client writes js5-2.jcache while it downloads, and a BUSY/LOCKED there would
         // otherwise blank a whole archive (e.g. 69, every varbit def) for the life of the process.
-        auto compressed = FetchArchiveBlob(archive_id);
+        long long version = -1;
+        auto compressed = FetchArchiveBlob(archive_id, &version);
         if (compressed.empty()) {
             if (LastReadFailed()) return {};                       // leave NotLoaded: retry later
             // No row yet: the client downloads archives on demand, so it can still arrive this
@@ -233,6 +237,20 @@ SqliteIndexFile::ReadFile(int archive_id, int file_id) {
             slot.retry_at = now + kMissingRowRetry;
             return {};
         }
+        const auto& a = ref_table_->entries()[archive_id];
+        // The game stores a row under the version the reference table listed when it downloaded it
+        // and reads it only while that version is current. A row behind the table is an earlier
+        // download laid out for an older file list: not a decode failure, and replaced when the
+        // game next loads the archive, so it is left NotLoaded like a missing row.
+        if (version >= 0 && version != (long long)(std::uint32_t)a.version) {
+            if (!slot.stale) { slot.stale = true; ++stale_count_; }
+            if (first_stale_.empty())
+                first_stale_ = "archive " + std::to_string(archive_id) + " stored at version " + std::to_string(version) +
+                               ", the reference table lists " + std::to_string((std::uint32_t)a.version);
+            slot.retry_at = now + kMissingRowRetry;
+            return {};
+        }
+        if (slot.stale) { slot.stale = false; --stale_count_; }
         std::string why;
         auto decompressed = Decompress(compressed, &why);
         if (decompressed.empty()) {
@@ -240,7 +258,6 @@ SqliteIndexFile::ReadFile(int archive_id, int file_id) {
             if (first_fail_.empty()) first_fail_ = (why.empty() ? std::string("empty payload") : why) + " at archive " + std::to_string(archive_id);
             return {};
         }
-        const auto& a = ref_table_->entries()[archive_id];
         auto files = SplitArchive(decompressed, a.valid_file_ids, a.largest_file_id, &why);
         if (files.empty() && !why.empty()) {
             slot.state = SlotState::Failed; ++failed_count_;
@@ -273,6 +290,16 @@ int SqliteIndexFile::FailedArchives() const {
 std::string SqliteIndexFile::FirstFailure() const {
     std::lock_guard<std::mutex> lk(archive_cache_mu_);
     return first_fail_;
+}
+
+int SqliteIndexFile::StaleArchives() const {
+    std::lock_guard<std::mutex> lk(archive_cache_mu_);
+    return stale_count_;
+}
+
+std::string SqliteIndexFile::FirstStale() const {
+    std::lock_guard<std::mutex> lk(archive_cache_mu_);
+    return first_stale_;
 }
 
 }  // namespace rtx::cache

@@ -145,16 +145,16 @@ void NoteHeard(const char* who) {
     g_share->recentSeq = seq + 1;
 }
 
-// The store: a hash map of records keyed by id at store+0x878 (buckets +0x880, count of buckets
-// +0x888, records +0x890), the id the next line takes at +0x18, each record chained through
+// The store: a hash map of records keyed by id at store+0x8B8 (buckets +0x8C0, count of buckets
+// +0x8C8, records +0x8D0), the id the next line takes at +0x18, each record chained through
 // +0xB8, and a doubly linked id chain through the records' +0x8 (next id) and +0xC (previous id).
 // The chat window starts from the newest id and follows the chain back, and a new line looks its
 // predecessor up by id, so a muted line is undone as if never added: out of the map and the chain,
 // and its id handed back for the next line. Its memory is left: a freed record could be handed to
 // the caller's next use of it. The tree at +0x20 is not touched (NoteTree above).
 std::uint64_t FindRecord(std::uint64_t store, std::int32_t key) {
-    const std::uint64_t buckets = *(const std::uint64_t*)(store + 0x880);
-    const std::uint32_t nb = *(const std::uint32_t*)(store + 0x888);
+    const std::uint64_t buckets = *(const std::uint64_t*)(store + 0x8C0);
+    const std::uint32_t nb = *(const std::uint32_t*)(store + 0x8C8);
     if (!buckets || !nb) return 0;
     std::uint64_t node = *(const std::uint64_t*)(buckets + ((std::uint64_t)(std::uint32_t)key % nb) * 8);
     for (int guard = 0; node > 0x10000 && guard < 256; ++guard) {
@@ -174,8 +174,8 @@ int Unlink(std::uint64_t store, std::uint64_t rec) {
         const std::int32_t key = *(const std::int32_t*)rec;
         g_share->diag[6] = (std::uint32_t)(*(const std::int32_t*)(store + 0x18) - key);
         if (*(const std::int32_t*)(store + 0x18) != key + 1) return 1;
-        const std::uint64_t buckets = *(const std::uint64_t*)(store + 0x880);
-        const std::uint32_t nb = *(const std::uint32_t*)(store + 0x888);
+        const std::uint64_t buckets = *(const std::uint64_t*)(store + 0x8C0);
+        const std::uint32_t nb = *(const std::uint32_t*)(store + 0x8C8);
         if (!buckets || !nb) return 2;
         std::uint64_t* slot = (std::uint64_t*)(buckets + ((std::uint64_t)(std::uint32_t)key % nb) * 8);
         std::uint64_t node = *slot;
@@ -186,7 +186,7 @@ int Unlink(std::uint64_t store, std::uint64_t rec) {
             if (node <= 0x10000 || guard >= 256) return 3;
             *(std::uint64_t*)(node + 0xB8) = *(const std::uint64_t*)(rec + 0xB8);
         }
-        *(std::int64_t*)(store + 0x890) -= 1;
+        *(std::int64_t*)(store + 0x8D0) -= 1;
         *(std::int32_t*)(store + 0x18) = key;               // the next line takes this line's key
         return 0;
     } __except (EXCEPTION_EXECUTE_HANDLER) { return 4; }

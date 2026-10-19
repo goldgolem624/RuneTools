@@ -20,8 +20,8 @@ std::uint32_t language   = rtx::md::kLanguage;
 std::uint32_t soundCtx   = rtx::md::kSoundCtx;
 std::uint32_t strStack   = 0x10A8;
 std::uint32_t strSp      = 0x8DA8;
-std::uint32_t entityRef  = 0xC3B0;
-std::uint32_t entityObj  = 0xC3B8;
+std::uint32_t entityRef  = 0xC3B8;
+std::uint32_t entityObj  = 0xC3C0;
 
 namespace {
 std::atomic<bool> g_loaded{ false };

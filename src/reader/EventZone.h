@@ -2,7 +2,7 @@
 // packets"). The server first sets a zone base (0x60, or the header of a 0x31 zone update, or
 // 0x02 which also clears the zone), then sends items whose position byte is (localX << 4 | localY)
 // inside that 8x8 zone. The base is given as an offset in zones from the loaded map's origin, which
-// the client keeps at [MainData+0x19898]+0x698 (x) / +0x69C (y); EventsJson reads it before decoding.
+// the client keeps at [MainData+0x198A0]+0x6C8 (x) / +0x6CC (y); EventsJson reads it before decoding.
 // Field names marked "raw" below carry the byte the client reads without a meaning its handler
 // shows; everything else is what the handler does with the byte.
 #pragma once
@@ -17,7 +17,7 @@ namespace rtx::evzone {
 
 struct Zone { int plane = 0, x = 0, y = 0; bool set = false; };
 inline Zone g_zone;                 // last zone base seen in the record stream (records decode in order)
-inline int g_mapBaseX = 0, g_mapBaseY = 0;   // [MainData+0x19898]+0x698 / +0x69C, refreshed per EventsJson call
+inline int g_mapBaseX = 0, g_mapBaseY = 0;   // [MainData+0x198A0]+0x6C8 / +0x6CC, refreshed per EventsJson call
 
 inline std::uint16_t u16be(const std::uint8_t* b) { return (std::uint16_t)((b[0] << 8) | b[1]); }
 inline std::uint32_t u32be(const std::uint8_t* b) { return ((std::uint32_t)b[0] << 24) | ((std::uint32_t)b[1] << 16) | ((std::uint32_t)b[2] << 8) | b[3]; }
@@ -41,7 +41,7 @@ inline void packedJson(std::string& o, std::uint32_t v) {
     o += t;
 }
 // Entity reference used by the on-actor graphic packets: player index below 0x20000000, NPC
-// index below 0x40000000 (both & 0xFFFF into the registries at MainData+0x19950 / +0x19930),
+// index below 0x40000000 (both & 0xFFFF into the registries at MainData+0x19968 / +0x19930, the latter 950-1's),
 // otherwise a packed world tile.
 inline void refJson(std::string& o, std::uint32_t v) {
     char t[96];

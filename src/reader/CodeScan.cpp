@@ -35,13 +35,15 @@ constexpr std::uint32_t kCompiledOpTable = 0xC70BB0;
 
 // Displacements the hooks read out of the code around their hit, as compiled into the companion:
 // the menu's targets vector (begin, end), the player display method's actor field.
-constexpr std::uint32_t kMenuTargetsBegin = 0x1380, kMenuTargetsEnd = 0x1388, kPlayerDisplayField = 0x1078;
+constexpr std::uint32_t kMenuTargetsBegin = 0x1388, kMenuTargetsEnd = 0x1390, kPlayerDisplayField = 0x1088;
 
-// Root fields the compiled tables do not carry, so a shift report can still name them.
+// Root fields the compiled tables do not carry, so a shift report can still name them. ConfigManager
+// and EntityLookup keep their 950-1 values (no 951-1 anchor yet); TrackerValues follows the table
+// order (GrandExchange and World moved +0x18).
 struct RootField { std::uint32_t off; const char* name; };
 constexpr RootField kRootFields[] = {
-    { 0x18D68, "ConfigManager" }, { 0x198B8, "Connection" }, { 0x19910, "LoginManager" }, { 0x19930, "EntityLookup" },
-    { 0x19980, "ScriptRunner" }, { 0x19998, "TrackerValues" }, { 0x19A48, "ServerTimeOffset" }, { 0x535C8, "WorldInfo" },
+    { 0x18D68, "ConfigManager" }, { 0x198C0, "Connection" }, { 0x19920, "LoginManager" }, { 0x19930, "EntityLookup" },
+    { 0x19998, "ScriptRunner" }, { 0x199B0, "TrackerValues" }, { 0x19A68, "ServerTimeOffset" }, { 0x55250, "WorldInfo" },
 };
 
 // Prefix a non-pass detail with its word when the branch gave it none.

@@ -73,6 +73,8 @@ namespace {
 
 // BUILD HISTORY. 940..949-5: one MainData layout. 950-1 (2026-09-07): MainData grew by 0x40 between +0x550 and +0x18D18.
 // So every MainData-relative offset >= +0x18D18 moved +0x40 (0x19F68 -> 0x19FA8, 0x36040 -> 0x36080, 0x53588 -> 0x535C8); inner object layouts unchanged.
+// 951-1: root fields from +0x19850 on moved +0x8 to +0x20 (0x19FA8 -> 0x19FC8, 0x36080 -> 0x36090), the world info and options +0x1C88 (0x535C8 -> 0x55250),
+// the actor block +0x10 from the target uid on, the var store inner maps -0x330 (mouse, skills, client store).
 
 // MainData ctor anchor: `mov [rip+disp32], rax` publishes the MainData root pointer to a global.
 // adjust = -32 walks back to the function start.
@@ -84,20 +86,20 @@ constexpr int       kMainAnchorAdjust  = -32;
 // These are read out of the client at attach (see Calibrate.h) and only fall back to the values
 // below when the client cannot prove them, so a game update moves them without a rebuild.
 std::uint32_t kOffClientClock = 0x528;
-std::uint32_t kOffWorld   = 0x199B0;   // root + this -> ptr -> +0x20 -> +0x8 = world(int)
-std::uint32_t kOffStatus  = 0x19FA0;   // root + this = status(int8)
-std::uint32_t kOffStats   = 0x19920;   // root + this -> stats container
-std::uint32_t kStatsInner = 0x7618;    // stats container + this -> skill block
-std::uint32_t kOffGE      = 0x19990;   // root + this -> ptr -> +0x10 = ge slot array
-std::uint32_t kOffAccount = 0x19FA8;   // root + this -> account / user-detail object
-std::uint32_t kEngineClock = 0x10;     // root global + this = engine clock (u64 ms), found from code
+std::uint32_t kOffWorld   = 0x199C8;   // root + this -> ptr -> +0x20 -> +0x8 = world(int)
+std::uint32_t kOffStatus  = 0x19FC0;   // root + this = status(int8)
+std::uint32_t kOffStats   = 0x19930;   // root + this -> stats container
+std::uint32_t kStatsInner = 0x72E8;    // stats container + this -> skill block
+std::uint32_t kOffGE      = 0x199A8;   // root + this -> ptr -> +0x10 = ge slot array
+std::uint32_t kOffAccount = 0x19FC8;   // root + this -> account / user-detail object
+std::uint32_t kEngineClock = 0x18;     // root global + this = engine clock (u64 ms), found from code
 constexpr std::uint32_t kGEArrayPad = 0x10;      // bytes from slot-container start to slot 0
 constexpr std::uint32_t kGESlotSize = 0x28;      // bytes per slot
 constexpr int           kGESlotCount = 8;        // members get 8, non-members 3 (rest read as empty)
 
 // Container manager: root + this -> mgr { start@+0x8, end@+0x10 }; entry stride 0x48, id@+0x10,
 // items start@+0x18 / end@+0x20 (stride 0x8: item_id@+0, stack@+4). Bank (95) present only while open.
-std::uint32_t kOffInvData                = rtx::md::kContainers;   // 0x199C8
+std::uint32_t kOffInvData                = rtx::md::kContainers;   // 0x199E0
 constexpr std::uint32_t kContainerStride = 0x48;
 constexpr int           kBankContainerId = 95;
 constexpr int           kMetalBankContainerId = 858;   // Mining&Smithing metal bank (ores + bars)
@@ -116,48 +118,48 @@ static int container_count(std::uint64_t cstart, std::uint64_t cend) {
     return n > (std::uint64_t)kMaxContainers ? kMaxContainers : (int)n;
 }
 
-// Varp hashmap at MainData+0x36080: buckets@+0x8, divisor(i32)@+0x10; node = buckets[id % divisor],
+// Varp hashmap at MainData+0x36090: buckets@+0x8, divisor(i32)@+0x10; node = buckets[id % divisor],
 // node id@+0, value@+0x8 (low 32), type tag@+0x20 (0/1 = int), next@+0x28. Unset varp = no node = 0.
-std::uint32_t kOffVarpHash               = rtx::md::kVarpHash;   // 0x36080 = varp manager + 0x1C0C8, derived at attach
+std::uint32_t kOffVarpHash               = rtx::md::kVarpHash;   // 0x36090 = varp manager + 0x1C0B8, derived at attach
 
 // Varc (int + string) hashmap at store + kVarcHashOff, store = *(MainData + kOffVarcStore);
 // same node layout as the varp map. kVarcHashOff, kOffVarpHash and the stamp map below are read off
 // the stores' own lookup routines once the root is set (var_layout_for); the values here stand until
 // then.
-std::uint32_t kOffVarcStore    = 0x19920;
-std::uint32_t kVarcStoreObj    = 0x7620;   // input state -> the embedded client var store
-std::uint32_t kVarcHashOff     = 0x7630;   // input state -> the client var map header (buckets +8)
+std::uint32_t kOffVarcStore    = 0x19930;
+std::uint32_t kVarcStoreObj    = 0x72F8;   // input state -> the embedded client var store
+std::uint32_t kVarcHashOff     = 0x7300;   // input state -> the client var map header (buckets +8)
 constexpr std::uint32_t kVarNodeNext     = 0x28;
-std::uint32_t kStampBuckets    = 0x38178;  // player var store -> change-stamp buckets (count +8)
-std::uint32_t kStampNext       = 0x18;     // change-stamp node -> next
+std::uint32_t kStampBuckets    = 0x38168;  // player var store -> change-stamp buckets (count +8)
+std::uint32_t kStampNext       = 0x50;     // change-stamp node -> next
 // Input state fields the client's own handlers name (rules varcMouseX/Y, varcButtons, varcClan).
-std::uint32_t kVarcMouseX      = 0x46D8;
-std::uint32_t kVarcMouseY      = 0x46DC;
-std::uint32_t kVarcButtons     = 0x46E8;
-std::uint32_t kVarcClan        = 0x77B0;   // input state -> the clan var store pointer
+std::uint32_t kVarcMouseX      = 0x43A8;
+std::uint32_t kVarcMouseY      = 0x43AC;
+std::uint32_t kVarcButtons     = 0x43B8;
+std::uint32_t kVarcClan        = 0x7480;   // input state -> the clan var store pointer
 
 // The other MainData stores the reader walks, each the companion table's value until the client
 // proves another through the calibration rule of the same name (kCalibrated below), so a store that
 // moved is adopted and reported instead of read at the old place.
-std::uint32_t kOffChatStore     = rtx::md::kChatStore;      // 0x19880
-std::uint32_t kOffClanSettings  = rtx::md::kClanSettings;   // 0x19888
-std::uint32_t kOffMapMgr        = rtx::md::kMapMgr;         // 0x19898
-std::uint32_t kOffInputReporter = rtx::md::kInputReport;    // 0x198B0, MainData -> input reporter
+std::uint32_t kOffChatStore     = rtx::md::kChatStore;      // 0x19888
+std::uint32_t kOffClanSettings  = rtx::md::kClanSettings;   // 0x19890
+std::uint32_t kOffMapMgr        = rtx::md::kMapMgr;         // 0x198A0
+std::uint32_t kOffInputReporter = rtx::md::kInputReport;    // 0x198B8, MainData -> input reporter
 // The arrow manager, its slot size and its request records, from the arrow-frame site and the arrow
 // message routine at attach (0: not found, the scan clue ring read is off).
 std::uint32_t kOffArrowMgr      = 0;
 std::uint32_t kArrowSlotBytes   = 0;
 std::uint32_t kArrowRequests    = 0, kArrowRequestSize = 0;
-std::uint32_t kOffIfaceOwner    = rtx::md::kIfaceOwner;     // 0x19900
-std::uint32_t kOffInputProc     = rtx::md::kInputProc;      // 0x19928 (0x198E8 through 949-5)
-std::uint32_t kOffPlayerGroup   = rtx::md::kPlayerGroup;    // 0x19948
-std::uint32_t kOffPlayers       = rtx::md::kPlayers;        // 0x19950
-std::uint32_t kOffFriends       = rtx::md::kFriends;        // 0x19970
-std::uint32_t kOffTracker       = rtx::md::kTracker;        // 0x19850, MainData -> tracker groups {begin, end}
+std::uint32_t kOffIfaceOwner    = rtx::md::kIfaceOwner;     // 0x19910
+std::uint32_t kOffInputProc     = rtx::md::kInputProc;      // 0x19938 (0x19928 on 950-1, 0x198E8 through 949-5)
+std::uint32_t kOffPlayerGroup   = rtx::md::kPlayerGroup;    // 0x19960
+std::uint32_t kOffPlayers       = rtx::md::kPlayers;        // 0x19968
+std::uint32_t kOffFriends       = rtx::md::kFriends;        // 0x19988
+std::uint32_t kOffTracker       = rtx::md::kTracker;        // 0x19858, MainData -> tracker groups {begin, end}
 constexpr std::uint32_t kTrackerGroupSize = 0x68;           // group: id i32 +0, column ids +8/+0x10, row ids +0x20/+0x28, grid rows +0x50
-std::uint32_t kOffCutscene      = rtx::md::kCutscene;       // 0x19A18
-std::uint32_t kOffVarpMgr       = rtx::md::kVarpMgr;        // 0x19FB8 (0x19F78 through 949-5)
-std::uint32_t kOffOptions       = rtx::md::kOptions;        // 0x535D0
+std::uint32_t kOffCutscene      = rtx::md::kCutscene;       // 0x19A30
+std::uint32_t kOffVarpMgr       = rtx::md::kVarpMgr;        // 0x19FD8 (0x19FB8 on 950-1, 0x19F78 through 949-5)
+std::uint32_t kOffOptions       = rtx::md::kOptions;        // 0x55258
 // Root slots the state readers use beyond the companion table (950-1). Read through the same
 // calibration names, so a rule of that name moves them when the client proves another place.
 std::uint32_t kOffFps           = rtx::md::kFps;            // 0x550, float frames per second
@@ -176,30 +178,30 @@ std::uint32_t kScnCombat     = (std::uint32_t)rtx::scn::kCombat;      // scn::kC
 // The actor's overhead object, from the head-bar code at attach (Calibrate OverheadFromCode); 0 when
 // the code did not give it, and hitsplats and head bars are off.
 std::uint32_t kScnOverhead   = 0;
-std::uint32_t kNpcStatsOff   = 0x1140;                                // npc.statCur
-std::uint32_t kNpcBaseStatsOff = 0x115C;                              // npc.statBase
-std::uint32_t kNpcVisLevel   = 0x1178;                                // npc.visLevel
-std::uint32_t kIfaceSubBuckets = 0xE0, kIfaceSubBucketCount = 0xE8;  // iface.subBuckets / iface.subCount
-std::uint32_t kChatBuckets   = 0x880, kChatBucketCount = 0x888;       // chat.buckets / chat.bucketCount
-std::uint32_t kMenuSlotLeft  = 0x13E0;                                // menu.slotLeft
+std::uint32_t kNpcStatsOff   = 0x1150;                                // npc.statCur
+std::uint32_t kNpcBaseStatsOff = 0x116C;                              // npc.statBase
+std::uint32_t kNpcVisLevel   = 0x1188;                                // npc.visLevel
+std::uint32_t kIfaceSubBuckets = 0x118, kIfaceSubBucketCount = 0x120; // iface.subBuckets / iface.subCount
+std::uint32_t kChatBuckets   = 0x8C0, kChatBucketCount = 0x8C8;       // chat.buckets / chat.bucketCount
+std::uint32_t kMenuSlotLeft  = 0x13E8;                                // menu.slotLeft
 std::uint64_t kScnNpcCur     = rtx::scn::kNpcCur;
 std::uint64_t kScnLpCur      = rtx::scn::kLpCur;
 std::uint64_t kScnLpMax      = rtx::scn::kLpMax;
-std::uint64_t kHoverSlotOff  = 0x13F8;   // input processor -> hover record slot (left-click slot + 0x18)
+std::uint64_t kHoverSlotOff  = 0x1400;   // input processor -> hover record slot (left-click slot + 0x18)
 // Actor position (fine east, up, north) and the movement route before it, read off the actor's own
 // position getter once per process (actor_pos_for); the compiled values stand until then.
 std::uint32_t kActorPosSlot  = 0xB0;                                  // actor.posSlot
 std::uint64_t kScnPosX = rtx::scn::kPosX, kScnPosZ = rtx::scn::kPosZ, kScnPosY = rtx::scn::kPosY, kScnMoveMgr = rtx::scn::kMoveMgr;
 // The actor fields from the interaction target on move with the position as one block (951-1 put
 // 0x10 before it: target uid 0x1B4 -> 0x1C4, position 0x270 -> 0x280, animation 0xA90 -> 0xAA0, all
-// read live); act() gives a 950-1 offset in that block where the running build keeps it.
-inline std::uint64_t act(std::uint64_t off950) { return off950 + (kScnPosX - rtx::scn::kPosX); }
+// read live); act() gives a 951-1 offset in that block where the running build keeps it.
+inline std::uint64_t act(std::uint64_t off951) { return off951 + (kScnPosX - rtx::scn::kPosX); }
 // Map manager fields (rules map.loadA, map.loadB, map.loadScreen); the loaded map's base tile sits
 // 0x78 before the first progress field (950-1 and 951-1 alike).
-std::uint32_t kMapLoadA      = 0x710, kMapLoadB = 0x714, kMapLoadScreen = 0x71C;
-std::uint32_t kMapBase       = 0x698;
+std::uint32_t kMapLoadA      = 0x740, kMapLoadB = 0x744, kMapLoadScreen = 0x74C;
+std::uint32_t kMapBase       = 0x6C8;
 // The worldView's area box (rule wv.areaEntries = box + 0x28).
-std::uint32_t kWvAreaEntries = 0xE8410;
+std::uint32_t kWvAreaEntries = 0xE8B08;
 std::uint64_t kWvBoxOff      = kWvBoxOff;
 // The fields that follow from the named ones, set after every calibration.
 static void derive_record_fields() {
@@ -210,12 +212,12 @@ static void derive_record_fields() {
     kMapBase = kMapLoadA - 0x78;
     kWvBoxOff = (std::uint64_t)kWvAreaEntries - 0x28;
 }
-std::uint32_t kOffConnection    = rtx::md::kConnection;     // 0x198B8 -> connection: i32 logout reason +0x50
-std::uint32_t kOffVarWatch      = rtx::md::kVarWatch;       // 0x198C8 -> var watch: u32 change counter +0x10, dirty byte +0x14 (bumped by the var and interface packets)
-std::uint32_t kOffFriendsChat   = rtx::md::kFriendsChat;    // 0x198E0 -> friends chat channel
-std::uint32_t kOffLoginMgr      = rtx::md::kLoginMgr;       // 0x19910 -> login manager: i32 state +0x10, login reply +0x16C, lobby reply +0x1B8
-std::uint32_t kOffWorldInfo     = rtx::md::kWorldInfo;      // 0x535C8 -> world info: u8 quick chat +0x8, i32 system update ticks +0xC, u8 members world +0x10
-std::uint32_t kOffCountry       = rtx::md::kCountry;        // 0x19AC4 i32 in the root
+std::uint32_t kOffConnection    = rtx::md::kConnection;     // 0x198C0 -> connection: i32 logout reason +0x50
+std::uint32_t kOffVarWatch      = rtx::md::kVarWatch;       // 0x198D0 -> var watch: u32 change counter +0x10, dirty byte +0x14 (bumped by the var and interface packets)
+std::uint32_t kOffFriendsChat   = rtx::md::kFriendsChat;    // 0x198E8 -> friends chat channel
+std::uint32_t kOffLoginMgr      = rtx::md::kLoginMgr;       // 0x19920 -> login manager: i32 state +0x10, login reply +0x16C, lobby reply +0x1B8
+std::uint32_t kOffWorldInfo     = rtx::md::kWorldInfo;      // 0x55250 -> world info: u8 quick chat +0x8, i32 system update ticks +0xC, u8 members world +0x10
+std::uint32_t kOffCountry       = rtx::md::kCountry;        // 0x19AE4 i32 in the root
 
 // Tick anchor: `FF 81 F0 DB 00 00` = INC dword [RCX+0xDBF0], preceded in the same prologue by
 // `48 8B 0D <disp32>` = MOV RCX, [rip+disp32] (the owner global).
@@ -391,11 +393,11 @@ std::string read_jagstring_long(HANDLE h, std::uint64_t str, std::uint64_t max_l
     return out;
 }
 
-// NPC combat stats in the actor object (950-1): stats[7] i32 at +0x1140 (attack, defence, strength,
-// constitution, ranged, prayer, magic), baseStats[7] at +0x115C, and the level the game shows at
-// +0x1178 (951-1: all +0x10). The rules npc.statCur, npc.statBase and npc.visLevel read them off the
+// NPC combat stats in the actor object: stats[7] i32 at +0x1150 (attack, defence, strength,
+// constitution, ranged, prayer, magic), baseStats[7] at +0x116C, and the level the game shows at
+// +0x1188 (950-1: all -0x10). The rules npc.statCur, npc.statBase and npc.visLevel read them off the
 // client's handlers; kScnLpCur / kScnLpMax are stats[3] / baseStats[3].
-static_assert(rtx::scn::kLpCur == 0x1140 + 12 && rtx::scn::kLpMax == 0x115C + 12, "life points are the constitution slot of the stat arrays");
+static_assert(rtx::scn::kLpCur == 0x1150 + 12 && rtx::scn::kLpMax == 0x116C + 12, "life points are the constitution slot of the stat arrays");
 struct NpcStats { int cur[7]; int base[7]; int vis; };
 static bool read_npc_stats(HANDLE h, std::uint64_t sec, NpcStats& out) {
     std::uint8_t b[0x3C];
@@ -1398,7 +1400,7 @@ Snapshot sample_one(State& s) {
             auto st = rpm<std::int8_t>(s.proc, *root + kOffStatus);
             if (st) snap.status = (int)*st;
 
-            // Skills: stats container +0x7618 -> { count@+8, entries@+0x10 }; record stride 0x18,
+            // Skills: stats container +0x72E8 -> { count@+8, entries@+0x10 }; record stride 0x18,
             // +0x0C xp, +0x10 level, +0x14 boosted. 29 skills.
             auto stats = rpm<std::uint64_t>(s.proc, *root + kOffStats);
             if (stats && *stats > 0x10000) {
@@ -1447,7 +1449,7 @@ Snapshot sample_one(State& s) {
                 }
             }
 
-            // Character name: account (root+0x19FA8) JagString @+0x68; empty means "not set", so
+            // Character name: account (root+0x19FC8) JagString @+0x68; empty means "not set", so
             // fall back to Player (account+0x58) @+0xF8 as CHAT_PLAYERNAME (op 220) does.
             auto acct = rpm<std::uint64_t>(s.proc, *root + kOffAccount);
             if (acct && *acct > 0x10000) {
@@ -2721,7 +2723,7 @@ std::string VarbitsJson(std::uint32_t pid, const std::string& ids_csv) {
     return out;
 }
 
-// Member is engine state, not a var: PLAYERMEMBER op = acct = *(MainData+0x19FA8), *(u8*)(acct+0x28) != 0. Premier = varbit 50572 (varp 10287 bit 5) ANDed with member as script15757 does (legacy varp 12864 reads 0).
+// Member is engine state, not a var: PLAYERMEMBER op = acct = *(MainData+0x19FC8), *(u8*)(acct+0x28) != 0. Premier = varbit 50572 (varp 10287 bit 5) ANDed with member as script15757 does (legacy varp 12864 reads 0).
 // idleLogoutSeconds is derived and server-enforced: 5 min base, +5 members, +5 Jagex account, cap 15, out of combat only.
 
 constexpr std::uint32_t kOffAcctIsMember = 0x28;      // u8, nonzero = members
@@ -2733,9 +2735,9 @@ constexpr std::uint32_t kOffRepPointerB   = 0x50;     // u64 ms, last pointer fl
 constexpr std::uint32_t kOffRepKeyboard   = 0x2858;   // u64 ms, last key batch (0 = none yet)
 
 
-// Client state that lives outside the var stores, from the engine op handlers (950-1):
-// CUTSCENE ops read [MainData+0x19A18]: +0x150 = current cutscene id, -1 when none.
-// CLIENTOPTION_GET (0x1401BE8F0): option objects at [[MainData+0x535D0]+0x2DA8 + id*8], value i32 at
+// Client state that lives outside the var stores, from the engine op handlers:
+// CUTSCENE ops read [MainData+0x19A30]: +0x150 = current cutscene id, -1 when none.
+// CLIENTOPTION_GET (0x1401BE8F0 on 950-1): option objects at [[MainData+0x55258]+0x2DA8 + id*8], value i32 at
 // +0x18 (option 39 is a byte), 44 options; the op adds 1 to option 28. Each object also holds its name
 // (char* +0x10, a literal in the client image) and range (i32 +0x1C min, +0x20 max; not on 39). Ids 16
 // and 17 share the name RemoveRoof: key by id, as the settings scripts do with CLIENTOPTION_GET/SET.
@@ -2743,7 +2745,7 @@ constexpr std::uint32_t kOffRepKeyboard   = 0x2858;   // u64 ms, last key batch 
 // the client-side preset (AutoSetup) object sits at ClientOptions+0 and the window mode object at
 // +0x12D0 (value +0x12E8, 1 Small, 2 Resizable, 3 Fullscreen), both outside the 44; fullscreen
 // width/height i32 at +0x13C8/+0x13CC.
-// (The op the export calls TEXTINPUT_ISFOCUSED reads [[MainData+0x19FA8]+0x14], which client script
+// (The op the export calls TEXTINPUT_ISFOCUSED reads [[MainData+0x19FC8]+0x14], which client script
 // 14944 feeds to DATE_RUNEDAY_TODATE for an age check: that field is the account's date of birth, not
 // a focus flag.)
 struct OptionLabels { const char* name; const char* labels; int base; };   // '|' separated, index = value - base
@@ -2949,7 +2951,7 @@ std::string MembershipJson(std::uint32_t pid) {
     return buf;
 }
 
-// The var change counter at [[MainData+0x198C8]+0x10]: the var and interface packet handlers add one
+// The var change counter at [[MainData+0x198D0]+0x10]: the var and interface packet handlers add one
 // after every change they apply. -1 when unreadable.
 static long long read_var_seq(HANDLE h, std::uint64_t root) {
     const std::uint64_t vw = rpm<std::uint64_t>(h, root + kOffVarWatch).value_or(0);
@@ -2995,7 +2997,7 @@ static long long read_var_stamp_digest(HANDLE h, std::uint64_t root) {
     return (long long)(d >> 1);
 }
 
-// Every set varp from the MainData+0x36080 hashmap, keyed "4:<id>" (scope 4 = varp). Direct poll stays.
+// Every set varp from the MainData+0x36090 hashmap, keyed "4:<id>" (scope 4 = varp). Direct poll stays.
 // The walk is skipped while neither the var change counter (server updates) nor the stamp map
 // (script sets) has moved since the last one, for at most 3 s; both must be readable for the skip.
 std::string VarpsDumpAllJson(std::uint32_t pid) {
@@ -3070,7 +3072,7 @@ static std::vector<std::uint64_t> read_hash_buckets(HANDLE h, const HashHdr& hdr
     return buckets;
 }
 
-// All set varc-ints from the global client-var hashmap (store+0x7630, store = *(MainData+0x19920)),
+// All set varc-ints from the global client-var hashmap (store+0x7300, store = *(MainData+0x19930)),
 // keyed "5:<id>". Node: id@+0, value@+8, next@+0x28.
 std::string VarcsDumpAllJson(std::uint32_t pid) {
     auto ps = snap_proc(pid);
@@ -3109,15 +3111,15 @@ std::string VarcsDumpAllJson(std::uint32_t pid) {
     return out;
 }
 
-// Domain stores bound by the script context binder (950-1 fn 0x14008df60); domains 3, 4 and 8 are never bound:
-//   0 player       MainData+0x19fb8            (varp manager; hashmap at +0x36080)
-//   2 client       [MainData+0x19920]+0x7620   (varc object; hashmap at +0x7630)
-//   6 clan         [[MainData+0x19920]+0x77b0] (null until clan join)
-//   7 clansettings [MainData+0x19888] + slot*16
-//   9 playergroup  [[MainData+0x19948]+8]+0x28 (null without a group)
+// Domain stores bound by the script context binder (fn 0x14008df60 on 950-1); domains 3, 4 and 8 are never bound:
+//   0 player       MainData+0x19fd8            (varp manager; hashmap at +0x36090)
+//   2 client       [MainData+0x19930]+0x72f8   (varc object; hashmap at +0x7300)
+//   6 clan         [[MainData+0x19930]+0x7480] (null until clan join)
+//   7 clansettings [MainData+0x19890] + slot*16
+//   9 playergroup  [[MainData+0x19960]+8]+0x28 (null without a group)
 //   1 npc          script target entity +0x130 (only while a script runs on that NPC)
 // Table (vtable rs2client+0xB609C0 on the 950-1 OpenGL build, +0xC6D818 on the 950-1 Vulkan build; the
-// player table at MainData+0x36078 carries no vtable): buckets@+0x10, count@+0x18, elements@+0x20;
+// player table at MainData+0x36088 carries no vtable): buckets@+0x10, count@+0x18, elements@+0x20;
 // node = {u32 id, value union@+8, type byte@+0x20 (0 int, 1 long, 2 string), next@+0x28}.
 struct DomStore { const char* src; std::uint64_t obj; std::uint64_t table; int div; int count; bool typed; };
 
@@ -3396,7 +3398,7 @@ std::string VarcStringsJson(std::uint32_t pid, const std::string& ids_csv) {
     return out;
 }
 
-// All varc-strings from the global client-var hashmap (store+0x7630), keyed "2:<id>". Only nodes whose
+// All varc-strings from the global client-var hashmap (store+0x7300), keyed "2:<id>". Only nodes whose
 // type byte (+0x20) says string (2) are read: an int node's union bytes would pass as a short string.
 std::string VarcStringsDumpAllJson(std::uint32_t pid) {
     auto ps = snap_proc(pid);
@@ -4003,7 +4005,7 @@ bool ev_decode(std::string& o, int op, const std::uint8_t* b, std::uint32_t n, i
     case rtx::sops::kGeOffer: {    // [market u8][slot u8][header u8: 0 clears the slot, else status = h & 7, buy/sell bit 3; status 7 = extended form follows]
         // extended form: [w u8][status/type u8] then item (w >= 3: u24 BE, else u16 BE), price (w >= 2: i64 BE, else u32 BE),
         // count i32 BE, completed count i32 BE, completed gold (w >= 2: i64 BE, else u32 BE), then (w >= 2) a u32 BE extension length the client skips.
-        // The slot lands in the offer array at [MainData+0x19990]+0x10 + (market * 8 + slot) * 0x28.
+        // The slot lands in the offer array at [MainData+0x199A8]+0x10 + (market * 8 + slot) * 0x28.
         if (n < 3) return false;
         const int market = b[0], slot = b[1], hdr = b[2];
         if (market > 1 || slot >= kGESlotCount) return false;
@@ -4396,8 +4398,8 @@ bool SkillsXp(std::uint32_t pid, int out[29]) {
     return true;
 }
 
-//   container = *(root + 0x199D0); idx = *(int)(container + 0x70); worldView = *( *(container + 0x58) + idx*0x10 + 8 ); worker = *(worldView + 0x10170)
-//   vector begin = *(worker + 0x138), end = *(worker + 0x140) (Entity* each); entity sec = *(entity + 0x1A0), type = *(u8)(sec + 0x10) (1 = NPC, 2 = player); name(asciiz)@sec+0xB8, uid@sec+0x88, NPC configId@sec+0x1080, posX/posY(float)@sec+0x270/+0x278 (tile = pos / 512)
+//   container = *(root + 0x199E8); idx = *(int)(container + 0x70); worldView = *( *(container + 0x58) + idx*0x10 + 8 ); worker = *(worldView + 0x10170)
+//   vector begin = *(worker + 0x138), end = *(worker + 0x140) (Entity* each); entity sec = *(entity + 0x1A0), type = *(u8)(sec + 0x10) (1 = NPC, 2 = player); name(asciiz)@sec+0xB8, uid@sec+0x88, NPC configId@sec+0x1090, posX/posY(float)@sec+0x280/+0x288 (tile = pos / 512)
 namespace {
 
 struct RuntimeObj {
@@ -4646,7 +4648,7 @@ bool finite_nonzero_16(const float* m) {
     return nz;
 }
 
-// Matrix selection: render camera matrix at worldView+0x13090, minimap impostor at 0x13970.
+// Matrix selection: render camera matrix at worldView+0x13770 (0x13090 on 950-1), minimap impostor at 0x13970 on 950-1.
 
 bool solve_cam_centre(const float* m, double out[3]) {
     double A[3][4] = {
@@ -4943,7 +4945,7 @@ static void actor_bar_state(HANDLE h, std::uint64_t sec, int cycleNow, int& stam
     }
 }
 
-// Local player actor through the player registry: [[MD+0x19950]+0x10][idx]+0x38, idx = local uid.
+// Local player actor through the player registry: [[MD+0x19968]+0x10][idx]+0x38, idx = local uid.
 // Validated by type and uid; 0 when the chain does not resolve (callers fall back to the scan).
 static std::uint64_t local_player_sec_fast(HANDLE h, std::uint64_t root, int local_uid) {
     if (root <= 0x10000 || local_uid < 0 || local_uid >= 4096) return 0;
@@ -5151,12 +5153,12 @@ std::string CombatLogJson(std::uint32_t pid, std::uint64_t since, int max_events
 namespace {
 constexpr std::uint64_t kCbSecRead   = 0x1380;   // actor object bytes covering every field read below
 constexpr std::uint64_t kCbNameLen   = 0x98;
-// 950-1 offsets of the actor block that moves with the position (act()); the NPC stats come from
+// 951-1 offsets of the actor block that moves with the position (act()); the NPC stats come from
 // their calibration rules
-constexpr std::uint64_t kCbAnim      = 0xA90;
-constexpr std::uint64_t kCbAnimCount = 0xAFC, kCbAnimCycle = 0xB00;   // animation start count and its CLIENTCLOCK cycle
-constexpr std::uint64_t kCbTargetUid = 0x1B4;
-constexpr std::uint64_t kCbTargetKind = 0x228;
+constexpr std::uint64_t kCbAnim      = 0xAA0;
+constexpr std::uint64_t kCbAnimCount = 0xB0C, kCbAnimCycle = 0xB10;   // animation start count and its CLIENTCLOCK cycle
+constexpr std::uint64_t kCbTargetUid = 0x1C4;
+constexpr std::uint64_t kCbTargetKind = 0x238;
 constexpr std::uint64_t kCbVarNode   = 0x30;     // var map node: id +0, value +8, type +0x20, next +0x28
 constexpr std::uint64_t kCbWindowGap = 0x8000, kCbWindowMax = 0x80000;
 
@@ -5884,7 +5886,7 @@ static int overhead_height(HANDLE h, std::uint64_t sec, int type, int* src) {
     if (src) *src = 0;
     if (type == 1 || type == 2) {
         if (type == 1) {
-            if (auto a = rpm<std::uint64_t>(h, sec + 0x10a8))
+            if (auto a = rpm<std::uint64_t>(h, sec + 0x10b8))
                 if (*a > 0x10000)
                     if (auto v = rpm<std::int32_t>(h, *a + 0x2a0))
                         if (*v != -1) { if (src) *src = 1; return *v; }
@@ -6114,8 +6116,8 @@ std::string OverheadClassJson(std::uint32_t pid) {
     const std::uint64_t vb = *vbo, ve = *veo;
     // The two pointers the query operations go through before they touch anything else, so a fault
     // inside them can be told apart from a bad argument.
-    const std::uint64_t dbMgr  = rpm<std::uint64_t>(h, *root + 0x19980).value_or(0);
-    const std::uint64_t dbOther = rpm<std::uint64_t>(h, *root + 0x198c0).value_or(0);
+    const std::uint64_t dbMgr  = rpm<std::uint64_t>(h, *root + 0x19998).value_or(0);
+    const std::uint64_t dbOther = rpm<std::uint64_t>(h, *root + 0x198c8).value_or(0);
     std::string out = "{\"image\":\"0x" ;
     { char b[32]; std::snprintf(b, sizeof(b), "%llx", (unsigned long long)image); out += b; }
     { char b[96]; std::snprintf(b, sizeof(b), "\",\"dbMgr\":\"0x%llx\",\"dbOther\":\"0x%llx\",\"entities\":[",
@@ -6798,7 +6800,7 @@ std::string SceneJson(std::uint32_t pid, int obj_range) {
                                 player_plane = rpm<std::int32_t>(h, *sec + kScnPlane).value_or(0); }
                     int combat = rpm<std::int32_t>(h, *sec + kCombat).value_or(-1);
                     if (combat < 0 || combat > 5000) combat = -1;
-                    int anim = rpm<std::int32_t>(h, *sec + act(0xA90)).value_or(-1);  // shared actor anim
+                    int anim = rpm<std::int32_t>(h, *sec + act(0xAA0)).value_or(-1);  // shared actor anim
                     int plane = rpm<std::int32_t>(h, *sec + kScnPlane).value_or(0);   // shared actor plane
                     if (pc) players.push_back(',');
                     std::snprintf(buf, sizeof(buf),
@@ -6809,7 +6811,7 @@ std::string SceneJson(std::uint32_t pid, int obj_range) {
                     ++pc;
                 } else {                                      // NPC
                     int cfg = rpm<std::int32_t>(h, *sec + kConfig).value_or(-1);
-                    int anim = rpm<std::int32_t>(h, *sec + act(0xA90)).value_or(-1);  // shared actor anim
+                    int anim = rpm<std::int32_t>(h, *sec + act(0xAA0)).value_or(-1);  // shared actor anim
                     bool morphHidden = false;
                     auto meta = resolve_npc(h, root.value_or(0), cfg, &morphHidden);
                     std::string npcName = !meta.name.empty() ? meta.name : (morphHidden ? std::string() : name);
@@ -6824,8 +6826,8 @@ std::string SceneJson(std::uint32_t pid, int obj_range) {
                     }
                     if (nc) npcs.push_back(',');
                     int reportId = (meta.id >= 0) ? meta.id : cfg;
-                    // Facing in degrees, 0 = north, 90 = east, -1 unreadable. While a turn runs (f32 sec+0x1EC >
-                    // i32 sec+0x1F0) report its target, the yaw quaternion y sec+0x1E0 / w sec+0x1E8: 2*atan2(-w, y).
+                    // Facing in degrees, 0 = north, 90 = east, -1 unreadable. While a turn runs (f32 sec+0x1FC >
+                    // i32 sec+0x200) report its target, the yaw quaternion y sec+0x1F0 / w sec+0x1F8: 2*atan2(-w, y).
                     // Otherwise report the drawn heading of the entity node (y ep+0xE4, w ep+0xEC): 2*atan2(y, w)
                     // + 180. NPCs that face a direction without turning keep identity values in the sec
                     // quaternions; only the node has them.
@@ -7061,7 +7063,7 @@ std::string SceneJson(std::uint32_t pid, int obj_range) {
 
 // View-projection matrix offset drifts across builds (0x13030 -> 0x13070 -> 0x13970 on 949).
 
-// Interface manager: mainData+0x19900 (0x198C0 through 949-5) -> owner; open-group array begin/end at owner+0x50/+0x58 on 950-1 (was a container at owner+0x30, +0x58/+0x60). Entries 0x10 wide: id@+0, group obj@+8.
+// Interface manager: mainData+0x19910 (0x19900 on 950-1, 0x198C0 through 949-5) -> owner; open-group array begin/end at owner+0x50/+0x58 on 950-1 (was a container at owner+0x30, +0x58/+0x60). Entries 0x10 wide: id@+0, group obj@+8.
 // Widget node (950-1): component ids i16 @+0x38/+0x3A/+0x3C, rect x/y/w/h @+0x98..+0xA4, text ptr @+0xB8, SSO string / graphic key union @+0x1B0, item id @+0x1D8, stack @+0x1E0, child vectors @+0x1D0/+0x1B8/+0x200. Hidden flag (was +0x50) not re-derived.
 constexpr std::uint64_t kIfaceGroupsBegin = 0x50;
 constexpr std::uint64_t kIfaceGroupsEnd   = 0x58;
@@ -8155,7 +8157,7 @@ std::string CompassTargetJson(std::uint32_t pid) {
     return buf;
 }
 
-// Scan-orb ring tiles from the scene-graphic registry: op83 stores a 0x2c-byte record at MainData+0x198f0 (+0x90 + slot*0x2c) with fine coords (0x100 + tile*512) as floats.
+// Scan-orb ring tiles from the scene-graphic registry: op83 stores a record at MainData+0x198f8 (0x198f0 on 950-1, 0x2c bytes at +0x90 + slot*0x2c there; 951-1 keeps them at +0x170 by 0x60) with fine coords (0x100 + tile*512) as floats.
 // Base may be the struct or a pointer to it; every plausible tile is returned for the caller to validate.
 static void ScanRingTilesFromMemory(HANDLE h, std::uint64_t root, std::vector<std::pair<int,int>>& out) {
     // the request records where the arrow routine fills them (0x2C bytes from +0x90 on 950-1, 0x60
@@ -10823,7 +10825,7 @@ std::string PlayerInfoJson(std::uint32_t pid) {
     const std::uint64_t kContainer = kScnContainer, kActiveIdx = 0x70, kEntryArr = 0x58,
                             kEntryWv = 0x8, kVecBegin = 0x138,
                             kVecEnd = 0x140, kSecPtr = rtx::scn::kSecPtr, kType = rtx::scn::kType, kUid = kScnUid,
-                            kPosX = kScnPosX, kPosY = kScnPosY, kAnim = act(0xA90), kLocalUid = 0x48;
+                            kPosX = kScnPosX, kPosY = kScnPosY, kAnim = act(0xAA0), kLocalUid = 0x48;
     const std::uint64_t kPlayerData = kOffAccount;
     auto ps = snap_proc(pid);
     if (!ps)
@@ -10877,13 +10879,13 @@ std::string PlayerInfoJson(std::uint32_t pid) {
     bool moving = (px != 0 || py != 0) &&
                   (std::abs(fx - px) > 1.f || std::abs(fy - py) > 1.f);
 
-    // Interaction target: entity ptr sec+0x218, uid sec+0x1b4, resolved against the live entity
+    // Interaction target: entity ptr sec+0x228, uid sec+0x1c4, resolved against the live entity
     std::string interactJson = "null";
     if (vb && ve && *vb > 0x10000 && *ve >= *vb) {
-        auto rawp = rpm<std::uint64_t>(h, psec + act(0x218));
+        auto rawp = rpm<std::uint64_t>(h, psec + act(0x228));
         std::uint64_t t1 = (rawp && *rawp > 0x10000) ? *rawp : 0;
         std::uint64_t t2 = t1 ? t1 + 0x20 : 0;
-        int tuid = rpm<std::int32_t>(h, psec + act(0x1B4)).value_or(-1);
+        int tuid = rpm<std::int32_t>(h, psec + act(0x1C4)).value_or(-1);
         if (t1 || tuid > 0) {
             std::uint64_t n = (*ve - *vb) / 8; if (n > 20000) n = 20000;
             for (std::uint64_t i = 0; i < n; ++i) {
@@ -10920,7 +10922,7 @@ std::string PlayerInfoJson(std::uint32_t pid) {
         }
     }
 
-    // Head progress bar: overhead object psec+0xF08 -> head-bar vector (+0x28 .. +0x30) of 0x1B0
+    // Head progress bar: overhead object psec+0xF18 -> head-bar vector (+0x28 .. +0x30) of 0x1B0
     // elements, cycle stamp +0x78 and fill 0..255 +0x7C. Only elements with a recent stamp are live.
     int progress = -1;
     {
@@ -10960,10 +10962,10 @@ std::string PlayerInfoJson(std::uint32_t pid) {
         }
     }
 
-    // Combat level: psec+0x10BC (psec+0x10C0 mirrors it). -1 = outside 3..152.
+    // Combat level: psec+0x10CC (psec+0x10D0 mirrors it). -1 = outside 3..152.
     int combat = -1;
     {
-        int c = rpm<std::int32_t>(h, psec + 0x10BC).value_or(-1);
+        int c = rpm<std::int32_t>(h, psec + 0x10CC).value_or(-1);
         if (c >= 3 && c <= 152) combat = c;
     }
 
@@ -10993,7 +10995,7 @@ std::string PlayerInfoJson(std::uint32_t pid) {
             auto w = rpm<std::uint64_t>(h, *root + kOffWorld);
             auto w2 = (w && *w > 0x10000) ? rpm<std::uint64_t>(h, *w + 0x20) : std::nullopt;
             if (w2 && *w2 > 0x10000) world = rpm<std::int32_t>(h, *w2 + 8).value_or(-1);
-            auto st = rpm<std::uint64_t>(h, *root + kOffVarcStore);      // 0x19920: the settings/input store
+            auto st = rpm<std::uint64_t>(h, *root + kOffVarcStore);      // 0x19930: the settings/input store
             if (st && *st > 0x10000) {
                 auto fx2 = rpm<float>(h, *st + kVarcMouseX), fy2 = rpm<float>(h, *st + kVarcMouseY);
                 if (fx2 && fy2 && *fx2 >= -1.f && *fx2 < 32768.f && *fy2 >= -1.f && *fy2 < 32768.f) { mx = (int)*fx2; my = (int)*fy2; }
@@ -11033,13 +11035,13 @@ static std::string social_name(HANDLE h, std::uint64_t str) {
     return o;
 }
 
-// Social state (950-1).
-// Friends: [MD+0x19970] state i32 +0x10 (2 = loaded), entries +0x18..+0x20 of 0x78: name string +0,
+// Social state (951-1).
+// Friends: [MD+0x19988] state i32 +0x10 (2 = loaded), entries +0x18..+0x20 of 0x78: name string +0,
 // previous name +0x18, world i32 +0x30 (0 = offline), world name +0x38, rank i32 +0x50, notes +0x60.
 // Ignores: entries +0x30..+0x38 of 0x50: name +0, previous name +0x18, notes +0x30, temporary u8 +0x48.
-// Friends chat: [MD+0x198E0] channel name +0x08, owner +0x20, own rank i32 +0x38, kick rank +0x3C,
+// Friends chat: [MD+0x198E8] channel name +0x08, owner +0x20, own rank i32 +0x38, kick rank +0x3C,
 // users +0x40..+0x48 of 0x50: name +0, world i32 +0x30, rank i32 +0x34, display name +0x38.
-// Player group: [[MD+0x19948]+8] name +8, max size i16 +0x22, owner slot i32 +0x90, members
+// Player group: [[MD+0x19960]+8] name +8, max size i16 +0x22, owner slot i32 +0x90, members
 // +0x60..+0x68 of 0xB0: name +0x18, last seen node i16 +0x32, online u8 +0x34, rank u8 +0x35,
 // status i32 +0x38, team i32 +0x3C.
 std::string SocialJson(std::uint32_t pid) {
@@ -12505,8 +12507,8 @@ void health_scene(HCtx& c, rtx::health::Run& run) {
         const int t = rpm<std::uint8_t>(h, sec + rtx::scn::kType).value_or(0xFF);
         ++types[t];
         if (t == 1 || t == 2) {
-            const int anim = rpm<std::int32_t>(h, sec + act(0xA90)).value_or(-2);
-            const float qy = rpm<float>(h, sec + rtx::scn::kFaceTargetY).value_or(0), qz = rpm<float>(h, sec + 0x1E4).value_or(0), qw = rpm<float>(h, sec + rtx::scn::kFaceTargetW).value_or(0);
+            const int anim = rpm<std::int32_t>(h, sec + act(0xAA0)).value_or(-2);
+            const float qy = rpm<float>(h, sec + rtx::scn::kFaceTargetY).value_or(0), qz = rpm<float>(h, sec + 0x1F4).value_or(0), qw = rpm<float>(h, sec + rtx::scn::kFaceTargetW).value_or(0);
             const float norm = qy * qy + qz * qz + qw * qw;
             float nq[4] = {};
             const float nnorm = rpm_bytes(h, es.first + rtx::scn::kNodeYaw, nq, sizeof(nq)) ? nq[0] * nq[0] + nq[1] * nq[1] + nq[2] * nq[2] + nq[3] * nq[3] : 0.f;
@@ -12566,7 +12568,7 @@ void health_scene(HCtx& c, rtx::health::Run& run) {
             const int lp = rpm<std::int32_t>(h, sec + kScnLpCur).value_or(-1), lpMax = rpm<std::int32_t>(h, sec + kScnLpMax).value_or(-1);
             const int target = rpm<std::int32_t>(h, sec + act(rtx::scn::kNpcTarget)).value_or(-2);
             std::string sp; int bar = -1; actor_overhead_json(h, sec, sp, bar);
-            {   // the level the game shows (sec+0x1178) against the cache's combat level of the drawn type
+            {   // the level the game shows (sec+0x1188) against the cache's combat level of the drawn type
                 const int cur = rpm<std::int32_t>(h, sec + kScnNpcCur).value_or(-1);
                 const int cl = rtx::cache::GetNpc(cur >= 0 ? cur : cfg).combat_level;
                 NpcStats ns;
@@ -12692,7 +12694,7 @@ void health_scene(HCtx& c, rtx::health::Run& run) {
                 fxN == 0 ? "none nearby" : std::string(fxRes == kFail ? "FORMAT: " : fxRes == kUnchecked ? "UNVERIFIED: " : "") + std::to_string(fxOk) + "/" + std::to_string(fxN) + " near the player with a cache graphic" + (fxBad.empty() ? "" : ";" + fxBad),
                 "Specials: graphic highlights|Clue scan ring|Projectiles", "90 % of 5 or more", std::to_string(fxOk) + "/" + std::to_string(fxN), "scene.types").need = fxN == 0 ? "an effect or projectile nearby" : fxRes == kUnchecked ? "five effects or projectiles nearby" : "";
     }
-    // movement route: every player and NPC carries a 21-entry route at sec+0x268, and a moving
+    // movement route: every player and NPC carries a 21-entry route at sec+0x278, and a moving
     // actor's newest entry (its true tile) sits near where it is drawn. A runner covers 2 tiles a tick
     // and is drawn up to 2 ticks behind, so 4 tiles; a moved layout reads tiles far off or none. Fewer
     // than 3 moving actors are too few to hold to 90 %: one runner at the edge would fail the row.
@@ -12780,7 +12782,7 @@ void health_scene(HCtx& c, rtx::health::Run& run) {
                     if (ok == kWarn) {
                         Sleep(120);
                         const float x2 = rpm<float>(h, c.localSec + kScnPosX).value_or(0), y2 = rpm<float>(h, c.localSec + kScnPosY).value_or(0);
-                        const int anim = rpm<std::int32_t>(h, c.localSec + act(0xA90)).value_or(-1);
+                        const int anim = rpm<std::int32_t>(h, c.localSec + act(0xAA0)).value_or(-1);
                         if (std::fabs(x2 - x) > 1.f || std::fabs(y2 - y) > 1.f || anim != -1) {
                             ok = kUnchecked;
                             d = std::string("UNVERIFIED: ") + (anim != -1 ? "the player is animating" : "the player is moving") + ", " + d;

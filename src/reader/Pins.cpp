@@ -335,13 +335,14 @@ std::vector<OpCount> OpHistNow() { return rtx::cache::CacheOpHist(); }
 std::vector<OpCount> UnknownOpsNow() { return rtx::cache::CacheUnknownOps(); }
 // The reference table facts an index line is judged on: flags byte (-1 unread), consumed exactly
 // (-1 unread), why the first archive failed.
-struct IndexExtra { int flags = -1; int exact = -1; int leftover = 0; std::string firstFail; };
+struct IndexExtra { int flags = -1; int exact = -1; int leftover = 0; std::string firstFail, firstStale; };
 IndexExtra IndexExtraOf(const rtx::cache::IndexFacts& f) {
     IndexExtra x;
     x.flags = f.flags;
     x.exact = f.flags < 0 ? -1 : (f.exact ? 1 : 0);
     x.leftover = f.leftover;
     x.firstFail = f.firstFail;
+    x.firstStale = f.firstStale;
     return x;
 }
 
@@ -556,6 +557,12 @@ void CheckCacheFormat(rtx::health::Run& run) {
             if (f.failed > 0) {
                 if (ok == kPass) { ok = kWarn; word = "GONE"; }
                 why += std::to_string(f.failed) + " archives failed to read" + (x.firstFail.empty() ? "" : " (" + x.firstFail + ")") + "; ";
+            }
+            // a row behind the reference table is the game's download state, not the cache format:
+            // named on the row, never a failure, gone once the game loads the archive again
+            if (f.stale > 0) {
+                const std::string s = std::to_string(f.stale) + (f.stale == 1 ? " archive" : " archives") + " not downloaded since the update" + (x.firstStale.empty() ? "" : " (" + x.firstStale + ")");
+                if (ok == kPass) note += "; " + s; else why += s + "; ";
             }
             run.Fact("cache.rev." + l.key, std::to_string(f.revision));
             run.Fact("cache.archives." + l.key, std::to_string(f.archives));

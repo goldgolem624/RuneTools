@@ -106,10 +106,13 @@ std::string PinFingerprint(const std::string& kind, const std::string& key, cons
 void UseScriptOperands(std::vector<std::uint8_t> widths);
 // flags: the reference table's flags byte (-1 unread); exact: its decode consumed the table to the
 // last byte (false = the table layout is not the one this code expects, leftover says by how much);
-// firstFail: why the first archive that failed to decode did ("container type 4 at archive 12").
+// firstFail: why the first archive that failed to decode did ("container type 4 at archive 12");
+// stale: archives whose stored row is behind the reference table (an earlier download the game
+// replaces when it next loads them), firstStale names the first with both versions.
 struct IndexFacts {
     bool open = false; int archives = 0, maxArchive = -1, maxFile = -1, protocol = 0, revision = 0, failed = 0;
     int flags = -1; bool exact = false; int leftover = 0; std::string firstFail;
+    int stale = 0; std::string firstStale;
 };
 IndexFacts IndexInfo(int index);
 // What the jcache stores for an index now: its reference table's VERSION and CRC, its archive row

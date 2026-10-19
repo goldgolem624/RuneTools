@@ -6069,6 +6069,8 @@ IndexFacts IndexInfo(int index) {
     f.exact = rt.consumedExactly();
     f.leftover = rt.leftoverBytes();
     f.firstFail = idx->FirstFailure();
+    f.stale = idx->StaleArchives();
+    f.firstStale = idx->FirstStale();
     return f;
 }
 
