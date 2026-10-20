@@ -35,7 +35,9 @@ namespace {
 // different values cancel each other, since one of them reads some other field.
 // `d8`: the displacement is one byte (a field below +0x80, which the compiler never encodes in four;
 // also an immediate such as a stride). The range and the ambiguity rule apply as for four bytes.
-struct Rule { const char* name; const char* op; const char* head; std::uint32_t lo, hi; int nth; std::uint32_t compiled = 0; bool wrap = false; const char* what = nullptr; std::uint32_t span = 0x140; int call = -1; bool d8 = false; };
+// rel: lo and hi are offsets from the value the rule of that name found (a name earlier in the
+// table); a rule whose anchor found nothing finds nothing.
+struct Rule { const char* name; const char* op; const char* head; std::uint32_t lo, hi; int nth; std::uint32_t compiled = 0; bool wrap = false; const char* what = nullptr; std::uint32_t span = 0x140; int call = -1; bool d8 = false; const char* rel = nullptr; };
 constexpr std::uint32_t kMdLo = 0x18000, kMdHi = 0x60000, kInLo = 0x1000, kInHi = 0x10000;
 // The varp hash map sits inside the player var store: derived from md::kVarpMgr, never pinned alone.
 constexpr std::uint32_t kVarpHashFromMgr = rtx::md::kVarpHashFromMgr;
@@ -102,7 +104,7 @@ const Rule kRules[] = {
     // and does not change between builds).
     { "md::kMiniMap",      "unk11190",                         "48 8B 81", kMdLo, kMdHi, 0, rtx::md::kMiniMap, false, "minimap: mask shape +0x38, walk destination +0x14/+0x18/+0x1C" },
     { "md::kWalkMgr",      "unk11014",                         "48 8B 89", kMdLo, kMdHi, 0, rtx::md::kWalkMgr, false, "walk marker appearance: ids +0x68/+0x6C, sprite +0x70, model +0x80" },
-    { "md::kEntityLookup", "unk11164",                         "48 8B 89", 0x19930, 0x19948, 0, rtx::md::kEntityLookup, false, "entity lookup by uid (the zone event registry)" },   // 950-1 value; not found on 951-1 yet
+    { "md::kEntityLookup", "unk11164",                         "48 8B 89", kMdLo, kMdHi, 0, rtx::md::kEntityLookup, false, "entity lookup by uid (the zone event registry)" },   // the handler's one mov rcx,[rcx+disp]: the lookup
     { "md::kOptionsArray", "CLIENTOPTION_GET",                 "48 8B 8C F8", kInLo, kInHi, 0, 0x2DA8, false, "client option objects in the options object, 8 bytes per id" },
     { "md::kOptionsArray", "unk11116",                         "48 8B 8C C8", kInLo, kInHi, 0, 0x2DA8 },
     { "map.loadA",         "MAP_LOADEDPERCENT",                "44 8B 80", 0x700, 0x800, 0, 0x740, false, "map manager loading counter (reader data.input2)" },
@@ -121,9 +123,10 @@ const Rule kRules[] = {
     { "wv.areaEntriesEnd", "unk10994",                         "4C 8B 81", 0xE0000, 0xF0000, 0, (std::uint32_t)rtx::scn::kWvBox + 0x30, false, "area box: entries vector end (kWvBox + 0x30)" },
     { "wv.areaSpawnFlag",  "TEXTINPUT_BLUR",                   "80 B9",    0xE8000, 0xE9000, 0, (std::uint32_t)rtx::scn::kWvBox + 0x40, false, "area box: spawn point set flag (kWvBox + 0x40)" },
     { "wv.areaSpawn",      "TEXTINPUT_BLUR",                   "F2 0F 11 81", 0xE8000, 0xE9000, 0, (std::uint32_t)rtx::scn::kWvBox + 0x4C, false, "area box: spawn point (kWvBox + 0x4C)" },
-    // the two below were read on 950-1 (0xE8458 / 0xE8464); no 951-1 anchor yet
-    { "wv.areaMin",        "unk10993",                         "3B 91",    0xE8450, 0xE8460, 0, (std::uint32_t)rtx::scn::kWvBox + 0x70, false, "area box: min corner (kWvBox + 0x70)", 0x200 },
-    { "wv.areaMax",        "unk10993",                         "3B 91",    0xE8460, 0xE8470, 0, (std::uint32_t)rtx::scn::kWvBox + 0x7C, false, "area box: max corner (kWvBox + 0x7C)", 0x200 },
+    // both corners are read with the same head, six compares in the order min x, max x, min y, max y,
+    // min z, max z: each window sits on the spawn flag the row above found (flag + 0x30 / + 0x3C)
+    { "wv.areaMin",        "unk10993",                         "3B 91",    0x30, 0x3C, 0, (std::uint32_t)rtx::scn::kWvBox + 0x70, false, "area box: min corner (kWvBox + 0x70, spawn flag + 0x30)", 0x200, -1, false, "wv.areaSpawnFlag" },
+    { "wv.areaMax",        "unk10993",                         "3B 91",    0x3C, 0x48, 0, (std::uint32_t)rtx::scn::kWvBox + 0x7C, false, "area box: max corner (kWvBox + 0x7C, spawn flag + 0x3C)", 0x200, -1, false, "wv.areaSpawnFlag" },
     // the script state and the interface manager
     { "state.settingsCtx", "ACTIVECLANSETTINGS_GETAFFINEDCOUNT", "48 8B 82", 0xC000, 0xD000, 0, 0xC830, false, "clan settings context in the script state (the companion's settings context)" },
     { "state.settingsCtx", "ACTIVECLANSETTINGS_GETCLANNAME",   "48 8B 92", 0xC000, 0xD000, 0, 0xC830 },
@@ -155,7 +158,8 @@ const Rule kRules[] = {
     { "chat.recordCount",  "printmessage",                     "48 FF 8E", 0x800, 0x900, 0, 0x8D0, false, "chat store: record count", 0x300, 5 },
     { "chat.recordNext",   "unk11195",                         "48 8B 80", 0x80, 0x100, 0, 0xB8, false, "chat record: next in the bucket chain" },
     { "chat.recordNext",   "printmessage",                     "48 8B 80", 0x80, 0x100, 0, 0xB8, false, nullptr, 0x200, 4 },
-    { "chat.recordText",   "printmessage",                     "0F 10 9A", 0x80, 0x100, 0, 0x90, false, "chat record: message text", 0x400, 4 },   // 950-1 value; not found on 951-1 yet
+    { "chat.recordText",   "printmessage",                     "0F 10 9A", 0x80, 0x100, 0, 0x90, false, "chat record: message text", 0x400, 4 },
+    { "chat.recordText",   "printmessage",                     "0F 10 99", 0x80, 0x100, 0, 0x90, false, nullptr, 0x400, 4 },   // 951-1 fills the record through rcx
     // One-byte fields (d8). The game world list, the account and the players registry: the chain
     // the scene root and the local player are read through.
     { "scn::kActiveIdx",   "unk10994",                   "49 63 41", 0x60, 0x80, 0, (std::uint32_t)rtx::scn::kActiveIdx, false, "game world list: i32 current world index", 0x140, -1, true },
@@ -965,8 +969,17 @@ static const std::vector<Found>& RunLocked(const std::wstring& exePath, const st
     const std::map<std::uint32_t, std::uint32_t> functions = FunctionRanges(pe);
     // One rule against this exe: the value it finds (0 for none) and why not.
     struct Try { std::uint32_t value = 0; Outcome status = Outcome::NotFound; };
-    auto try_rule = [&](const Rule& r) {
+    auto try_rule = [&](const Rule& rule) {
         Try t;
+        // lo and hi from what the rule named by rel found earlier in the table; nothing found
+        // there, nothing here
+        Rule r = rule;
+        if (r.rel) {
+            std::uint32_t base = 0;
+            for (const Found& f : g_cache.found) if (std::strcmp(f.name, r.rel) == 0) { base = f.found; break; }
+            if (!base) return t;
+            r.lo += base; r.hi += base;
+        }
         // a name the code could not tell from its look-alikes stands for all of them: the rule
         // holds when every one reads the same place
         std::vector<std::uint32_t> cands;
@@ -1194,7 +1207,8 @@ static bool ReadTable(const std::wstring& path, std::vector<TableRow>& rows, std
     return !rows.empty();
 }
 
-std::string OpPrintsTable(const std::vector<std::pair<std::wstring, std::wstring>>& builds, const std::wstring& basePath, std::string& log) {
+std::string OpPrintsTable(const std::vector<std::pair<std::wstring, std::wstring>>& builds, const std::wstring& basePath,
+                          const std::vector<std::pair<std::string, std::uint32_t>>& labels, std::string& log) {
     std::set<std::string> rows;
     std::string from;
     std::vector<TableRow> base;
@@ -1256,6 +1270,14 @@ std::string OpPrintsTable(const std::vector<std::pair<std::wstring, std::wstring
         }
         const std::size_t before = rows.size();
         rtx::opprints::RowsOf(pr, names, rows);
+        // a shipped label whose handler changed code: this build's rows for it, under the shipped label
+        for (const auto& l : labels) {
+            if (handlers.find(l.second) == handlers.end()) { std::snprintf(line, sizeof(line), "  %s: operation %u is not a handler of this build\n", l.first.c_str(), l.second); log += line; return {}; }
+            std::map<std::string, std::uint32_t> one{ { l.first, l.second } };
+            rtx::opprints::RowsOf(pr, one, rows);
+            std::snprintf(line, sizeof(line), "  %s: the rows of operation %u added under the shipped label\n", l.first.c_str(), l.second);
+            log += line;
+        }
         int alone = 0;
         for (const auto& kv : names) { const auto p = pr.of[rtx::opprints::kDeepest].find(kv.second); if (p != pr.of[rtx::opprints::kDeepest].end() && pr.at[rtx::opprints::kDeepest].at(p->second).size() == 1) ++alone; }
         const std::string ver = ExeBuildImpl(b.first);

@@ -324,7 +324,7 @@ inline constexpr int kTrailManager[] = {
 // mov rax,[reg+8] ; mov reg,[rax+trail] ; lea rbx,[reg+0x10]. The call names the arrow manager's
 // per-frame routine (the hook point); the two loads name both managers inside the root. The lea
 // after it bounds the trail manager's eight slots, which gives their size (ArrowSlotSize).
-// kArrowRefresh is the node refresh call inside the frame routine.
+// kArrowRefresh names the node refresh call (ArrowRefreshRoutine below).
 inline constexpr int kArrowFrame[] = {
     0x48, 0x8B, 0x89, kAny, 0x98, 0x01, 0x00, 0xE8, kAny, kAny, kAny, kAny, kAny, 0x8B, kAny, 0x08,
     0x48, 0x8B, kAny, kAny, kAny, 0x01, 0x00, 0x48, 0x8D, kAny, 0x10,
@@ -373,9 +373,49 @@ inline bool ArrowRequests(const unsigned char* fn, std::size_t n, std::uint32_t&
     }
     return base >= 0x50 && base < 0x400;
 }
+// The node refresh call: mov r8d,45h ; ... ; call rel32, the call within 0x20 bytes of the mov,
+// where the feet arrow's turn is handed to its node. 950-1 turns the feet arrows inside the frame
+// routine; 951-1 in a routine of its own that the frame routine calls. The routine named opens by
+// saving rbx and ORs the mask into the node's flag word (or word [rdx+disp32],r8w) within its
+// first 0x20 bytes, then tells the node's listeners and does the same down its children.
 inline constexpr int kArrowRefresh[] = {
     0x41, 0xB8, 0x45, 0x00, 0x00, 0x00,
 };
+inline constexpr unsigned char kArrowRefreshBody[] = { 0x66, 0x44, 0x09, 0x82 };
+inline constexpr std::size_t kArrowRefreshSpan = 0x200, kArrowRefreshCall = 0x20;
+struct ArrowRefresh { std::uint64_t routine = 0, holder = 0; };   // the routine; the function whose call names it
+// `at(addr, n)` gives n readable bytes at addr or nullptr (as StoresKindThree). The frame routine
+// first, then every routine it calls directly; routine 0 when none holds the call.
+template <class At> ArrowRefresh ArrowRefreshRoutine(At at, std::uint64_t frame) {
+    const auto in = [&](std::uint64_t fn) -> std::uint64_t {
+        const std::uint8_t* b = at(fn, (int)(kArrowRefreshSpan + kArrowRefreshCall + 5));
+        if (!b) return 0;
+        for (std::size_t o = 0; o + 6 <= kArrowRefreshSpan; ++o) {
+            if (b[o] != 0x41 || b[o + 1] != 0xB8 || b[o + 2] != 0x45 || b[o + 3] || b[o + 4] || b[o + 5]) continue;
+            for (std::size_t c = o + 6; c < o + 6 + kArrowRefreshCall; ++c) {
+                if (b[c] != 0xE8) continue;
+                std::int32_t rel; std::memcpy(&rel, b + c + 1, 4);
+                const std::uint64_t t = fn + c + 5 + (std::uint64_t)(std::int64_t)rel;
+                const std::uint8_t* h = at(t, 0x20);
+                if (!h || h[0] != 0x48 || h[1] != 0x89 || h[2] != 0x5C) break;
+                for (int k = 0; k + 4 <= 0x20; ++k)
+                    if (std::memcmp(h + k, kArrowRefreshBody, 4) == 0) return t;
+                break;
+            }
+        }
+        return 0;
+    };
+    ArrowRefresh r;
+    if ((r.routine = in(frame)) != 0) { r.holder = frame; return r; }
+    const std::uint8_t* b = at(frame, (int)(kArrowRefreshSpan + 5));
+    for (std::size_t o = 0; b && o + 5 <= kArrowRefreshSpan; ++o) {
+        if (b[o] != 0xE8) continue;
+        std::int32_t rel; std::memcpy(&rel, b + o + 1, 4);
+        const std::uint64_t callee = frame + o + 5 + (std::uint64_t)(std::int64_t)rel;
+        if ((r.routine = in(callee)) != 0) { r.holder = callee; return r; }
+    }
+    return r;
+}
 
 // Trail tile draw method: the pass flags field at +45, then the submit call (kTileSubmit).
 inline constexpr int kTileDraw[] = {
@@ -687,13 +727,23 @@ inline constexpr CcOp kCcOps[] = {
 };
 inline constexpr const char* kCcFeatures = "In-game panels drawn by the engine";
 
-// Sound play call sites the launcher labels by origin, in address order: the calls of the play
-// routine (the call after kSoundSynth). The labels go by place, the first call to the first label:
-// the addresses are the Vulkan 950-1 client's and differ in every other exe, the order does not.
-struct SoundSite { std::uint32_t ret; const char* origin; };
-inline constexpr SoundSite kSoundSites[] = {
-    { 0x949CC, "script" }, { 0x94AEE, "script" }, { 0x9515E, "script" }, { 0xF0718, "server" }, { 0xF0B71, "server_tile" },
-    { 0x115478, "zone" }, { 0x115750, "zone" }, { 0x3E70F0, "actor" }, { 0x3E89EB, "engine" },
+// Sound origins, by what holds each call of the play routine (the call after kSoundSynth), read
+// from the exe at hand: an engine op handler is a script; a server packet body goes by the packet's
+// reference id; a zone sub-packet body is a zone sound; the routine the plugin runtime's sound
+// binding calls (the binding names kSoundPluginText) is a plugin; the one routine called from
+// kSoundActorCallers or more places is the actor animation slots; a helper whose callers differ is
+// the engine. No addresses: the same rules name every build.
+struct SoundPacketOrigin { int ref; const char* origin; };
+inline constexpr SoundPacketOrigin kSoundPacketOrigins[] = {
+    { rtx::sops::kSound,        "server" },
+    { rtx::sops::kSoundTimed,   "server" },
+    { rtx::sops::kSoundTimed2,  "server" },
+    { rtx::sops::kAreaSoundAbs, "server_tile" },
+    { rtx::sops::kAreaSound,    "zone" },
 };
+inline constexpr const char* kSoundPacketOther = "server";   // a sound packet with no row is still the server's
+inline constexpr const char* kSoundPluginText = "aligned allocation of userdata block";
+inline constexpr int kSoundActorCallers = 3;
+inline constexpr int kSoundPluginDepth = 3;
 
 }  // namespace rtx::sig

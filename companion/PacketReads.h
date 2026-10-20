@@ -1116,8 +1116,8 @@ inline std::string DiffText(const std::uint8_t* refFile, std::size_t refSize, co
     s += line;
     {   // the zone sub-packets
         const auto& Z = P.zone;
-        std::snprintf(line, sizeof(line), "zone subs: %d live, %d reference; carried %d by twin, %d by name, %d by length; %d length differ; new: %s\n",
-                      Z.liveCount, Z.refCount, Z.byTwin, Z.byName, Z.byLength, Z.lenDiffer, Z.newSubs.empty() ? "none" : Z.newSubs.c_str());
+        std::snprintf(line, sizeof(line), "zone subs: %d live, %d reference; carried %d by twin, %d by name, %d by length; %d length differ; added: %s; new: %s\n",
+                      Z.liveCount, Z.refCount, Z.byTwin, Z.byName, Z.byLength, Z.lenDiffer, Z.addedSubs.empty() ? "none" : Z.addedSubs.c_str(), Z.newSubs.empty() ? "none" : Z.newSubs.c_str());
         s += line;
         for (int r = 0; r < 64; ++r) if (Z.ok && Z.toLive[r] >= 0) {
             std::snprintf(line, sizeof(line), "    ref sub %d -> live %d (len %d, twin %d)\n", r, Z.toLive[r], Z.liveLen[Z.toLive[r]], Z.twinRef[r]);

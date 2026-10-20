@@ -107,11 +107,13 @@ constexpr std::size_t kTileSubmitLen = sizeof(kTileSubmitSig) / sizeof(kTileSubm
 constexpr std::size_t kShownMethod = 0x110;
 constexpr std::uint32_t kPassSkipped = 0x07, kPassTile = 0x20;
 
-// Inside the frame routine the game turns the feet arrow and then has the node take the change in:
-//   mov r8d, 45h ; movss [rbx+..],xmm0 ; mov rdx,rbx ; mov rcx,rbx ; call rel32
-// That call is how a moved node is made to show it.
-constexpr const auto& kRefreshSig = rtx::sig::kArrowRefresh;
-constexpr std::size_t kRefreshLen = sizeof(kRefreshSig) / sizeof(kRefreshSig[0]);
+// Every frame the game turns the feet arrow and has its node take the change in:
+//   mov r8d, 45h ; movss [rbx+ECh],xmm0 ; mov rdx,rbx ; mov rcx,rbx ; call rel32
+// The routine called ORs the mask into the node's flag word and passes it to the node's listeners
+// and children. Bit 2 of the word is what has the node recompute its place from its own position
+// the next time it is asked, so a position written from here is followed by this call with it set.
+// 950-1 turns the feet arrows inside the frame routine, 951-1 in a routine the frame routine
+// calls; Signatures.h finds the call in either.
 constexpr std::uint32_t kRefreshMoved = 0x07;
 
 using Message = void* (*)(void* self, void* stream);
@@ -676,6 +678,12 @@ bool Install() {
         SayCheck("FAIL", "format", g_exp, "-", "", "FORMAT: the frame call site does not name a routine in the image; engine markers, in-frame panels, sounds and asks off");
         return false;
     }
+    // how the game has a moved node show it: the refresh the feet arrow turn calls
+    const std::uint64_t imLo = reinterpret_cast<std::uint64_t>(im.base), imHi = imLo + im.nt->OptionalHeader.SizeOfImage;
+    const rtx::sig::ArrowRefresh refresh = rtx::sig::ArrowRefreshRoutine(
+        [&](std::uint64_t a, int n) { return a >= imLo && a + (std::uint64_t)n <= imHi ? reinterpret_cast<const std::uint8_t*>(a) : nullptr; },
+        reinterpret_cast<std::uint64_t>(frame));
+    g_refresh = reinterpret_cast<Refresh>(refresh.routine);
 
     // the frame's call site names both managers; the two message routines, when their signatures
     // hit, must name the same ones. Markers write into the managers' slots: only with the slot size
@@ -737,27 +745,16 @@ bool Install() {
     if (!g_installed) SayCheck("FAIL", "gone", g_exp, g_got, "", "GONE: the frame hook did not attach; engine markers, in-frame panels, sounds and asks off");
     else if (!on) SayCheck("FAIL", kind, g_exp, g_got, "", why);
     else {
-        char d[400];
-        std::snprintf(d, sizeof(d), "%sarrow routine 0x%llx (%s), trail routine 0x%llx (%s), managers at 0x%x/0x%x%s, %u-byte slots, requests +0x%zx by 0x%zx; the round trip is reported on the first request",
+        char d[480], rf[80];
+        if (!refresh.routine) std::snprintf(rf, sizeof(rf), "node refresh not found (NPC arrow height off)");
+        else if (refresh.holder == reinterpret_cast<std::uint64_t>(frame)) std::snprintf(rf, sizeof(rf), "node refresh 0x%llx called in the frame routine", (unsigned long long)(refresh.routine - imLo));
+        else std::snprintf(rf, sizeof(rf), "node refresh 0x%llx called in the turn routine 0x%llx", (unsigned long long)(refresh.routine - imLo), (unsigned long long)(refresh.holder - imLo));
+        std::snprintf(d, sizeof(d), "%sarrow routine 0x%llx (%s), trail routine 0x%llx (%s), managers at 0x%x/0x%x%s, %u-byte slots, requests +0x%zx by 0x%zx, %s; the round trip is reported on the first request",
                       g_checkKind[0] ? "MOVED: " : "",
                       (unsigned long long)(arrow - im.base), arrowAt ? (arrowAnchor == arrow ? "signature, descriptor 0x62 agrees" : arrowAnchor ? "signature, descriptor 0x62 differs" : "signature") : "descriptor 0x62, signature missed",
                       (unsigned long long)(trail - im.base), trailAt ? (trailAnchor == trail ? "signature, descriptor 0x3a agrees" : trailAnchor ? "signature, descriptor 0x3a differs" : "signature") : "descriptor 0x3a, signature missed",
-                      g_arrowDisp, g_trailDisp, (g_arrowDisp != rtx::md::kArrowMgr || g_trailDisp != rtx::md::kTrailMgr) ? " (compiled 0x198f8/0x19908, the frame site's in use)" : "", slotSize, g_requests, g_requestSize);
+                      g_arrowDisp, g_trailDisp, (g_arrowDisp != rtx::md::kArrowMgr || g_trailDisp != rtx::md::kTrailMgr) ? " (compiled 0x198f8/0x19908, the frame site's in use)" : "", slotSize, g_requests, g_requestSize, rf);
         SayCheck("SKIP", g_checkKind, g_exp, g_got, "a marker request from the launcher", d);
-    }
-    // how the game has a moved node show it: read out of the frame routine, an extra as well
-    for (std::size_t o = 0; g_installed && o < 0x200 && !g_refresh; ++o) {
-        if (!Matches(frame + o, kRefreshSig, kRefreshLen)) continue;
-        for (std::size_t c = o + kRefreshLen; c < o + kRefreshLen + 0x20; ++c) {
-            if (frame[c] != 0xE8) continue;
-            std::int32_t rel;
-            std::memcpy(&rel, frame + c + 1, 4);
-            const std::uint8_t* target = frame + c + 5 + rel;
-            const std::uint8_t* lo = im.base;
-            if (target > lo && target < lo + im.nt->OptionalHeader.SizeOfImage && target[0] == 0x48 && target[1] == 0x89 && target[2] == 0x5C)
-                g_refresh = reinterpret_cast<Refresh>(const_cast<std::uint8_t*>(target));
-            break;
-        }
     }
     // the outline of a tile is an extra: without this the tile still shows, plain
     if (g_installed) {

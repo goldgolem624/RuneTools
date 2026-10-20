@@ -43,8 +43,23 @@ struct RefRow { int op, len; const char* name; int group, pos; };
 // second family of the same static initialisers ({id, wire length}, ids 0..n-1). At its registrar
 // site a sub either takes a server packet's handler (`mov rcx,[packet descriptor + 0x48]`: the twin,
 // whose body it shares) or gets its own callback (`lea rax,[vtable]`, named like a packet's).
-struct ZoneRow { int sub = -1, len = 0, twin = -1; std::string own; std::uint32_t invoke = 0; };
+struct ZoneRow {
+    int sub = -1, len = 0, twin = -1; std::string own; std::uint32_t invoke = 0;
+    std::string name;           // the callback the site binds: its own, or the twin packet's
+    std::uint32_t callee = 0;   // the routine the handler ends in (rva), 0 when none
+};
 struct ZoneRef { int sub, len, twin; const char* own; };
+// Zone subs added after the reference build, under ids above its table (the ids the decoders use).
+// A live sub is one of these by the callback its site binds, else by ending in the routine the live
+// sub carried as `variantOf` ends in (the plain form it extends). Variable-length bodies; the walk
+// reads them in EventZone.h.
+struct ZoneAdded { int sub, len; const char* name; int variantOf; };
+inline constexpr ZoneAdded kZoneAdded[] = {
+    { 18, -1, ".?AV<lambda_aa290a1721078ce0eb15a6fb73fa0766>@@", 0 },   // obj_add, smart quantity
+    { 19, -1, ".?AV<lambda_695e5d3ef468e5b0afe30c9acbdae4fd>@@", 9 },   // obj_add with owner, smart quantity
+    { 20, -1, ".?AV<lambda_5128eaef7de8006c9346e55911f06f52>@@", 6 },   // obj_count, smart quantities
+};
+inline constexpr std::size_t kZoneAddedCount = sizeof(kZoneAdded) / sizeof(kZoneAdded[0]);
 // Zone subs with their own handler are read like packets under the id kZoneOwn + sub.
 inline constexpr int kZoneOwn = 0x200;
 // The fixed head of a variable-length packet (a zone update's plane and offsets) is read like a
@@ -228,6 +243,35 @@ inline bool Table(const std::uint8_t* file, std::size_t size, std::vector<Row>& 
             if (dense && (!zf || kv.second.size() > zf->size())) zf = &kv.second;
         }
         if (zf) {
+            // the routine a handler ends in: the last call or jump out of its function, thunks
+            // (`add rcx,8; jmp`) followed first
+            auto lastCallee = [&](std::uint32_t rva) -> std::uint32_t {
+                for (int hop = 0; hop < 4; ++hop) {
+                    const std::int64_t fo = pe.FoOf(rva);
+                    if (fo < 0 || (std::size_t)fo + 9 > size) return 0;
+                    const std::uint8_t* b = file + fo;
+                    if (b[0] == 0x48 && b[1] == 0x83 && b[2] == 0xC1 && b[3] == 0x08 && b[4] == 0xE9) rva = (std::uint32_t)((std::int64_t)rva + 9 + S32(b + 5));
+                    else if (b[0] == 0xE9) rva = (std::uint32_t)((std::int64_t)rva + 5 + S32(b + 1));
+                    else break;
+                }
+                auto f = std::upper_bound(funcs.begin(), funcs.end(), std::make_pair(rva, 0xFFFFFFFFu));
+                if (f == funcs.begin()) return 0;
+                --f;
+                if (rva >= f->second) return 0;
+                std::uint32_t out = 0;
+                for (std::uint32_t k = f->first; k + 5 <= f->second; ++k) {
+                    const std::int64_t fo = pe.FoOf(k);
+                    if (fo < 0) break;
+                    const std::uint8_t* b = file + fo;
+                    if (b[0] != 0xE8 && b[0] != 0xE9) continue;
+                    const std::uint32_t t = (std::uint32_t)((std::int64_t)k + 5 + S32(b + 1));
+                    if ((t >= f->first && t < f->second) || t < T.va || t >= T.va + T.vsize) continue;
+                    out = t;
+                }
+                return out;
+            };
+            std::unordered_map<int, const Row*> byOp;
+            for (const auto& r : out) byOp[r.op] = &r;
             std::unordered_map<std::uint32_t, ZoneRow> byDesc;
             for (std::uint32_t o : *zf) { ZoneRow z; z.sub = inits[o].op; z.len = inits[o].len; byDesc[o] = z; }
             std::unordered_set<std::uint32_t> linked;
@@ -240,15 +284,21 @@ inline bool Table(const std::uint8_t* file, std::size_t size, std::vector<Row>& 
                     if (text[j] == 0x48 && text[j + 1] == 0x8B && text[j + 2] == 0x0D) {        // mov rcx,[server descriptor + 0x48]
                         const std::uint32_t src = (std::uint32_t)((std::int64_t)T.va + (std::int64_t)j + 7 + S32(text + j + 3)) - 0x48;
                         auto s = serverOp.find(src);
-                        if (s != serverOp.end()) { it->second.twin = s->second; linked.insert(z); break; }
+                        if (s != serverOp.end()) {
+                            it->second.twin = s->second;
+                            auto p = byOp.find(s->second);
+                            if (p != byOp.end()) { it->second.name = p->second->name; it->second.callee = lastCallee(p->second->invoke); }
+                            linked.insert(z); break;
+                        }
                     }
                     if (text[j] == 0x48 && text[j + 1] == 0x8D && text[j + 2] == 0x05) {        // lea rax,[vtable]: its own callback
                         const std::uint32_t vt = (std::uint32_t)((std::int64_t)T.va + (std::int64_t)j + 7 + S32(text + j + 3));
                         auto v = vtTd.find(vt);
                         if (v != vtTd.end()) {
-                            it->second.own = tds[v->second];
+                            it->second.own = it->second.name = tds[v->second];
                             const std::int64_t vfo = pe.FoOf(vt);
                             if (vfo >= 0 && (std::size_t)vfo + 24 <= size) { std::uint64_t q; std::memcpy(&q, file + vfo + 16, 8); it->second.invoke = (std::uint32_t)(q - pe.base); }
+                            it->second.callee = lastCallee(it->second.invoke);
                             linked.insert(z); break;
                         }
                     }
@@ -344,12 +394,14 @@ inline Carried Carry(const RefRow* ref, std::size_t n, const std::vector<Row>& l
 // Without one (the chain not recognised), opcodes pass through as they are, the compiled numbering.
 // Zone subs carry like packets: by twin (the live twin's reference id is the reference sub's twin;
 // two subs on one twin go by length), then by own callback name, then by a length only one leftover
-// has on each side. A carried sub keeps its length or is dropped.
+// has on each side. A carried sub keeps its length or is dropped. Then the subs added after the
+// reference build (kZoneAdded): by the callback bound, else by the routine the handler ends in.
 struct ZoneCarry {
     bool ok = false; std::string why;
-    int liveCount = 0, refCount = 0, byTwin = 0, byName = 0, byLength = 0, lenDiffer = 0;
+    int liveCount = 0, refCount = 0, byTwin = 0, byName = 0, byLength = 0, lenDiffer = 0, byAdded = 0;
     int toRef[64]; int toLive[64]; int liveLen[64]; int twinRef[64];   // twinRef: per reference sub
     std::string newSubs;   // live subs with no reference counterpart
+    std::string addedSubs; // the added subs found, "ref (live)"
 };
 inline void CarryZone(const ZoneRef* ref, std::size_t n, const std::vector<ZoneRow>& live, int (*refOf)(int), ZoneCarry& z) {
     for (int i = 0; i < 64; ++i) z.toRef[i] = z.toLive[i] = z.liveLen[i] = z.twinRef[i] = -1;
@@ -372,12 +424,31 @@ inline void CarryZone(const ZoneRef* ref, std::size_t n, const std::vector<ZoneR
         if (!ref[i].own || !*ref[i].own || ref[i].sub < 0 || ref[i].sub >= 64 || z.toLive[ref[i].sub] >= 0) continue;
         for (const auto& l : live) if (l.own == ref[i].own) { if (set(ref[i], l)) ++z.byName; break; }
     }
-    std::map<int, std::vector<const ZoneRef*>> la; std::map<int, std::vector<const ZoneRow*>> lb;   // by a length only one leftover has
+    std::map<int, std::vector<const ZoneRef*>> la; std::map<int, std::vector<const ZoneRow*>> lb;   // by a fixed length only one leftover has
     for (std::size_t i = 0; i < n; ++i) if (ref[i].sub >= 0 && ref[i].sub < 64 && z.toLive[ref[i].sub] < 0) la[ref[i].len].push_back(&ref[i]);
     for (const auto& l : live) if (l.sub >= 0 && l.sub < 64 && z.toRef[l.sub] < 0) lb[l.len].push_back(&l);
     for (const auto& kv : la) {
+        if (kv.first < 0) continue;   // a variable length says nothing about the body
         auto it = lb.find(kv.first);
         if (kv.second.size() == 1 && it != lb.end() && it->second.size() == 1 && set(*kv.second[0], *it->second[0])) ++z.byLength;
+    }
+    for (std::size_t i = 0; i < kZoneAddedCount; ++i) {   // added after the reference build
+        const ZoneAdded& a = kZoneAdded[i];
+        if (a.sub < 0 || a.sub >= 64 || z.toLive[a.sub] >= 0) continue;
+        const ZoneRef as{ a.sub, a.len, -1, a.name };
+        const ZoneRow* hit = nullptr;
+        for (const auto& l : live) if (l.sub >= 0 && l.sub < 64 && z.toRef[l.sub] < 0 && l.name == a.name) { hit = &l; break; }
+        if (!hit && a.variantOf >= 0 && a.variantOf < 64 && z.toLive[a.variantOf] >= 0) {
+            std::uint32_t callee = 0;
+            for (const auto& l : live) if (l.sub == z.toLive[a.variantOf]) callee = l.callee;
+            int found = 0;
+            for (const auto& l : live) if (callee && l.callee == callee && l.sub >= 0 && l.sub < 64 && z.toRef[l.sub] < 0 && l.len == a.len) { hit = &l; ++found; }
+            if (found != 1) hit = nullptr;
+        }
+        if (hit && set(as, *hit)) {
+            ++z.byAdded;
+            z.addedSubs += (z.addedSubs.empty() ? "" : ", ") + std::to_string(a.sub) + " (live " + std::to_string(hit->sub) + ")";
+        }
     }
     for (const auto& l : live) if (l.sub >= 0 && l.sub < 64 && z.toRef[l.sub] < 0) z.newSubs += (z.newSubs.empty() ? "" : ", ") + std::to_string(l.sub);
     z.ok = z.liveCount > 0;

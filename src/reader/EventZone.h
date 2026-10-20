@@ -21,6 +21,7 @@ inline int g_mapBaseX = 0, g_mapBaseY = 0;   // [MainData+0x198A0]+0x6C8 / +0x6C
 
 inline std::uint16_t u16be(const std::uint8_t* b) { return (std::uint16_t)((b[0] << 8) | b[1]); }
 inline std::uint32_t u32be(const std::uint8_t* b) { return ((std::uint32_t)b[0] << 24) | ((std::uint32_t)b[1] << 16) | ((std::uint32_t)b[2] << 8) | b[3]; }
+inline std::uint32_t u24be(const std::uint8_t* b) { return ((std::uint32_t)b[0] << 16) | ((std::uint32_t)b[1] << 8) | b[2]; }
 
 // World tile of a zone-local position byte on the current zone. false when no zone base was seen yet.
 inline bool tile(std::uint8_t pos, int& wx, int& wy, int& plane) {
@@ -41,7 +42,7 @@ inline void packedJson(std::string& o, std::uint32_t v) {
     o += t;
 }
 // Entity reference used by the on-actor graphic packets: player index below 0x20000000, NPC
-// index below 0x40000000 (both & 0xFFFF into the registries at MainData+0x19968 / +0x19930, the latter 950-1's),
+// index below 0x40000000 (both & 0xFFFF into the registries at MainData+0x19968 / +0x19940),
 // otherwise a packed world tile.
 inline void refJson(std::string& o, std::uint32_t v) {
     char t[96];
@@ -53,21 +54,30 @@ inline void refJson(std::string& o, std::uint32_t v) {
 
 // Zone sub-packet ids (the table at exe+0xD96B08) and the top-level opcodes that carry the same body.
 // The table pointer at exe+0xD96B08 points at exe+0xD96B30; entry k is sub id k (descriptor: id, length, handler).
+// Ids 18..20 are subs added after the reference build (PacketIds.h kZoneAdded): the ground item
+// subs with smart quantities (u16 BE, or u32 BE with bit 31 clear when the first byte is above 0x7f).
 enum Sub { kObjAdd = 0x00, kAreaSound2 = 0x01, kSpotAnim2 = 0x02, kSub03 = 0x03, kAreaSound = 0x04,
            kProjectile = 0x05, kObjCount = 0x06, kLocVar1 = 0x07, kLocVar2 = 0x08, kObjAddOwned = 0x09,
            kObjDel = 0x0A, kSpotAnim = 0x0B, kLocDel = 0x0C, kLocAdd = 0x0D, kSub0E = 0x0E,
-           kProjectile20 = 0x0F, kProjectile28 = 0x10, kProjectile29 = 0x11 };
-// The descriptor lengths of the zone table (-1 for subs 7, 8 and 0xE). The table is matched against
-// these; walking a zone update uses itemLen below, since a descriptor of -1 carries no length byte.
+           kProjectile20 = 0x0F, kProjectile28 = 0x10, kProjectile29 = 0x11,
+           kObjAddBig = 0x12, kObjAddOwnedBig = 0x13, kObjCountBig = 0x14 };
+// The descriptor lengths of the zone table (-1 for subs 7, 8, 0xE and the added subs). The table is
+// matched against these; walking a zone update uses itemLen below, since a descriptor of -1 carries
+// no length byte.
 inline int subLen(int sub) {
     switch (sub) { case 0x00: return 6; case 0x01: return 11; case 0x02: return 14; case 0x03: return 5; case 0x04: return 10;
                    case 0x05: return 21; case 0x06: return 8; case 0x07: return -1; case 0x08: return -1; case 0x09: return 8;
                    case 0x0A: return 4; case 0x0B: return 11; case 0x0C: return 2; case 0x0D: return 7; case 0x0E: return -1;
                    case 0x0F: return 20; case 0x10: return 28; case 0x11: return 29;
+                   case 0x12: case 0x13: case 0x14: return -1;
                    default: return -2; }
 }
-inline constexpr int kSubCount = 0x12;   // descriptors in the zone table
+inline constexpr int kSubCount = 0x15;   // the reference build's 18 subs and the 3 added
 inline bool subKnown(int sub) { return sub >= 0 && sub < kSubCount; }
+// A smart quantity: 2 bytes, or 4 when the first byte is above 0x7f (bit 31 then dropped). Bytes it
+// takes (-1 when the body is short) and its value.
+inline int smartLen(const std::uint8_t* b, std::uint32_t n) { if (n < 1) return -1; const int w = b[0] > 0x7F ? 4 : 2; return (std::uint32_t)w <= n ? w : -1; }
+inline std::uint32_t smart(const std::uint8_t* b) { return b[0] > 0x7F ? (u32be(b) & 0x7FFFFFFFu) : u16be(b); }
 
 // Bytes of the transform that follows a loc change whose type byte has bit 7 set (exe+0x10D0A0): a flag
 // byte, four i16 for bit 0, one i16 each for bits 1..3, then one i16 for bit 4 (uniform scale) or one
@@ -83,7 +93,8 @@ inline int locTransformLen(const std::uint8_t* b, std::uint32_t n) {
 
 // Bytes one item body takes, read the way the game's handler reads it: every handler consumes its own
 // bytes, so loc changes with a transform run past their descriptor length, subs 7 and 8 (descriptor -1)
-// parse fields and counted lists, and sub 0xE runs the 5-byte handler of sub 3. -1: short body, -2:
+// parse fields and counted lists, sub 0xE runs the 5-byte handler of sub 3, and the added ground item
+// subs read smart quantities after the position byte and 24-bit item id. -1: short body, -2:
 // unknown sub id.
 inline int itemLen(int sub, const std::uint8_t* b, std::uint32_t n) {
     int len = 0; bool transform = false;
@@ -98,6 +109,15 @@ inline int itemLen(int sub, const std::uint8_t* b, std::uint32_t n) {
         if (n < 7) return -1;
         len = 7; transform = ((std::uint8_t)(0 - b[0]) >> 7) != 0; break;
     case kSub0E: return n >= 5 ? 5 : -1;
+    case kObjAddBig: case kObjAddOwnedBig: case kObjCountBig: {   // position b0, item id u24 BE, then the smart quantities (and the owner u16 BE)
+        if (n < 4) return -1;
+        len = 4;
+        const int q = smartLen(b + 4, n - 4); if (q < 0) return -1;
+        len += q;
+        if (sub == kObjCountBig) { const int q2 = smartLen(b + len, n - (std::uint32_t)len); if (q2 < 0) return -1; len += q2; }
+        if (sub == kObjAddOwnedBig) len += 2;
+        return (std::uint32_t)len <= n ? len : -1;
+    }
     default: { const int need = subLen(sub); if (need < 0) return -2; return (std::uint32_t)need <= n ? need : -1; }
     }
     if (transform) { const int t = locTransformLen(b + len, n - (std::uint32_t)len); if (t < 0) return -1; len += t; }
@@ -183,6 +203,20 @@ inline bool subJson(std::string& o, int sub, const std::uint8_t* b, std::uint32_
         const int id = (b[1] << 16) | (b[2] << 8) | b[3];
         o += "\"kind\":\"obj_count\","; tileJson(o, b[0]);
         std::snprintf(t, sizeof(t), ",\"item\":%d,\"qty\":%u,\"from\":%u", id, u16be(b + 6), u16be(b + 4)); o += t; return true;
+    }
+    case kObjAddBig: {       // 951-1 exe+0x420050 (OpenGL +0x420330): position b0 (bit 7 a flag the add takes), item id u24 BE, quantity smart; the same add routine as obj_add
+        o += "\"kind\":\"obj_add\","; tileJson(o, b[0]);
+        std::snprintf(t, sizeof(t), ",\"item\":%u,\"qty\":%u,\"flag\":%u", u24be(b + 1), smart(b + 4), b[0] >> 7); o += t; return true;
+    }
+    case kObjAddOwnedBig: {  // 951-1 exe+0x41FD60 (OpenGL +0x420040): position b0, item id u24 BE, quantity smart, owner player index u16 BE (skipped when it is the local index); the same routine as obj_add with owner
+        const int q = smartLen(b + 4, n - 4);
+        o += "\"kind\":\"obj_add\","; tileJson(o, b[0]);
+        std::snprintf(t, sizeof(t), ",\"item\":%u,\"qty\":%u,\"owner\":%u", u24be(b + 1), smart(b + 4), u16be(b + 4 + q)); o += t; return true;
+    }
+    case kObjCountBig: {     // 951-1 exe+0x41FB70 (OpenGL +0x41FE50): position b0 (bit 7 a flag), item id u24 BE, old quantity smart, new quantity smart; the same routine as obj_count
+        const int q = smartLen(b + 4, n - 4);
+        o += "\"kind\":\"obj_count\","; tileJson(o, b[0]);
+        std::snprintf(t, sizeof(t), ",\"item\":%u,\"qty\":%u,\"from\":%u,\"flag\":%u", u24be(b + 1), smart(b + 4 + q), smart(b + 4), b[0] >> 7); o += t; return true;
     }
     case kSpotAnim:
     case kSpotAnim2: {       // exe+0x114E00 / exe+0x116250: position b0, graphic u16 BE (0xFFFF removes), height i16 BE, delay u16 BE (bit 15 flag), rotation b7; 14-byte form adds a 24-bit offset pair

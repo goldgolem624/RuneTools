@@ -518,18 +518,27 @@ int APIENTRY wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
             { std::ofstream f("calib-check.txt", std::ios::binary | std::ios::trunc); f << out; }
             return headless_exit(0);
         }
-        // --op-prints <out.h> [--base <table.h>] <exe> <opcodes.json> [<exe> <opcodes.json> ...]: the
-        // table operations are named from, made from those exes and their script exports, built on the
-        // shipped table when --base names it (a game update: the one new exe and its export); log to
-        // op-prints.txt.
+        // --op-prints <out.h> [--base <table.h>] [--name <label>=<op> ...] <exe> <opcodes.json> [<exe> <opcodes.json> ...]:
+        // the table operations are named from, made from those exes and their script exports, built on
+        // the shipped table when --base names it (a game update: the one new exe and its export);
+        // --name gives a shipped placeholder label the operation number its handler has in these exes
+        // when the shipped rows no longer find it. Log to op-prints.txt.
         if (argv && argc >= 5 && std::wstring(argv[1]) == L"--op-prints") {
             std::vector<std::pair<std::wstring, std::wstring>> builds;
+            std::vector<std::pair<std::string, std::uint32_t>> labels;
             std::wstring base;
             int i = 3;
-            if (argc >= 7 && std::wstring(argv[3]) == L"--base") { base = argv[4]; i = 5; }
+            if (i + 1 < argc && std::wstring(argv[i]) == L"--base") { base = argv[i + 1]; i += 2; }
+            while (i + 1 < argc && std::wstring(argv[i]) == L"--name") {
+                const std::wstring a = argv[i + 1];
+                const std::size_t eq = a.find(L'=');
+                if (eq == std::wstring::npos) break;
+                labels.emplace_back(std::string(a.begin(), a.begin() + eq), (std::uint32_t)_wtoi(a.c_str() + eq + 1));
+                i += 2;
+            }
             for (; i + 1 < argc; i += 2) builds.emplace_back(argv[i], argv[i + 1]);
             std::string log;
-            const std::string table = rtx::calib::OpPrintsTable(builds, base, log);
+            const std::string table = rtx::calib::OpPrintsTable(builds, base, labels, log);
             if (!table.empty()) { std::ofstream f(argv[2], std::ios::binary | std::ios::trunc); f << table; }
             else log += "nothing written\n";
             { std::ofstream f("op-prints.txt", std::ios::binary | std::ios::trunc); f << log; }

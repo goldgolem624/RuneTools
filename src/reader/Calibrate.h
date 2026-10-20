@@ -64,9 +64,12 @@ std::string CheckText(const std::wstring& exePath, const std::wstring& opcodesJs
 // made from exes whose script export is at hand: {exe, its opcodes.json} each. With `basePath`,
 // the shipped table, its rows are built on: a name keeps its handler while that handler's code is
 // still found in a build, the export names the rest, and the shipped placeholder labels stay (the
-// rules are keyed to them). Empty when a file cannot be read or an export is not its exe's; `log`
-// says what each build gave.
-std::string OpPrintsTable(const std::vector<std::pair<std::wstring, std::wstring>>& builds, const std::wstring& basePath, std::string& log);
+// rules are keyed to them). `labels`: shipped placeholder labels with the operation number their
+// handler has in the given builds (`--name unk11164=1234`), for a handler the shipped rows no longer
+// find: the builds' rows for it go in under that label. Empty when a file cannot be read or an
+// export is not its exe's; `log` says what each build gave.
+std::string OpPrintsTable(const std::vector<std::pair<std::wstring, std::wstring>>& builds, const std::wstring& basePath,
+                          const std::vector<std::pair<std::string, std::uint32_t>>& labels, std::string& log);
 
 // Why nothing was calibrated, empty when the rules ran. Kept with the last Run.
 std::string Why();

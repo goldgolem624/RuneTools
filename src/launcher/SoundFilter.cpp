@@ -38,11 +38,11 @@ struct View {
     explicit operator bool() const { return sh != nullptr; }
 };
 
-// The calls of the play routine in this client's exe, read once per client. Empty when the exe
-// cannot be read or does not hold as many calls as there are labels.
-const std::vector<std::uint32_t>& CallSites(std::uint32_t pid, std::uint32_t playRva) {
+// The calls of the play routine in this client's exe with their origins, read once per client.
+// Empty when the exe cannot be read.
+const std::vector<rtx::codescan::SoundSite>& CallSites(std::uint32_t pid, std::uint32_t playRva) {
     static std::uint32_t s_pid = 0, s_play = 0;
-    static std::vector<std::uint32_t> s_sites;
+    static std::vector<rtx::codescan::SoundSite> s_sites;
     if (pid == s_pid && playRva == s_play) return s_sites;
     s_pid = pid; s_play = playRva; s_sites.clear();
     wchar_t path[MAX_PATH] = {}; DWORD n = MAX_PATH;
@@ -51,7 +51,6 @@ const std::vector<std::uint32_t>& CallSites(std::uint32_t pid, std::uint32_t pla
         if (QueryFullProcessImageNameW(h, 0, path, &n)) s_sites = rtx::codescan::SoundCallSites(path, playRva);
         CloseHandle(h);
     }
-    if (s_sites.size() != sizeof(rtx::sig::kSoundSites) / sizeof(rtx::sig::kSoundSites[0])) s_sites.clear();
     return s_sites;
 }
 
@@ -104,13 +103,12 @@ std::string StatusJson(std::uint32_t pid) {
         const std::uint32_t abs = seq - valid + i;          // oldest-first
         const auto& e = sh->recent[abs % rtx::sound::kMaxRecent];
         if (i) out += ',';
-        // Origin from the return address, by its place among the calls of the play routine in this
-        // client's exe: three script ops, the server sound (0x2C), the server world-tile sound (0x5F),
-        // two zone sounds (0xA4 and the zone-update sub-packets), the actor animation slots, the
-        // engine. A call that is not one of them is reported by RVA.
+        // Origin from the return address: what holds that call in this client's exe (CodeScan: an op
+        // handler, a packet or zone sub body, the plugin binding, the actor slots, a shared helper).
+        // A call that is none of them is reported by RVA.
         const char* origin = "other";
         const auto& sites = CallSites(pid, sh->playRva);
-        for (std::size_t k = 0; k < sites.size(); ++k) if (sites[k] == e.caller) { origin = rtx::sig::kSoundSites[k].origin; break; }
+        for (const auto& s : sites) if (s.ret == e.caller) { origin = s.origin; break; }
         out += "{\"n\":" + std::to_string(abs) +
                ",\"id\":" + std::to_string(e.id) +
                ",\"idx\":" + std::to_string(e.idx) +

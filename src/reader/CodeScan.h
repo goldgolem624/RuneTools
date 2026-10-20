@@ -17,9 +17,11 @@ void Check(const std::wstring& exePath, rtx::health::Run& run);
 struct ExeFacts { bool ok = false; std::uint32_t stamp = 0, sizeOfImage = 0; std::string flavour, version; std::uint32_t optableRva = 0; int opMax = -1; };
 ExeFacts Facts(const std::wstring& exePath);
 
-// Every call of the sound play routine in the exe, as the return address of each (an RVA), in
+// Every call of the sound play routine in the exe: the return address (an RVA) and the origin
+// its place gives it (Signatures.h kSoundPacketOrigins; "other" when no rule holds it), in
 // address order. The launcher labels a sound's origin by which of these called it.
-std::vector<std::uint32_t> SoundCallSites(const std::wstring& exePath, std::uint32_t playRva);
+struct SoundSite { std::uint32_t ret; const char* origin; };
+std::vector<SoundSite> SoundCallSites(const std::wstring& exePath, std::uint32_t playRva);
 
 // --sigs-record: the per-build manifest lines for this exe (build, sig, disp, rva, imports).
 std::string Record(const std::wstring& exePath);

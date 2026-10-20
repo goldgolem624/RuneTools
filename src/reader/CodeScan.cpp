@@ -42,7 +42,7 @@ constexpr std::uint32_t kMenuTargetsBegin = 0x1388, kMenuTargetsEnd = 0x1390, kP
 // order (GrandExchange and World moved +0x18).
 struct RootField { std::uint32_t off; const char* name; };
 constexpr RootField kRootFields[] = {
-    { 0x18D68, "ConfigManager" }, { 0x198C0, "Connection" }, { 0x19920, "LoginManager" }, { 0x19930, "EntityLookup" },
+    { 0x18D68, "ConfigManager" }, { 0x198C0, "Connection" }, { 0x19920, "LoginManager" }, { 0x19940, "EntityLookup" },
     { 0x19998, "ScriptRunner" }, { 0x199B0, "TrackerValues" }, { 0x19A68, "ServerTimeOffset" }, { 0x55250, "WorldInfo" },
 };
 
@@ -53,7 +53,6 @@ void Word(const char* w, std::string& d) {
     d = std::string(w) + ": " + d;
 }
 
-using rtx::sig::kSoundSites;
 
 // Engine ops the companion calls by name, with the ints it pushes where the handler's pop of the
 // int stack is checked (-1: not checked, the call goes through a wrapper).
@@ -293,6 +292,93 @@ std::vector<std::uint32_t> CallSitesTo(const Image& im, std::uint32_t target) {
     return out;
 }
 
+// The functions calling `fn` directly (chain roots), `fn` itself left out.
+std::set<std::uint32_t> CallersOf(const Image& im, std::uint32_t fn) {
+    std::set<std::uint32_t> out;
+    for (std::uint32_t ret : CallSitesTo(im, fn)) { const std::uint32_t f = FunctionOf(im, ret); if (f && f != fn) out.insert(f); }
+    return out;
+}
+
+// Every place `text` starts in a non-executable section.
+std::vector<std::uint32_t> FindText(const Image& im, const char* text) {
+    std::vector<std::uint32_t> out;
+    const std::size_t n = std::strlen(text);
+    for (const auto& s : im.pe.sections) {
+        if (s.flags & kScnExec) continue;
+        const char* b = reinterpret_cast<const char*>(im.pe.base + s.raw);
+        const std::size_t len = std::min<std::size_t>(s.rawSize, s.vsize ? s.vsize : s.rawSize);
+        for (const char* it = b; (it = std::search(it, b + len, text, text + n)) != b + len; ++it) out.push_back(s.rva + (std::uint32_t)(it - b));
+    }
+    return out;
+}
+
+// A packet callback's body: the invoke routine itself, or where its thunk (add rcx,8 ; jmp) goes.
+std::uint32_t CallbackBody(const Image& im, std::uint32_t invoke) {
+    if (const std::uint32_t f = FunctionOf(im, invoke)) return f;
+    const std::uint8_t* b = Bytes(im, invoke, 16);
+    for (int k = 0; b && k < 12; ++k) if (b[k] == 0xE9) return (std::uint32_t)((std::int64_t)invoke + k + 5 + I32(im, invoke + k + 1));
+    return 0;
+}
+
+std::vector<std::uint32_t> RelRefsTo(const Image& im, std::uint32_t lo, std::uint32_t hi);
+
+// The origin of every call of the play routine, by what holds the call (Signatures.h).
+std::vector<SoundSite> SoundSites(const Image& im, std::uint32_t playRva) {
+    std::vector<SoundSite> out;
+    if (!playRva) return out;
+    std::vector<std::uint32_t> sites = CallSitesTo(im, playRva);
+    std::sort(sites.begin(), sites.end());
+    std::set<std::uint32_t> ops;
+    for (const auto& kv : im.handlers) ops.insert(kv.second);
+    std::map<std::uint32_t, const char*> bodies;   // packet and zone sub bodies
+    std::vector<rtx::pktid::Row> live; std::vector<rtx::pktid::ZoneRow> zlive; std::string why;
+    if (rtx::pktid::Table(im.file.data(), im.file.size(), live, &why, &zlive)) {
+        const rtx::pktid::Carried cy = rtx::pktid::Carry(rtx::pktid::kRef, rtx::pktid::kRefCount, live);
+        for (const auto& r : live) {
+            const std::uint32_t body = CallbackBody(im, r.invoke);
+            if (!body) continue;
+            const int ref = r.op >= 0 && r.op < 512 ? cy.toRef[r.op] : -1;
+            const char* origin = rtx::sig::kSoundPacketOther;
+            for (const auto& p : rtx::sig::kSoundPacketOrigins) if (p.ref == ref) origin = p.origin;
+            bodies[body] = origin;
+        }
+        for (const auto& z : zlive) if (z.invoke) if (const std::uint32_t body = CallbackBody(im, z.invoke)) bodies[body] = "zone";
+    }
+    std::set<std::uint32_t> binding;   // the plugin runtime's sound binding names the text
+    for (std::uint32_t t : FindText(im, rtx::sig::kSoundPluginText))
+        for (std::uint32_t at : RelRefsTo(im, t, t + 1)) if (const std::uint32_t f = FunctionOf(im, at)) binding.insert(f);
+    auto byPlace = [&](std::uint32_t fn) -> const char* {
+        if (ops.count(fn)) return "script";
+        auto b = bodies.find(fn);
+        if (b != bodies.end()) return b->second;
+        return binding.count(fn) ? "plugin" : nullptr;
+    };
+    for (std::uint32_t ret : sites) {
+        const std::uint32_t fn = FunctionOf(im, ret);
+        const char* origin = fn ? byPlace(fn) : nullptr;
+        if (fn && !origin) {
+            std::set<std::uint32_t> seen{ fn }, level{ fn };
+            for (int d = 0; d < rtx::sig::kSoundPluginDepth && !origin && !level.empty(); ++d) {
+                std::set<std::uint32_t> next;
+                for (std::uint32_t f : level) for (std::uint32_t c : CallersOf(im, f)) if (seen.insert(c).second) next.insert(c);
+                for (std::uint32_t c : next) if (binding.count(c)) origin = "plugin";
+                level.swap(next);
+            }
+        }
+        if (fn && !origin) {
+            const std::set<std::uint32_t> callers = CallersOf(im, fn);
+            if ((int)callers.size() >= rtx::sig::kSoundActorCallers) origin = "actor";
+            else {
+                const char* same = nullptr; bool mixed = false;
+                for (std::uint32_t c : callers) { const char* o = byPlace(c); if (!o) continue; if (same && std::strcmp(same, o)) mixed = true; same = o; }
+                origin = mixed ? "engine" : same;
+            }
+        }
+        out.push_back({ ret, origin ? origin : "other" });
+    }
+    return out;
+}
+
 // Displacements of [rcx+disp32] reads and writes in every op handler (rcx = MainData on entry),
 // kept when at least two handlers use them: the shape of MainData as the client itself sees it.
 std::set<std::uint32_t> HandlerDisps(const Image& im) {
@@ -508,12 +594,10 @@ std::map<int, int> StaticPacketLengths(const Image& im, std::uint32_t tblRva, st
 
 }  // namespace
 
-std::vector<std::uint32_t> SoundCallSites(const std::wstring& exePath, std::uint32_t playRva) {
+std::vector<SoundSite> SoundCallSites(const std::wstring& exePath, std::uint32_t playRva) {
     auto im = Load(exePath);
-    if (!im->ok || !playRva) return {};
-    std::vector<std::uint32_t> sites = CallSitesTo(*im, playRva);
-    std::sort(sites.begin(), sites.end());
-    return sites;
+    if (!im->ok) return {};
+    return SoundSites(*im, playRva);
 }
 
 ExeFacts Facts(const std::wstring& exePath) {
@@ -709,14 +793,12 @@ void Check(const std::wstring& exePath, rtx::health::Run& run) {
             run.Fact("markers.slotSize", std::to_string(arrowSite.slot));
             if (arrowSite.slot != 8 && arrowSite.slot != 16) { ok = kWarn; d += "; manager slots are " + std::to_string(arrowSite.slot) + " bytes, the markers know 8 and 16 (markers off, the frame hook stays)"; Word("FORMAT", d); }
             else d += ", " + std::to_string(arrowSite.slot) + "-byte slots";
-            auto r = FindNear(I, where, 0x200, PatternOf(rtx::sig::kArrowRefresh, sizeof(rtx::sig::kArrowRefresh) / sizeof(int)));
-            std::uint32_t t = 0;
-            if (r) {
-                const std::uint8_t* b = Bytes(I, r + 6, 0x20);
-                for (int c = 0; b && c < 0x20; ++c) if (b[c] == 0xE8) { t = (std::uint32_t)((std::int64_t)r + 6 + c + 5 + I32(I, r + 6 + c + 1)); break; }
-            }
-            const std::uint8_t* tp = t ? Bytes(I, t, 3) : nullptr;
-            if (!tp || tp[0] != 0x48 || tp[1] != 0x89 || tp[2] != 0x5C) { ok = kWarn; d += "; node refresh call not found (markers move without refresh)"; Word("GONE", d); }
+            // the node refresh the feet arrow turn calls: in the frame routine (950-1) or in the
+            // turn routine the frame routine calls (951-1), found the way the companion finds it
+            const rtx::sig::ArrowRefresh rf = rtx::sig::ArrowRefreshRoutine([&](std::uint64_t a, int n) { return Bytes(I, (std::uint32_t)a, (std::size_t)n); }, (std::uint64_t)where);
+            run.Fact("markers.refresh", Hex((std::uint32_t)rf.routine));
+            if (!rf.routine) { ok = kWarn; d += "; node refresh call not found in the frame routine or the routines it calls (NPC arrow height off)"; Word("GONE", d); }
+            else d += ", node refresh " + Hex((std::uint32_t)rf.routine) + (rf.holder == where ? " called in the frame routine" : " called in the turn routine " + Hex((std::uint32_t)rf.holder));
         } else if (nm == "tile-draw") {
             const std::uint32_t flags = U32(I, at + 45);
             run.Fact("markers.passFlags", Hex(flags));
@@ -1040,21 +1122,21 @@ void Check(const std::wstring& exePath, rtx::health::Run& run) {
         }
     }
 
-    // sound origin labels: the return addresses of every call to the play routine
+    // sound origin labels: every call of the play routine, named by what holds it
     if (synthRva) {
-        // The origins are told by the order of the calls: the routine is called from the same places in
-        // the same order in every client of a build, at addresses that differ. So the labels hold when
-        // the exe has as many calls as there are labels.
-        const auto sites = CallSitesTo(I, synthRva);
-        const int total = (int)(sizeof(kSoundSites) / sizeof(kSoundSites[0]));
-        const int matched = (int)sites.size() == total ? total : 0;
-        std::string list;
-        for (std::size_t k = 0; k < sites.size() && k < 12; ++k) list += (k ? "," : "") + Hex(sites[k]);
+        const auto sites = SoundSites(I, synthRva);
+        std::string list; std::map<std::string, int> count; int other = 0;
+        for (std::size_t k = 0; k < sites.size(); ++k) {
+            list += (k ? "," : "") + Hex(sites[k].ret) + "=" + sites[k].origin;
+            ++count[sites[k].origin];
+            if (!std::strcmp(sites[k].origin, "other")) ++other;
+        }
         run.Fact("sound.callers", list);
-        run.Add(G, "code.soundsites", "Sound origin labels", matched == total ? kPass : kWarn,
-                matched == total ? std::to_string(total) + " calls of the play routine, each labelled by its place among them"
-                                 : "NEW: " + std::to_string(sites.size()) + " calls of the play routine, " + std::to_string(total) + " labelled (origins show as \"other\" on this exe)",
-                "Sounds panel: origin column", std::to_string(total), std::to_string(matched), "code.sig.sound-synth");
+        std::string d = std::to_string(sites.size()) + " calls of the play routine";
+        for (const auto& kv : count) d += ", " + std::to_string(kv.second) + " " + kv.first;
+        if (other) { d += "; " + std::to_string(other) + " held by no op handler, packet body, plugin binding or actor slots"; Word("NEW", d); }
+        run.Add(G, "code.soundsites", "Sound origin labels", other ? kWarn : kPass, d, "Sounds panel: origin column",
+                "every call named by its place", std::to_string(sites.size() - other) + "/" + std::to_string(sites.size()), "code.sig.sound-synth");
     }
 
     // the outline methods the scenery hover calls by slot: a method table holding both

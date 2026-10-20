@@ -13682,18 +13682,26 @@ void health_packets(HCtx& c, rtx::health::Run& run) {
         }
         // every opcode's wire length against the compiled table: an update that resizes any packet is named here
         {
-            const int all = rtx::sops::kOpMax + 1; int agree = 0, lost = 0; std::string diff, gone;
+            const int all = rtx::sops::kOpMax + 1; int agree = 0, lost = 0, unnamed = 0; std::string diff, gone, noName;
             for (int op = 0; op < all; ++op) {
                 const int lo = liveOf(op);
-                if (lo < 0) { ++lost; if (gone.size() < 120) gone += std::string(gone.empty() ? "" : ", ") + hx((std::uint32_t)op); continue; }
+                if (lo < 0) {
+                    // a reference opcode with no callback has nothing to be found by in another build
+                    bool named = false;
+                    for (std::size_t k = 0; k < rtx::pktid::kRefCount && !named; ++k) named = rtx::pktid::kRef[k].op == op;
+                    if (!named) { ++unnamed; if (noName.size() < 120) noName += std::string(noName.empty() ? "" : ", ") + hx((std::uint32_t)op); continue; }
+                    ++lost; if (gone.size() < 120) gone += std::string(gone.empty() ? "" : ", ") + hx((std::uint32_t)op); continue;
+                }
                 if (lens[(std::size_t)lo] == rtx::sops::kAllLengths[op]) { ++agree; continue; }
                 if (diff.size() < 240) diff += std::string(diff.empty() ? "" : ", ") + hx((std::uint32_t)op) + "@" + hx((std::uint32_t)lo) + " " + (lens[(std::size_t)lo] == 0x7FFF ? std::string("none") : std::to_string(lens[(std::size_t)lo])) + "/" + std::to_string(rtx::sops::kAllLengths[op]);
             }
-            const bool okAll = agree + lost == all && diff.empty();
+            const bool okAll = agree + lost + unnamed == all && diff.empty();
             run.Add(G, "pkt.lengths", "Wire lengths, every opcode", okAll ? (lost ? kWarn : kPass) : kFail,
-                    !diff.empty() ? "FORMAT: " + std::to_string(all - agree - lost) + " of " + std::to_string(all) + " reference packets changed length (reference id@live opcode, live/reference): " + diff
-                                  : std::to_string(agree) + " reference packets carry their wire length" + (lost ? "; GONE: " + std::to_string(lost) + " not found in this exe (" + gone + ")" : std::string()),
-                    "Packet decoders|Events channel", std::to_string(all) + " lengths", std::to_string(agree) + " agree, " + std::to_string(lost) + " not found", "pkt.table");
+                    !diff.empty() ? "FORMAT: " + std::to_string(all - agree - lost - unnamed) + " of " + std::to_string(all) + " reference packets changed length (reference id@live opcode, live/reference): " + diff
+                                  : std::to_string(agree) + " reference packets carry their wire length" +
+                                    (unnamed ? "; " + std::to_string(unnamed) + " reference opcodes carry no callback and are not compared (" + noName + ")" : std::string()) +
+                                    (lost ? "; GONE: " + std::to_string(lost) + " not found in this exe (" + gone + ")" : std::string()),
+                    "Packet decoders|Events channel", std::to_string(all) + " lengths", std::to_string(agree) + " agree, " + std::to_string(lost) + " not found, " + std::to_string(unnamed) + " without a callback", "pkt.table");
         }
     }
     // zone sub-packets: the descriptors the zone update dispatches through, read from the exe and
@@ -13710,9 +13718,10 @@ void health_packets(HCtx& c, rtx::health::Run& run) {
                 if (r >= 0 && r < 64 && Z.toLive[r] >= 0) ++carried;
                 else if (lost.size() < 80) lost += (lost.empty() ? "" : ", ") + std::to_string(r);
             }
-            found = std::to_string(carried) + "/" + std::to_string(Z.refCount);
+            found = std::to_string(carried) + "/" + std::to_string(Z.refCount) + (Z.byAdded ? ", " + std::to_string(Z.byAdded) + " added" : std::string());
             d = std::to_string(Z.liveCount) + " sub-packets in this exe; " + found + " reference subs carried (" + std::to_string(Z.byTwin) + " by twin packet, " +
                 std::to_string(Z.byName) + " by name, " + std::to_string(Z.byLength) + " by length)";
+            if (Z.byAdded) d += "; " + std::to_string(Z.byAdded) + " of " + std::to_string(rtx::pktid::kZoneAddedCount) + " subs added after the reference build carried: " + Z.addedSubs;
             if (carried == Z.refCount) ok = Z.newSubs.empty() ? kPass : kWarn;
             if (!Z.newSubs.empty()) d += "; NEW: live subs " + Z.newSubs + " have no reference counterpart (left raw, the walk stops there)";
             if (carried != Z.refCount) d = "GONE: " + d + "; not carried: " + lost;
