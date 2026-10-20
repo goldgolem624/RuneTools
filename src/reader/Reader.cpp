@@ -3844,11 +3844,13 @@ static bool ev_item_vars(const std::uint8_t* b, std::uint32_t n, std::uint32_t& 
 bool ev_decode(std::string& o, int op, const std::uint8_t* b, std::uint32_t n, int len, const TrackerDefs* trk = nullptr) {
     char t[128];
     // a fixed-length packet goes back into the reference build's wire form, the one the decoders
-    // below are written for; one whose layout was not read from its handler stays raw
+    // below are written for; one whose layout was not read from its handler stays raw. A packet read
+    // by the places its values go (ge_offer) takes the live bytes as they are.
     std::uint8_t tb[64];
+    const bool bySink = op == rtx::sops::kGeOffer;
     switch (rtx::preads::StateOf(op)) {
-    case rtx::preads::kPaired: if ((int)n == len && rtx::preads::Translate(op, b, n, tb, sizeof(tb))) b = tb; else return false; break;
-    case rtx::preads::kOff: return false;
+    case rtx::preads::kPaired: if (bySink) break; if ((int)n == len && rtx::preads::Translate(op, b, n, tb, sizeof(tb))) b = tb; else return false; break;
+    case rtx::preads::kOff: if (!bySink) return false; break;
     default: break;
     }
     {   // zone item bodies; a body without a decoder is tagged with its sub id instead of raw
@@ -4002,39 +4004,49 @@ bool ev_decode(std::string& o, int op, const std::uint8_t* b, std::uint32_t n, i
         if (n < 8) return false;
         std::snprintf(t, sizeof(t), "\"kind\":\"ping\",\"a\":%u,\"b\":%u", ev_u32be(b), ev_u32be(b + 4));
         o += t; return true;
-    case rtx::sops::kGeOffer: {    // [market u8][slot u8][header u8: 0 clears the slot, else status = h & 7, buy/sell bit 3; status 7 = extended form follows]
-        // extended form: [w u8][status/type u8] then item (w >= 3: u24 BE, else u16 BE), price (w >= 2: i64 BE, else u32 BE),
-        // count i32 BE, completed count i32 BE, completed gold (w >= 2: i64 BE, else u32 BE), then (w >= 2) a u32 BE extension length the client skips.
-        // The slot lands in the offer array at [MainData+0x199A8]+0x10 + (market * 8 + slot) * 0x28.
+    case rtx::sops::kGeOffer: {    // [market u8][slot u8][header u8] then the form the handler branches to (PacketReads.h forms)
+        // Reference forms: header 0 clears the slot; header & 7 == 7 is the extended form [w][status | type << 3]
+        // then item (w >= 3: u24 BE, else u16 BE), price (w >= 2: i64 BE, else u32 BE), count i32 BE, filled i32 BE,
+        // gold (w >= 2: i64 BE, else u32 BE), then (w >= 2) a u32 BE the client skips; any other header is the
+        // plain form with status and type in the header byte and u16 item, u32 price, count, filled, gold after it.
+        // 951 moved the plain form's status into a byte of its own after the header and dropped the clearing
+        // short cut, so the fields are read by the record slots the handler fills (status +0, item +8,
+        // price +0x10, count +0x18, filled +0x1c, gold +0x20), which every build keeps. The slot lands in
+        // the offer array at [MainData+kOffGE]+0x10 + (market * 8 + slot) * 0x28.
         if (n < 3) return false;
-        const int market = b[0], slot = b[1], hdr = b[2];
+        const int market = b[0], slot = b[1];
         if (market > 1 || slot >= kGESlotCount) return false;
-        if (hdr == 0) {
+        const rtx::preads::Form* F = rtx::preads::Pick(op, b, n);
+        if (!F || !F->prog.ok) return false;
+        std::int64_t st = 0, item = -1, price = 0, count = 0, completed = 0, gold = 0;
+        if (!F->BySink("st:0x0", b, n, st)) {   // the reference build's clearing form writes no record
             std::snprintf(t, sizeof(t), "\"kind\":\"ge_offer\",\"market\":%d,\"slot\":%d,\"status\":0,\"type\":-1,\"item\":-1,\"cleared\":true", market, slot);
             o += t; return true;
         }
-        int status = hdr & 7, type = (hdr >> 3) & 1;
-        if (status != 7) {   // plain form: the fields after the header are not decoded here
-            std::snprintf(t, sizeof(t), "\"kind\":\"ge_offer\",\"market\":%d,\"slot\":%d,\"status\":%d,\"type\":%d,\"extended\":false", market, slot, status, type);
-            o += t; return true;
-        }
-        if (n < 5) return false;
-        const int w = b[3];
-        status = b[4] & 7; type = (b[4] >> 3) & 1;
-        std::uint32_t p = 5;
-        long long item, price, gold; int count, completed;
-        if (w >= 3) { if (p + 3 > n) return false; item = ((long long)b[p] << 16) | ((long long)b[p + 1] << 8) | b[p + 2]; p += 3; }
-        else        { if (p + 2 > n) return false; item = ((long long)b[p] << 8) | b[p + 1]; p += 2; }
-        if (w >= 2) { if (p + 8 > n) return false; price = (long long)(((std::uint64_t)ev_u32be(b + p) << 32) | ev_u32be(b + p + 4)); p += 8; }
-        else        { if (p + 4 > n) return false; price = ev_u32be(b + p); p += 4; }
-        if (p + 8 > n) return false;
-        count = (int)ev_u32be(b + p); completed = (int)ev_u32be(b + p + 4); p += 8;
-        if (w >= 2) { if (p + 8 > n) return false; gold = (long long)(((std::uint64_t)ev_u32be(b + p) << 32) | ev_u32be(b + p + 4)); p += 8; }
-        else        { if (p + 4 > n) return false; gold = ev_u32be(b + p); p += 4; }
+        if (!F->BySink("st:0x8", b, n, item) || !F->BySink("st:0x10", b, n, price) || !F->BySink("st:0x18", b, n, count) ||
+            !F->BySink("st:0x1c", b, n, completed) || !F->BySink("st:0x20", b, n, gold)) return false;
+        const int status = (int)(st & 7), type = (int)((st >> 3) & 1);
         char g[256];
-        std::snprintf(g, sizeof(g), "\"kind\":\"ge_offer\",\"market\":%d,\"slot\":%d,\"status\":%d,\"type\":%d,\"item\":%lld,\"price\":%lld,\"qty\":%d,\"filled\":%d,\"filledValue\":%lld,\"w\":%d",
-                      market, slot, status, type, item, price, count, completed, gold, w);
+        std::snprintf(g, sizeof(g), "\"kind\":\"ge_offer\",\"market\":%d,\"slot\":%d,\"status\":%d,\"type\":%d,\"item\":%lld,\"price\":%lld,\"qty\":%d,\"filled\":%d,\"filledValue\":%lld,\"form\":\"%s\"%s",
+                      market, slot, status, type, (long long)item, (long long)price, (int)count, (int)completed, (long long)gold, F->keyText.c_str(), status == 0 ? ",\"cleared\":true" : "");
         o += g; return true;
+    }
+    case rtx::sops::kHintArrow: {   // [slot << 5 | kind] then the form the kind picks: 0 clears; 1 (NPC) and 10 (player):
+        // [style][index u16 BE][blink u16 BE][4 unused][pointer model u32 BE]; tiles: [style][plane][x u16 BE][y u16 BE]
+        // [height][range u16 BE][pointer u32 BE]; other kinds: [style][pointer u32 BE]. Read through the paired form.
+        if (n < 1) return false;
+        const int slot = b[0] >> 5, kind = b[0] & 0x1f;
+        const rtx::preads::Form* F = rtx::preads::Pick(op, b, n);
+        if (!F || !F->ok) return false;
+        std::int64_t v[8] = {};
+        const int fields = (int)F->map.size();
+        for (int i = 0; i < fields && i < 8; ++i) if (!F->Get(i, b, n, v[i])) return false;
+        if (kind == 0 || fields < 3) { std::snprintf(t, sizeof(t), "\"kind\":\"hint_arrow\",\"slot\":%d,\"type\":%d,\"cleared\":true", slot, kind); o += t; return true; }
+        if (fields == 3) { std::snprintf(t, sizeof(t), "\"kind\":\"hint_arrow\",\"slot\":%d,\"type\":%d,\"style\":%d,\"pointer\":%lld", slot, kind, (int)v[1], (long long)v[2]); o += t; return true; }
+        if (fields == 5) { std::snprintf(t, sizeof(t), "\"kind\":\"hint_arrow\",\"slot\":%d,\"type\":%d,\"style\":%d,\"target\":\"%s\",\"index\":%d,\"blink\":%d,\"pointer\":%lld", slot, kind, (int)v[1], kind == 1 ? "npc" : "player", (int)v[2], (int)v[3], (long long)v[4]); o += t; return true; }
+        std::snprintf(t, sizeof(t), "\"kind\":\"hint_arrow\",\"slot\":%d,\"type\":%d,\"style\":%d,\"target\":\"tile\",\"plane\":%d,\"x\":%d,\"y\":%d,\"height\":%d,\"range\":%d,\"pointer\":%lld",
+                      slot, kind, (int)v[1], (int)v[2], (int)v[3], (int)v[4], (int)v[5], (int)v[6], (long long)v[7]);
+        o += t; return true;
     }
     case rtx::sops::kVarbitByte: {     // [value: (b0+0x80)&0xFF][varbit id: u16 LE at 1]
         if (n < 3) return false;
@@ -13322,11 +13334,14 @@ void health_packets_live(HCtx& c, rtx::health::Run& run) {
         if (op == rtx::sops::kServerTick) { if (s.lastWall) s.gaps.push_back((int)(r.wallMs - s.lastWall)); s.lastWall = r.wallMs; ++s.decoded; continue; }
         if (op == rtx::sops::kGeOffer) {
             s.rawOk = true;
-            if (n >= 7 && r.payload[4] < kGESlotCount) { ++s.decoded; lastGe[r.payload[4]] = ((int)r.payload[5] << 8) | r.payload[6]; if (itemCap && lastGe[r.payload[4]] >= itemCap) bad(s, "item " + std::to_string(lastGe[r.payload[4]]) + " past the item ceiling"); }
-            else bad(s, "slot byte " + std::to_string(n >= 5 ? r.payload[4] : 255) + " not a slot");
+            // the slot is b1 in every build; the item is the field the handler stores at +8 of the record
+            std::int64_t item = -1;
+            const rtx::preads::Form* F = n >= 3 ? rtx::preads::Pick(op, r.payload, n) : nullptr;
+            if (n >= 3 && r.payload[0] <= 1 && r.payload[1] < kGESlotCount && F) { ++s.decoded; if (F->BySink("st:0x8", r.payload, n, item) && item >= 0) { lastGe[r.payload[1]] = (int)item; if (itemCap && item >= itemCap) bad(s, "item " + std::to_string(item) + " past the item ceiling"); } }
+            else bad(s, n >= 2 ? "market " + std::to_string(r.payload[0]) + " slot " + std::to_string(r.payload[1]) + (F ? "" : ", no form for the header") : "short record");
             continue;
         }
-        if (op == rtx::sops::kHintArrow) { s.rawOk = true; ++s.decoded; continue; }
+        if (op == rtx::sops::kHintArrow) { s.rawOk = true; if (rtx::preads::Pick(op, r.payload, n)) ++s.decoded; else bad(s, "kind " + std::to_string(n ? r.payload[0] & 0x1f : 255) + " picks no form"); continue; }
         if (rtx::preads::StateOf(op) == rtx::preads::kOff) {
             const auto it = rtx::preads::Current().byRef.find(op);
             bad(s, "layout not read from its handler (" + (it != rtx::preads::Current().byRef.end() ? it->second.why : std::string("no layout")) + "), left raw");
@@ -13551,8 +13566,8 @@ void health_packets(HCtx& c, rtx::health::Run& run) {
     // build's (PacketReads.h); the decoders read every packet through them
     {
         const auto& L = rtx::preads::Current();
-        int ok = kPass; std::string d, offs, ambs;
-        int dec = 0, decOff = 0, decAmb = 0, same = 0, off = 0;
+        int ok = kPass; std::string d, offs, ambs, forms;
+        int dec = 0, decOff = 0, decAmb = 0, same = 0, off = 0, formed = 0;
         for (const auto& kv : L.byRef) { if (kv.second.state == rtx::preads::kSame) ++same; else if (kv.second.state == rtx::preads::kOff) ++off; }
         std::set<int> seenOp;
         for (const auto& e : rtx::sops::kExpected) {
@@ -13560,13 +13575,25 @@ void health_packets(HCtx& c, rtx::health::Run& run) {
             ++dec;
             const auto it = L.byRef.find(e.op);
             if (it == L.byRef.end()) continue;
-            if (it->second.state == rtx::preads::kOff) { ++decOff; offs += std::string(offs.empty() ? "" : "; ") + e.name + " " + hx((std::uint32_t)e.op) + ": " + it->second.why; }
-            else if (it->second.state == rtx::preads::kPaired && it->second.ambiguous) { ++decAmb; ambs += std::string(ambs.empty() ? "" : ", ") + e.name + " " + hx((std::uint32_t)e.op); }
+            const auto& lay = it->second;
+            int amb = 0; for (const auto& f : lay.forms) amb += f.ambiguous;
+            if (lay.state == rtx::preads::kOff) { ++decOff; offs += std::string(offs.empty() ? "" : "; ") + e.name + " " + hx((std::uint32_t)e.op) + ": " + lay.why; }
+            else if (lay.state == rtx::preads::kPaired && amb) { ++decAmb; ambs += std::string(ambs.empty() ? "" : ", ") + e.name + " " + hx((std::uint32_t)e.op); }
+            // a packet read in several forms: each live form paired, or read by its stores, or neither
+            if (lay.forms.size() > 1) {
+                ++formed;
+                std::string fs;
+                for (const auto& f : lay.forms) fs += std::string(fs.empty() ? "" : ", ") + "[" + f.keyText + "] " + (f.ok ? (f.identical ? "as the reference" : "re-encoded, paired") : f.prog.ok ? "no reference partner, read by its stores (" + f.why + ")" : "not followed (" + f.why + ")");
+                for (const auto& u : lay.unpairedRef) fs += ", reference form [" + u + "] has no live form";
+                forms += std::string(forms.empty() ? "" : "; ") + e.name + " " + hx((std::uint32_t)e.op) + " in " + std::to_string(lay.forms.size()) + " forms: " + fs;
+                run.Fact(std::string("op.") + e.name + ".forms", fs);
+            }
         }
         if (!L.ran) { ok = kFail; d = "GONE: layouts not read (" + (L.why.empty() ? std::string("packets not identified") : L.why) + "): every fixed-length packet left raw"; }
         else {
             d = std::to_string(L.derived) + " of " + std::to_string(L.known) + " reference packets read from their handlers, " + std::to_string(L.paired) + " paired with the reference (" +
-                std::to_string(L.changed) + " changed their wire form), " + std::to_string(same) + " read alike as far as read, " + std::to_string(off) + " off";
+                std::to_string(L.changed) + " changed their wire form), " + std::to_string(same) + " read alike as far as read, " + std::to_string(off) + " off" +
+                (formed ? "; " + std::to_string(formed) + " decoded packets branch on their bytes: " + forms : std::string());
             if (decAmb) d += "; fields told apart only by read order: " + ambs;
             if (decOff) { ok = kWarn; d = "OFF: " + std::to_string(decOff) + " of " + std::to_string(dec) + " decoded packets left raw (" + offs + "); " + d; }
         }

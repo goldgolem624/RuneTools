@@ -3478,10 +3478,13 @@ void drain_events(std::uint32_t pid, Client& c, std::uint32_t clock, long long w
         MemoryBarrier();
         if (slot.seq != want) continue;                              // rewritten during the copy
         // a fixed-length packet in the reference build's wire form, the one the decoder reads
-        // (PacketReads.h); one whose layout was not read from its handler is not decoded
+        // (PacketReads.h); one whose layout was not read from its handler is not decoded. A form
+        // without a reference partner stays as it came (the recorder reads the arrow by position,
+        // which every build keeps).
         const auto lay = rtx::preads::StateOf(op);
         if (lay == rtx::preads::kOff) continue;
-        if (lay == rtx::preads::kPaired) {
+        const rtx::preads::Form* form = lay == rtx::preads::kPaired ? rtx::preads::Pick(op, buf.data(), n) : nullptr;
+        if (form && form->ok) {
             std::uint8_t tb[64];
             if ((int)n != len || !rtx::preads::Translate(op, buf.data(), n, tb, sizeof(tb))) continue;
             std::memcpy(buf.data(), tb, n);

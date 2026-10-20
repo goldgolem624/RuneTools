@@ -569,6 +569,7 @@ int APIENTRY wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
                 rtx::preads::Program p;
                 const bool ok = rtx::preads::Extract(pe, (std::uint32_t)std::wcstoul(argv[4], nullptr, 16), _wtoi(argv[5]), p, &tr);
                 tr += std::string(ok ? "ok" : "not read: " + p.why) + "\n" + rtx::preads::ProgramText(p) + "\n";
+                for (const auto& f : p.forms) tr += "form [" + rtx::preads::KeyText(f.key) + "] " + (f.ok ? std::string("ok") : f.why) + ": " + rtx::preads::ProgramText(f) + "\n";
             }
             { std::ofstream f(argv[2], std::ios::binary | std::ios::trunc); f << tr; }
             return headless_exit(0);

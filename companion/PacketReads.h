@@ -9,9 +9,15 @@
 // reads build are the fields, each with the places it goes: stored at a displacement, passed in an
 // argument register, used as an index, compared, masked, shifted. The places survive an update while
 // the wire order does not, so the fields of two builds pair by width and by where they go (Pair).
+// A handler that branches on a payload byte (a kind, a form tag, a version) reads the bytes after
+// it in one way per branch: a form. The byte is followed at register width (sign, mask, shift,
+// offset) so each branch is evaluated for all 256 values of the byte; a form is the set of values
+// of every such byte that leads to it, and it has a program of its own. A packet's forms pair with
+// the reference build's forms whose byte values overlap; a payload picks its form by its bytes.
 // Decoders read fields by their index in the reference build's program (PacketReadsRef.h), each field
 // evaluated with the byte transforms of the running build.
 #include <algorithm>
+#include <bitset>
 #include <cstdint>
 #include <cstring>
 #include <map>
@@ -222,6 +228,46 @@ inline bool DecodeIns(const std::uint8_t* p, std::size_t n, std::uint32_t rva, I
 
 // ---- the program ----
 enum Xop : std::uint8_t { XNeg = 1, XNot, XAdd, XSub, XXor, XRsub };
+// Operations a single-byte value goes through at register width after its read, kept so a branch
+// on it can be evaluated for every value of the byte (the Xop codes above with their 32-bit
+// immediates, then these).
+enum SelOp : std::uint8_t { SSign = 16, SAnd, SShr, SSar, SShl, SWrap };   // SWrap: an 8-bit operation's wrap, not a mask of the handler's
+using Chain = std::vector<std::pair<std::uint8_t, std::int32_t>>;
+// byte offset -> the values of that byte which reach a place in the code
+using SelKey = std::map<int, std::bitset<256>>;
+inline std::string KeyText(const SelKey& k);   // below, with the text forms
+inline std::int64_t SelEval(const Chain& chain, std::uint8_t b, int bytes) {
+    std::int64_t x = b;
+    for (const auto& op : chain) {
+        switch (op.first) {
+        case XNeg: x = -x; break; case XNot: x = ~x; break; case XAdd: x += op.second; break; case XSub: x -= op.second; break;
+        case XXor: x ^= op.second; break; case XRsub: x = op.second - x; break;
+        case SSign: x = (std::int64_t)(std::int8_t)x; break; case SAnd: x &= (std::int64_t)(std::uint32_t)op.second; break;
+        case SShr: x = (std::int64_t)(((std::uint64_t)x & 0xFFFFFFFFull) >> (op.second & 31)); break;
+        case SSar: x = (std::int64_t)((std::int32_t)x >> (op.second & 31)); break;
+        case SShl: x = (std::int64_t)((std::uint64_t)x << (op.second & 63)); break;
+        case SWrap: x &= 0xFF; break;
+        default: break;
+        }
+    }
+    const std::uint64_t m = bytes >= 8 ? ~0ull : ((1ull << (8 * bytes)) - 1);
+    return (std::int64_t)((std::uint64_t)x & m);
+}
+inline bool HasSelOp(const Chain& c) { for (const auto& op : c) if (op.first >= SAnd && op.first != SWrap) return true; return false; }
+// Whether condition code `cc` holds after cmp a,b at `bytes` width (the flags of cmp only).
+inline bool CcKnown(int cc) { return (cc >= 2 && cc <= 7) || (cc >= 0xC && cc <= 0xF); }
+inline bool CcHolds(int cc, std::int64_t a, std::int64_t b, int bytes) {
+    const std::uint64_t m = bytes >= 8 ? ~0ull : ((1ull << (8 * bytes)) - 1);
+    const std::uint64_t ua = (std::uint64_t)a & m, ub = (std::uint64_t)b & m;
+    const int sh = bytes >= 8 ? 0 : 64 - 8 * bytes;
+    const std::int64_t sa = (std::int64_t)(ua << sh) >> sh, sb = (std::int64_t)(ub << sh) >> sh;
+    switch (cc) {
+    case 2: return ua < ub; case 3: return ua >= ub; case 4: return ua == ub; case 5: return ua != ub;
+    case 6: return ua <= ub; case 7: return ua > ub; case 0xC: return sa < sb; case 0xD: return sa >= sb;
+    case 0xE: return sa <= sb; case 0xF: return sa > sb; default: return false;
+    }
+}
+inline constexpr std::size_t kMaxPaths = 64;   // ways through one handler followed, selector forks included
 struct Part {
     std::int16_t off = 0; std::uint8_t shift = 0, nx = 0;
     std::uint8_t op[3] = {}, imm[3] = {};
@@ -235,17 +281,21 @@ struct Field {
     std::int64_t rank = INT64_MIN; // a field it is added to as an index (its displacement), else none
     std::uint64_t mask = 0;        // the payload bytes it is made of
 };
-struct Program { std::vector<Field> fields; std::uint64_t read = 0; int len = 0; bool ok = false; std::string why; };
+// `forms`: more than one way through the handler, each keyed by the bytes it branches on; then the
+// top-level fields are empty and `why` names the bytes. A single way: no forms, as before.
+struct Program { std::vector<Field> fields; std::uint64_t read = 0; int len = 0; bool ok = false; std::string why; SelKey key; std::vector<Program> forms; };
 
 namespace detail {
-enum K : std::uint8_t { kNone, kBuf, kData, kPos, kPtr, kConst, kVal, kFld };
+// kBufPos, kBufData: a pointer to the buffer's position or data field (lea r,[buf+0x18])
+enum K : std::uint8_t { kNone, kBuf, kData, kPos, kPtr, kConst, kVal, kFld, kBufPos, kBufData };
 struct SV { K k = kNone; std::int64_t n = 0; int v = -1; };
 // `pend`: a left shift not yet put into the parts. A value shifted and then joined with another byte
 // is a wider value (the shift goes into its parts); a value shifted and left alone is that value
 // scaled (fine coordinates, sign extension) and reads as it was before the shift.
-struct Val { std::vector<Part> parts; bool sign = false; int pend = 0; };
+// `chain`: every operation since the read, for a single-byte value compared by a branch.
+struct Val { std::vector<Part> parts; bool sign = false; int pend = 0; Chain chain; };
 inline Val Placed(const Val& v, int bytes = 8) {
-    Val o; o.sign = v.sign;
+    Val o; o.sign = v.sign; o.chain = v.chain;
     for (const auto& p : v.parts) { if (p.shift + v.pend >= 8 * bytes) continue; Part q = p; q.shift = (std::uint8_t)(p.shift + v.pend); o.parts.push_back(q); }
     return o;
 }
@@ -276,34 +326,58 @@ inline bool Disjoint(const Val& a0, const Val& b0, int bytes = 8) {
     return !(ba & bb);
 }
 
-// One way through the code: the registers, the stack slots and the buffer position.
-struct Path { std::uint32_t pc = 0; SV st[16]; std::int64_t mempos = 0; SV stack[64]; bool stackSet[64] = {}; bool anyVal = false; };
+// One way through the code: the registers, the stack slots, the buffer position and the values of
+// the payload bytes the way was chosen by.
+struct Path { std::uint32_t pc = 0; SV st[16]; std::int64_t mempos = 0; SV stack[64]; bool stackSet[64] = {}; bool anyVal = false; SelKey sel; };
 
 struct Run {
     const rtx::pktid::detail::Pe* pe = nullptr;
     std::vector<Val> vals;
     std::vector<std::pair<std::uint64_t, int>> made;   // (mask, value index) in the order made
     std::vector<int> madeRank;                          // the way through the code each was made on
+    std::vector<SelKey> madeKey;                        // the byte values that way was chosen by
+    std::vector<SelKey> ends;                           // the key of every way that ended
+    const SelKey* cur = nullptr;                        // the key of the way being run
+    std::set<std::string> queued;                       // forks taken already: place, position and key
+    // queues the far side of a jump unless a way from the same place with the same position and
+    // key is already on the list (the null checks before a read fork alike many times over)
+    bool Fork(std::vector<Path>* forks, const Path& q, std::size_t cap) {
+        if (!forks || forks->size() >= cap) return false;
+        const std::string id = std::to_string(q.pc) + ":" + std::to_string(q.mempos) + ":" + KeyText(q.sel);
+        if (!queued.insert(id).second) return true;   // as good as queued
+        forks->push_back(q);
+        return true;
+    }
     int rank = 0, ranks = 0;
-    std::map<std::uint64_t, std::set<std::string>> sinks;
+    std::map<std::uint64_t, std::vector<std::pair<SelKey, std::string>>> sinks;   // per value mask: the places, each with the key of the way that found it
     std::map<std::uint64_t, std::int64_t> idxRank;
     std::uint64_t read = 0;
     bool bad = false;
     std::string* trace = nullptr;   // a line per instruction with the registers after it (diagnostics)
 
-    int NewVal(Val v) { vals.push_back(std::move(v)); made.emplace_back(MaskOf(vals.back()), (int)vals.size() - 1); madeRank.push_back(rank); return (int)vals.size() - 1; }
-    void Sink(const SV& s, const std::string& tag) { if (s.k == kVal) sinks[MaskOf(vals[(std::size_t)s.v])].insert(tag); }
+    int NewVal(Val v) { vals.push_back(std::move(v)); made.emplace_back(MaskOf(vals.back()), (int)vals.size() - 1); madeRank.push_back(rank); madeKey.push_back(cur ? *cur : SelKey{}); return (int)vals.size() - 1; }
+    void Sink(const SV& s, const std::string& tag) {
+        if (s.k != kVal) return;
+        auto& v = sinks[MaskOf(vals[(std::size_t)s.v])];
+        const SelKey& k = cur ? *cur : SelKey{};
+        for (const auto& e : v) if (e.second == tag && e.first == k) return;
+        v.emplace_back(k, tag);
+    }
 
     // runs `P` to its first ret (rax returned) or to where it cannot follow; with `forks`, the far side
-    // of every forward conditional jump becomes a path of its own
+    // of every forward conditional jump becomes a path of its own. A jump on a payload byte forks
+    // with the byte's values split between the two sides, and is not taken at all when no value
+    // reaches its far side; a jump on constants is decided.
     SV Go(Path& P, int depth, int maxIns, std::vector<Path>* forks) {
         SV* st = P.st; SV* stack = P.stack; bool* stackSet = P.stackSet;
         std::int64_t& mempos = P.mempos; std::uint32_t& pc = P.pc; bool& anyVal = P.anyVal;
+        const SelKey* outer = cur; cur = &P.sel;
         SV ret;
         // the client's byte order check (cmp with 0x03020100) holds on every x64 host: the jump
         // after it is never taken, its far side the other byte order
         bool orderCheck = false;
         std::vector<SV> compared;   // the values the last compare read, until a jump, cmov or setcc says how
+        int cmpSize = 0; bool cmpImm = false, cmpConst = false; std::int64_t cmpRhs = 0, cmpLhs = 0;   // the last compare's right side as a number, left side when constant
         for (int count = 0; count < maxIns; ++count) {
             const std::int64_t fo = pe->FoOf(pc);
             if (fo < 0) break;
@@ -320,7 +394,7 @@ struct Run {
                     for (int k = 0; k < 16; ++k) {
                         const SV& v = st[k];
                         if (v.k == kNone) continue;
-                        static const char* kn[] = { "", "buf", "data", "pos", "ptr", "const", "val", "fld" };
+                        static const char* kn[] = { "", "buf", "data", "pos", "ptr", "const", "val", "fld", "bufpos", "bufdata" };
                         std::snprintf(t, sizeof(t), " %s=%s", rn[k], kn[v.k]); *r->trace += t;
                         if (v.k == kVal) { std::uint64_t m = MaskOf(r->vals[(std::size_t)v.v]); std::snprintf(t, sizeof(t), "[%llx]", (unsigned long long)m); *r->trace += t; }
                         else if (v.k != kBuf && v.k != kData) { std::snprintf(t, sizeof(t), "(%lld)", (long long)v.n); *r->trace += t; }
@@ -341,9 +415,16 @@ struct Run {
                 if (x.k == kPtr && m.base < 0 && m.scale == 1) { off = x.n + m.disp; return true; }
                 return false;
             };
-            auto isBuf = [&](const Opnd& m, std::int32_t disp) { return m.kind == kMem && m.index < 0 && m.base >= 0 && m.base < 16 && st[m.base].k == kBuf && m.disp == disp; };
+            // the buffer's field at `disp`, through the buffer or through a pointer to the field
+            auto isBuf = [&](const Opnd& m, std::int32_t disp) {
+                if (m.kind != kMem || m.index >= 0 || m.base < 0 || m.base >= 16) return false;
+                const SV& b = st[m.base];
+                if (b.k == kBuf) return m.disp == disp;
+                return m.disp == 0 && ((b.k == kBufPos && disp == 0x18) || (b.k == kBufData && disp == 0x10));
+            };
             auto readVal = [&](std::int64_t off, int w, bool sign) -> SV {
                 Val v; v.sign = sign;
+                if (sign && w == 1) v.chain.push_back({ SSign, 0 });
                 for (int k = 0; k < w; ++k) {
                     if (off + k < 0 || off + k >= 64) { bad = true; continue; }
                     Part p; p.off = (std::int16_t)(off + k); p.shift = (std::uint8_t)(8 * k); v.parts.push_back(p);
@@ -351,10 +432,17 @@ struct Run {
                 }
                 SV s; s.k = kVal; s.v = NewVal(std::move(v)); return s;
             };
-            auto withX = [&](const SV& s, std::uint8_t xop, std::uint8_t imm) -> SV {
+            // a byte transform of the wire byte while the value is still the byte as read; a value
+            // already masked or shifted is an index or a count, the offset goes to its chain only
+            auto withX = [&](const SV& s, std::uint8_t xop, std::uint8_t imm, std::int32_t imm32) -> SV {
                 Val v = vals[(std::size_t)s.v];
-                if (v.parts.size() != 1 || v.parts[0].nx >= 3 || v.pend) return SV{};
-                Part& p = v.parts[0]; p.op[p.nx] = xop; p.imm[p.nx] = imm; ++p.nx;
+                if (v.parts.size() != 1 || v.pend) return SV{};
+                if (!HasSelOp(v.chain)) {
+                    if (v.parts[0].nx >= 3) return SV{};
+                    Part& p = v.parts[0]; p.op[p.nx] = xop; p.imm[p.nx] = imm; ++p.nx;
+                }
+                v.chain.push_back({ xop, imm32 });
+                if (in.a.kind == kReg && in.a.size == 1) v.chain.push_back({ SWrap, 0 });   // an 8-bit operation wraps
                 SV r; r.k = kVal; r.v = NewVal(std::move(v)); return r;
             };
             // the index of every memory operand is a place a value goes
@@ -367,37 +455,67 @@ struct Run {
                 if (b.k == kFld) idxRank[MaskOf(vals[(std::size_t)x.v])] = b.n;
             }
             switch (in.mn) {
-            case MRet: case MInt3: ret = st[0]; return ret;
+            case MRet: case MInt3: ret = st[0]; cur = outer; return ret;
             case MJmp:
                 if (in.a.kind == kNoOp && in.target) {
                     if (!anyVal && count < 4) { pc = in.target; continue; }   // a thunk
                     if (in.target > at) { pc = in.target; continue; }           // the join after an if
                 }
-                return ret;
-            case MJcc:
-                if (forks && !orderCheck && in.target > at && forks->size() < 24) { Path f = P; f.pc = in.target; forks->push_back(f); }
-                orderCheck = false;
+                cur = outer; return ret;
+            case MJcc: {
+                bool decided = false, take = false;
+                if (!orderCheck && cmpConst && CcKnown(in.cc)) { decided = true; take = CcHolds(in.cc, cmpLhs, cmpRhs, cmpSize); }
+                else if (!orderCheck && cmpImm && compared.size() == 1 && CcKnown(in.cc)) {
+                    // a payload byte decides: the values on which the jump is taken go to the far side
+                    const Val& v = vals[(std::size_t)compared[0].v];
+                    if (v.parts.size() == 1 && v.parts[0].off >= 0 && v.parts[0].off < 64 && !v.pend) {
+                        const int off = v.parts[0].off;
+                        std::bitset<256> have; have.set();
+                        auto it = P.sel.find(off); if (it != P.sel.end()) have = it->second;
+                        std::bitset<256> t;
+                        for (int b = 0; b < 256; ++b) if (have[(std::size_t)b] && CcHolds(in.cc, SelEval(v.chain, (std::uint8_t)b, cmpSize), cmpRhs, cmpSize)) t.set((std::size_t)b);
+                        const std::bitset<256> f = have & ~t;
+                        if (t.none()) { decided = true; take = false; }
+                        else if (f.none()) { decided = true; take = true; }
+                        else {
+                            // the far side goes on with the values that take the jump, this way with
+                            // the rest (whether or not the far side can still be queued)
+                            Path q = P; q.pc = in.target; q.sel[off] = t; Fork(forks, q, kMaxPaths);
+                            P.sel[off] = f; decided = true; take = false;
+                        }
+                    }
+                }
                 for (const SV& v : compared) if (in.cc != 4 && in.cc != 5) Sink(v, "ord");
-                compared.clear();
+                compared.clear(); cmpImm = cmpConst = false;
+                if (decided) { orderCheck = false; if (take) pc = in.target; continue; }
+                if (!orderCheck && in.target > at) { Path f = P; f.pc = in.target; Fork(forks, f, 24); }
+                orderCheck = false;
                 continue;
+            }
             case MPush: case MNop: continue;
             case MCall: {
                 bool buf = false;
                 for (int a : { 1, 2, 8, 9 }) { if (st[a].k == kBuf) buf = true; Sink(st[a], std::string("arg:") + (a == 1 ? "rcx" : a == 2 ? "rdx" : a == 8 ? "r8" : "r9")); }
                 SV r;
+                bool kept[16] = {};   // argument registers the routine followed left as they were
                 if (buf && depth < 2 && in.a.kind == kNoOp && in.target) {
                     // a routine that reads the buffer: its reads are the packet's; the far sides of its
-                    // branches are run for their reads, the caller goes on from its first way through
-                    Path sub; sub.pc = in.target; sub.mempos = mempos;
-                    for (int a : { 1, 2, 8, 9 }) if (st[a].k != kVal) sub.st[a] = st[a];
+                    // branches are run for their reads (and may fork again on a payload byte), the
+                    // caller goes on from its first way through
+                    Path sub; sub.pc = in.target; sub.mempos = mempos; sub.sel = P.sel;
+                    for (int a : { 1, 2, 8, 9, 10, 11 }) if (st[a].k != kVal) sub.st[a] = st[a];
                     std::vector<Path> side;
-                    r = Go(sub, depth + 1, 160, depth == 0 ? &side : nullptr);
+                    r = Go(sub, depth + 1, 160, &side);
                     const int keep = rank;
-                    for (std::size_t k = 0; k < side.size() && k < 16; ++k) { Path q = side[k]; rank = ++ranks; Go(q, depth + 1, 160, nullptr); }
+                    for (std::size_t k = 0; k < side.size() && k < kMaxPaths; ++k) { Path q = side[k]; rank = ++ranks; Go(q, depth + 1, 160, &side); ends.push_back(q.sel); }
                     rank = keep;
                     mempos = sub.mempos;
+                    P.sel = sub.sel;
+                    // the buffer or a pointer the routine did not write stays in its register (the
+                    // compiler keeps a caller-saved register across a call it knows does not touch it)
+                    for (int a : { 1, 2, 8, 9, 10, 11 }) kept[a] = st[a].k != kNone && st[a].k != kVal && sub.st[a].k == st[a].k && sub.st[a].n == st[a].n && sub.st[a].v == st[a].v;
                 }
-                for (int a : { 0, 1, 2, 8, 9, 10, 11 }) st[a] = SV{};
+                for (int a : { 0, 1, 2, 8, 9, 10, 11 }) if (!kept[a]) st[a] = SV{};
                 if (r.k == kVal) { st[0] = r; anyVal = true; }
                 continue;
             }
@@ -413,17 +531,26 @@ struct Run {
                 orderCheck = in.mn == MCmp && in.b.kind == kImm && in.b.imm == 0x03020100;   // against the global or a register loaded from it
                 if (orderCheck) continue;
                 std::int64_t poff;
-                compared.clear();
+                compared.clear(); cmpImm = cmpConst = false; cmpSize = in.a.size;
+                const SV rb = get(in.b);
+                if (in.b.kind == kImm) { cmpImm = true; cmpRhs = in.b.imm; } else if (rb.k == kConst) { cmpImm = true; cmpRhs = rb.n; }
                 if (in.a.kind == kMem && payload(in.a, poff)) {   // a payload byte compared where it lies
                     const SV v = readVal(poff, in.a.size, false);
-                    Sink(v, in.b.kind == kImm ? "cmp:" + std::to_string(in.b.imm & ((1ll << (8 * in.a.size)) - 1)) : std::string("cmp:r"));
+                    Sink(v, cmpImm ? "cmp:" + std::to_string(cmpRhs & ((1ll << (8 * in.a.size)) - 1)) : std::string("cmp:r"));
                     if (in.mn == MCmp) compared.push_back(v);
                     continue;
                 }
                 const SV a = get(in.a);
-                if (a.k == kVal) { Sink(a, in.b.kind == kImm ? "cmp:" + std::to_string(in.b.imm) : std::string("cmp:r")); if (in.mn == MCmp) compared.push_back(a); }
-                const SV b = get(in.b);
-                if (b.k == kVal) Sink(b, "cmp:r");
+                if (in.mn == MTest) {
+                    // test r,r compares with zero; test r,imm masks first
+                    if (a.k == kVal && in.a.kind == kReg && in.b.kind == kReg && !in.a.hi8 && !in.b.hi8 && in.b.reg == in.a.reg) { Sink(a, "cmp:r"); compared.push_back(a); cmpImm = true; cmpRhs = 0; }
+                    else if (a.k == kVal && in.b.kind == kImm) { Val x = vals[(std::size_t)a.v]; x.chain.push_back({ SAnd, (std::int32_t)in.b.imm }); SV m; m.k = kVal; m.v = NewVal(std::move(x)); Sink(a, "cmp:r"); compared.push_back(m); cmpImm = true; cmpRhs = 0; }
+                    else { if (a.k == kVal) Sink(a, "cmp:r"); if (rb.k == kVal) Sink(rb, "cmp:r"); }
+                    continue;
+                }
+                if (a.k == kVal) { Sink(a, cmpImm ? "cmp:" + std::to_string(cmpRhs) : std::string("cmp:r")); compared.push_back(a); }
+                else if (a.k == kConst && cmpImm) { cmpConst = true; cmpLhs = a.n; }
+                if (rb.k == kVal) Sink(rb, "cmp:r");
                 continue;
             }
             default: break;
@@ -460,7 +587,14 @@ struct Run {
                 if (S.kind == kImm) { SV c; c.k = kConst; c.n = S.imm; set(D, c); continue; }
                 if (S.kind == kReg) {
                     SV v = get(S);
-                    if (v.k == kVal && in.mn == MMovsx) { Val x = vals[(std::size_t)v.v]; x.sign = true; v.v = NewVal(std::move(x)); }
+                    if (v.k == kVal && (in.mn == MMovzx || in.mn == MMovsx) && S.size < D.size) {
+                        // the source's low bytes only: lanes above them and bytes of sign are gone
+                        Val x = Placed(vals[(std::size_t)v.v], S.size);
+                        std::vector<Part> keep; for (const auto& p : x.parts) if (p.off >= 0) keep.push_back(p); x.parts = keep;
+                        x.sign = in.mn == MMovsx;
+                        if (in.mn == MMovsx && S.size == 1) x.chain.push_back({ SSign, 0 });
+                        v.v = NewVal(std::move(x));
+                    }
                     else if (v.k == kVal && in.mn == MMov && D.size == 4 && S.size == 4) {
                         // a 32-bit move keeps the low four bytes
                         const Val& x0 = vals[(std::size_t)v.v];
@@ -478,12 +612,13 @@ struct Run {
                     if (in.mn == MMovbe) { Val x = vals[(std::size_t)v.v]; for (auto& p : x.parts) p.shift = (std::uint8_t)(8 * (S.size - 1) - p.shift); v.v = NewVal(std::move(x)); }
                     set(D, v); continue;
                 }
-                if (S.base >= 0 && S.base < 16 && S.index < 0 && st[S.base].k != kBuf && st[S.base].k != kData && st[S.base].k != kPos && st[S.base].k != kPtr && S.base != 4 && S.base != 5) { SV f; f.k = kFld; f.n = S.disp; set(D, f); continue; }
+                if (S.base >= 0 && S.base < 16 && S.index < 0 && st[S.base].k != kBuf && st[S.base].k != kData && st[S.base].k != kPos && st[S.base].k != kPtr && st[S.base].k != kBufPos && st[S.base].k != kBufData && S.base != 4 && S.base != 5) { SV f; f.k = kFld; f.n = S.disp; set(D, f); continue; }
                 set(D, SV{}); continue;
             }
             case MLea: {
                 const Opnd& S = in.b;
                 const SV b = memSV(S.base), x = memSV(S.index);
+                if (b.k == kBuf && S.index < 0 && (S.disp == 0x18 || S.disp == 0x10)) { SV r; r.k = S.disp == 0x18 ? kBufPos : kBufData; set(D, r); continue; }   // a pointer to the position or data field
                 if ((b.k == kPos || b.k == kPtr) && S.index < 0) { SV r; r.k = b.k; r.n = b.n + S.disp; set(D, r); continue; }
                 if (b.k == kData && x.k == kPos && S.scale == 1) { SV r; r.k = kPtr; r.n = x.n + S.disp; set(D, r); continue; }
                 if (x.k == kData && b.k == kPos && S.scale == 1) { SV r; r.k = kPtr; r.n = b.n + S.disp; set(D, r); continue; }
@@ -494,7 +629,7 @@ struct Run {
                 }
                 if (b.k == kVal && S.index < 0 && S.disp == 0) { set(D, b); continue; }
                 if (b.k == kVal && S.index < 0) {   // lea r,[v+imm]: a byte offset
-                    const SV r = withX(b, XAdd, (std::uint8_t)(S.disp & 0xFF));
+                    const SV r = withX(b, XAdd, (std::uint8_t)(S.disp & 0xFF), S.disp);
                     if (r.k == kVal) { set(D, r); continue; }
                 }
                 if (b.k == kVal) Sink(b, "arith");
@@ -519,7 +654,7 @@ struct Run {
                 if (dv.k == kVal) Sink(dv, "arith");
                 set(D, SV{}); continue;
             case MNeg: case MNot:
-                if (dv.k == kVal) { SV r = withX(dv, in.mn == MNeg ? XNeg : XNot, 0); if (r.k != kVal) Sink(dv, "arith"); set(D, r); continue; }
+                if (dv.k == kVal) { SV r = withX(dv, in.mn == MNeg ? XNeg : XNot, 0, 0); if (r.k != kVal) Sink(dv, "arith"); set(D, r); continue; }
                 if (dv.k == kConst) { SV c = dv; c.n = in.mn == MNeg ? -c.n : ~c.n; set(D, c); continue; }
                 set(D, SV{}); continue;
             case MImul: {
@@ -552,6 +687,7 @@ struct Run {
                         if (in.mn == MShl) {
                             Val x = vals[(std::size_t)dv.v];
                             x.pend += (int)imm;
+                            x.chain.push_back({ SShl, (std::int32_t)imm });
                             if (x.pend >= 64) { Sink(dv, "arith"); set(D, SV{}); continue; }
                             SV r; r.k = kVal; r.v = NewVal(std::move(x)); set(D, r); continue;
                         }
@@ -582,10 +718,14 @@ struct Run {
                         }
                         if (in.mn == MAnd || in.mn == MShr || in.mn == MSar) {
                             std::snprintf(t, sizeof(t), "%s:0x%llx", in.mn == MAnd ? "and" : in.mn == MShr ? "shr" : "sar", (unsigned long long)(imm & 0xFFFFFFFF));
-                            Sink(dv, t); continue;   // the value stays: what the mask or shift keeps is the decoder's business
+                            // the value stays (what the mask or shift keeps is the decoder's business),
+                            // its chain remembers the operation for the branches that read it
+                            Sink(dv, t);
+                            Val x = vals[(std::size_t)dv.v]; x.chain.push_back({ (std::uint8_t)(in.mn == MAnd ? SAnd : in.mn == MShr ? SShr : SSar), (std::int32_t)imm });
+                            SV r; r.k = kVal; r.v = NewVal(std::move(x)); set(D, r); continue;
                         }
                         if ((in.mn == MAdd || in.mn == MSub || in.mn == MXor) && vals[(std::size_t)dv.v].parts.size() == 1) {
-                            SV r = withX(dv, in.mn == MAdd ? XAdd : in.mn == MSub ? XSub : XXor, (std::uint8_t)(imm & 0xFF));
+                            SV r = withX(dv, in.mn == MAdd ? XAdd : in.mn == MSub ? XSub : XXor, (std::uint8_t)(imm & 0xFF), (std::int32_t)imm);
                             if (r.k == kVal) { set(D, r); continue; }
                         }
                         std::snprintf(t, sizeof(t), "%s:0x%llx", in.mn == MOr ? "or" : "arith", (unsigned long long)(imm & 0xFFFFFFFF));
@@ -615,7 +755,7 @@ struct Run {
                     }
                     if (dv.k == kConst && s.k == kVal && (in.mn == MSub || in.mn == MAdd || in.mn == MXor)) {
                         // c - byte, c + byte, c ^ byte: a byte transform with the constant first
-                        const SV r = withX(s, in.mn == MSub ? XRsub : in.mn == MAdd ? XAdd : XXor, (std::uint8_t)(dv.n & 0xFF));
+                        const SV r = withX(s, in.mn == MSub ? XRsub : in.mn == MAdd ? XAdd : XXor, (std::uint8_t)(dv.n & 0xFF), (std::int32_t)dv.n);
                         if (r.k == kVal) { set(D, r); continue; }
                     }
                     if (in.mn == MAdd && dv.k == kData && s.k == kPos) { SV r; r.k = kPtr; r.n = s.n; set(D, r); continue; }
@@ -630,7 +770,7 @@ struct Run {
                     std::int64_t off;
                     if (payload(S, off) && S.size == 1 && dv.k == kConst && (in.mn == MSub || in.mn == MAdd || in.mn == MXor)) {
                         SV v = readVal(off, 1, false);
-                        SV r = withX(v, in.mn == MSub ? XRsub : in.mn == MAdd ? XAdd : XXor, (std::uint8_t)(dv.n & 0xFF));
+                        SV r = withX(v, in.mn == MSub ? XRsub : in.mn == MAdd ? XAdd : XXor, (std::uint8_t)(dv.n & 0xFF), (std::int32_t)dv.n);
                         set(D, r); continue;
                     }
                     if (dv.k == kVal) Sink(dv, "arith");
@@ -642,12 +782,101 @@ struct Run {
                 set(D, SV{}); continue;
             }
         }
+        cur = outer;
         return ret;
     }
 };
 }  // namespace detail
 
-// The read program of the handler at `rva` for a packet of `len` bytes (fixed length only).
+// Text of a form's key: per byte, the values that lead to it. A set that depends on the byte's low
+// bits only prints with the mask ("b0&0x1f=2..6"), one that also leaves out a run of values at an
+// end of the byte's range adds the bound ("b2&0x7<7 b2>=1"); a run prints as a bound or a range.
+inline std::string KeyText(const SelKey& k) {
+    std::string s;
+    // a set of values 0..top as text after "bN" or "bN&M"
+    auto ranges = [](const std::bitset<256>& set, int top) {
+        char t[48]; std::string o;
+        int lo = -1, hi = -1;
+        for (int b = 0; b <= top; ++b) if (set[(std::size_t)b]) { if (lo < 0) lo = b; hi = b; }
+        bool run = lo >= 0; for (int b = 0; b <= top && run; ++b) if (set[(std::size_t)b] != (b >= lo && b <= hi)) run = false;
+        if (run && lo == hi) { std::snprintf(t, sizeof(t), "=%d", lo); return std::string(t); }
+        if (run && lo == 0 && hi < top) { std::snprintf(t, sizeof(t), "<%d", hi + 1); return std::string(t); }
+        if (run && hi == top && lo > 0) { std::snprintf(t, sizeof(t), ">=%d", lo); return std::string(t); }
+        o = "=";
+        bool first = true;
+        for (int b = 0; b <= top; ++b) {
+            if (!set[(std::size_t)b]) continue;
+            int e = b; while (e + 1 <= top && set[(std::size_t)(e + 1)]) ++e;
+            if (e > b) std::snprintf(t, sizeof(t), "%s%d..%d", first ? "" : ",", b, e); else std::snprintf(t, sizeof(t), "%s%d", first ? "" : ",", b);
+            o += t; first = false; b = e;
+        }
+        return o;
+    };
+    for (const auto& kv : k) {
+        const std::bitset<256>& set = kv.second;
+        char t[48];
+        if (!s.empty()) s += ' ';
+        std::snprintf(t, sizeof(t), "b%d", kv.first);
+        const std::string name = t;
+        std::string best;
+        for (int m = 1; m <= 0xFF; m = m * 2 + 1) {
+            // the values by the low bits, then the raw values the set leaves out of those: none, or
+            // a run at either end of 0..255; the shortest text of the masks that fit is kept
+            std::bitset<256> low; for (int b = 0; b < 256; ++b) if (set[(std::size_t)b]) low.set((std::size_t)(b & m));
+            if (m != 0xFF && (int)low.count() == m + 1) continue;   // the low bits say nothing
+            int missLo = 256, missHi = -1, missing = 0;
+            for (int b = 0; b < 256; ++b) if (low[(std::size_t)(b & m)] && !set[(std::size_t)b]) { ++missing; missLo = std::min(missLo, b); missHi = std::max(missHi, b); }
+            const bool prefix = missing && missLo == 0 && missHi - missLo + 1 == missing, suffix = missing && missHi == 255 && missHi - missLo + 1 == missing;
+            if (missing && !prefix && !suffix) continue;
+            std::string o;
+            if (m == 0xFF) o = name + ranges(set, 255);
+            else {
+                std::snprintf(t, sizeof(t), "&0x%x", m); o = name + t + ranges(low, m);
+                if (prefix) { std::snprintf(t, sizeof(t), " %s>=%d", name.c_str(), missHi + 1); o += t; }
+                if (suffix) { std::snprintf(t, sizeof(t), " %s<%d", name.c_str(), missLo); o += t; }
+            }
+            if (best.empty() || o.size() < best.size()) best = o;
+        }
+        s += best;
+    }
+    return s;
+}
+// The key from its text; false when the text is not one.
+inline bool ParseKey(const std::string& t, SelKey& out) {
+    out.clear();
+    std::size_t k = 0;
+    while (k < t.size()) {
+        while (k < t.size() && t[k] == ' ') ++k;
+        if (k >= t.size()) break;
+        if (t[k] != 'b') return false;
+        char* e = nullptr;
+        const int off = (int)std::strtol(t.c_str() + k + 1, &e, 10); k = (std::size_t)(e - t.c_str());
+        int mask = 0xFF;
+        if (t.compare(k, 1, "&") == 0) { mask = (int)std::strtol(t.c_str() + k + 1, &e, 16); k = (std::size_t)(e - t.c_str()); }
+        std::bitset<256> over;   // over the masked value
+        if (t.compare(k, 2, ">=") == 0) { const int v = (int)std::strtol(t.c_str() + k + 2, &e, 10); k = (std::size_t)(e - t.c_str()); for (int b = v; b <= mask; ++b) over.set((std::size_t)b); }
+        else if (t.compare(k, 1, "<") == 0) { const int v = (int)std::strtol(t.c_str() + k + 1, &e, 10); k = (std::size_t)(e - t.c_str()); for (int b = 0; b < v && b <= mask; ++b) over.set((std::size_t)b); }
+        else if (t.compare(k, 1, "=") == 0) {
+            ++k;
+            for (;;) {
+                const int a = (int)std::strtol(t.c_str() + k, &e, 10); k = (std::size_t)(e - t.c_str());
+                int b2 = a;
+                if (t.compare(k, 2, "..") == 0) { b2 = (int)std::strtol(t.c_str() + k + 2, &e, 10); k = (std::size_t)(e - t.c_str()); }
+                for (int b = a; b <= b2 && b <= mask; ++b) over.set((std::size_t)b);
+                if (k < t.size() && t[k] == ',') { ++k; continue; }
+                break;
+            }
+        } else return false;
+        std::bitset<256> set; for (int b = 0; b < 256; ++b) if (over[(std::size_t)(b & mask)]) set.set((std::size_t)b);
+        auto it = out.find(off);
+        if (it == out.end()) out[off] = set; else it->second &= set;   // a second clause on the byte narrows it
+    }
+    return !out.empty();
+}
+inline std::string PartsText(const Field& f);   // below, with the text forms
+
+// The read program of the handler at `rva` for a packet of `len` bytes (fixed length only). A
+// handler that branches on payload bytes gives one program per form in `out.forms`.
 inline bool Extract(const rtx::pktid::detail::Pe& pe, std::uint32_t rva, int len, Program& out, std::string* trace = nullptr) {
     using namespace detail;
     out = Program{}; out.len = len;
@@ -655,63 +884,128 @@ inline bool Extract(const rtx::pktid::detail::Pe& pe, std::uint32_t rva, int len
     Run r; r.pe = &pe; r.trace = trace;
     std::vector<Path> work(1);
     work[0].pc = rva; work[0].st[2].k = kBuf;
-    for (std::size_t w = 0; w < work.size() && w < 24; ++w) { Path P = work[w]; if (trace) *trace += "-- path\n"; r.rank = w ? ++r.ranks : 0; r.Go(P, 0, 300, &work); }
+    for (std::size_t w = 0; w < work.size() && w < kMaxPaths; ++w) { Path P = work[w]; if (trace) { *trace += "-- path "; *trace += KeyText(P.sel); *trace += "\n"; } r.rank = w ? ++r.ranks : 0; r.Go(P, 0, 300, &work); r.ends.push_back(P.sel); }
     const std::uint64_t all = len >= 64 ? ~0ull : ((1ull << len) - 1);
-    out.read = r.read & all;
-    // the latest value of every byte set inside the payload; the fields are the sets no other holds
-    std::map<std::uint64_t, int> last, lastRank;
-    for (std::size_t mi = 0; mi < r.made.size(); ++mi) {
-        const auto& m = r.made[mi];
-        const Val& v = r.vals[(std::size_t)m.second];
-        bool in = false; std::uint64_t lanes = 0;
-        for (const auto& p : v.parts) {
-            if (p.off == -1) continue;
-            if (p.off < 0 || p.off >= len || p.shift >= 64) { in = false; break; }
-            in = true;
-            const std::uint64_t bits = 0xFFull << p.shift;
-            if (lanes & bits) { in = false; break; }   // two bytes in one place: a step of a swap, not a value
-            lanes |= bits;
+    // the forms: the distinct keys the ways through the code ended with. A value belongs to a form
+    // when the way that made it was chosen by a superset of the form's byte values.
+    std::vector<SelKey> keys;
+    for (const auto& k : r.ends) if (std::find(keys.begin(), keys.end(), k) == keys.end()) keys.push_back(k);
+    if (keys.empty()) keys.push_back(SelKey{});
+    auto within = [](const SelKey& form, const SelKey& made) {
+        for (const auto& kv : made) { auto it = form.find(kv.first); if (it == form.end() || (it->second & ~kv.second).any()) return false; }
+        return true;
+    };
+    // the program of one form: the latest value of every byte set inside the payload, the fields
+    // are the sets no other holds; where two such share a byte (two ways through the code read it
+    // differently) the first way's reading stands
+    auto build = [&](const SelKey& key, Program& p, bool single) {
+        p = Program{}; p.len = len; p.key = key;
+        std::map<std::uint64_t, int> last, lastRank;
+        for (std::size_t mi = 0; mi < r.made.size(); ++mi) {
+            if (!within(key, r.madeKey[mi])) continue;
+            const auto& m = r.made[mi];
+            const Val& v = r.vals[(std::size_t)m.second];
+            bool in = false; std::uint64_t lanes = 0;
+            for (const auto& q : v.parts) {
+                if (q.off == -1) continue;
+                if (q.off < 0 || q.off >= len || q.shift >= 64) { in = false; break; }
+                in = true;
+                const std::uint64_t bits = 0xFFull << q.shift;
+                if (lanes & bits) { in = false; break; }   // two bytes in one place: a step of a swap, not a value
+                lanes |= bits;
+            }
+            if (!in) continue;
+            p.read |= m.first & all;
+            const int rk = r.madeRank[mi];
+            auto lr = lastRank.find(m.first);
+            if (lr != lastRank.end() && lr->second < rk) continue;   // an earlier way through made it already
+            last[m.first] = m.second; lastRank[m.first] = rk;
         }
-        if (!in) continue;
-        const int rk = r.madeRank[mi];
-        auto lr = lastRank.find(m.first);
-        if (lr != lastRank.end() && lr->second < rk) continue;   // an earlier way through made it already
-        last[m.first] = m.second; lastRank[m.first] = rk;
+        std::vector<std::uint64_t> cand;
+        for (const auto& kv : last) {
+            bool sub = false;
+            for (const auto& o : last) if (o.first != kv.first && (kv.first & o.first) == kv.first) { sub = true; break; }
+            if (!sub) cand.push_back(kv.first);
+        }
+        std::sort(cand.begin(), cand.end(), [&](std::uint64_t a, std::uint64_t b) {
+            if (lastRank[a] != lastRank[b]) return lastRank[a] < lastRank[b];
+            if (Pop(a) != Pop(b)) return Pop(a) > Pop(b);
+            return a < b;
+        });
+        std::vector<std::uint64_t> masks;
+        std::uint64_t seen = 0;
+        for (std::uint64_t m : cand) { if (seen & m) continue; masks.push_back(m); seen |= m; }
+        std::sort(masks.begin(), masks.end(), [](std::uint64_t a, std::uint64_t b) { return Ctz(a) < Ctz(b); });
+        for (std::uint64_t m : masks) {
+            const Val& v = r.vals[(std::size_t)last[m]];
+            Field f; f.sign = v.sign; f.mask = m;
+            for (const auto& q : v.parts) { if (q.off == -1) f.sign = true; else f.parts.push_back(q); }
+            int hi = 0; for (const auto& q : v.parts) hi = std::max(hi, (int)q.shift);
+            f.width = hi / 8 + 1;
+            std::sort(f.parts.begin(), f.parts.end(), [](const Part& a, const Part& b) { return a.off < b.off; });
+            auto it = r.sinks.find(m);
+            if (it != r.sinks.end()) for (const auto& e : it->second) if (within(key, e.first)) f.sinks.insert(e.second);
+            f.sinks.erase("stack");
+            auto rk = r.idxRank.find(m); if (rk != r.idxRank.end()) f.rank = rk->second;
+            p.fields.push_back(std::move(f));
+        }
+        if (r.bad) { p.why = "a read the run could not place"; return false; }
+        if ((seen & p.read) != p.read) { p.why = "two ways through the code read the bytes differently"; return false; }
+        // a single way must read every byte; a form reads what it needs, the rest is the packet's room for the others
+        if (single && p.read != all) { char t[64]; std::snprintf(t, sizeof(t), "%d of %d bytes read", Pop(p.read), len); p.why = t; return false; }
+        p.ok = true;
+        return true;
+    };
+    if (keys.size() == 1) { const bool ok = build(keys[0], out, true); out.key.clear(); return ok; }   // one way: every payload
+    std::vector<Program> forms;
+    for (const auto& k : keys) { Program f; build(k, f, false); forms.push_back(std::move(f)); }
+    // a byte every value of which leads to the form says nothing, nor does one past the payload
+    auto trim = [&](Program& f) { for (auto it = f.key.begin(); it != f.key.end();) { if (it->first >= len || it->second.all()) it = f.key.erase(it); else ++it; } };
+    for (auto& f : forms) trim(f);
+    // the bytes and transforms a form reads, without sign or places
+    auto shape = [](const Program& p) { std::string s; for (const auto& f : p.fields) { s += PartsText(f); s += '|'; } return s; };
+    // forms that read the same bytes the same way are one form: their byte values join (until
+    // nothing joins any more, as a join can free a byte and make two more alike)
+    for (bool joined = true; joined;) {
+        joined = false;
+        for (std::size_t i = 0; i < forms.size(); ++i)
+            for (std::size_t j = i + 1; j < forms.size();) {
+                Program& a = forms[i]; const Program& b = forms[j];
+                bool same = a.key.size() == b.key.size() && shape(a) == shape(b);
+                for (const auto& kv : b.key) if (same && !a.key.count(kv.first)) same = false;
+                if (!same) { ++j; continue; }
+                for (const auto& kv : b.key) a.key[kv.first] |= kv.second;
+                for (std::size_t f = 0; f < a.fields.size(); ++f) { a.fields[f].sign = a.fields[f].sign || b.fields[f].sign; a.fields[f].sinks.insert(b.fields[f].sinks.begin(), b.fields[f].sinks.end()); }
+                if (!b.ok) { a.ok = false; if (a.why.empty()) a.why = b.why; }
+                forms.erase(forms.begin() + (std::ptrdiff_t)j);
+                trim(a);
+                joined = true;
+            }
     }
-    // the values no other holds within it; where two such share a byte (two ways through the code
-    // read it differently) the first way's reading stands
-    std::vector<std::uint64_t> cand;
-    for (const auto& kv : last) {
-        bool sub = false;
-        for (const auto& o : last) if (o.first != kv.first && (kv.first & o.first) == kv.first) { sub = true; break; }
-        if (!sub) cand.push_back(kv.first);
+    // a way that ended with another form's byte values among its own is the way to that form (an
+    // early exit before the fork), not a form
+    for (std::size_t i = 0; i < forms.size();) {
+        bool trunk = false;
+        for (std::size_t j = 0; j < forms.size() && !trunk; ++j) if (j != i && forms[j].key != forms[i].key && within(forms[j].key, forms[i].key)) trunk = true;
+        if (trunk) forms.erase(forms.begin() + (std::ptrdiff_t)i); else ++i;
     }
-    std::sort(cand.begin(), cand.end(), [&](std::uint64_t a, std::uint64_t b) {
-        if (lastRank[a] != lastRank[b]) return lastRank[a] < lastRank[b];
-        if (Pop(a) != Pop(b)) return Pop(a) > Pop(b);
-        return a < b;
-    });
-    std::vector<std::uint64_t> masks;
-    std::uint64_t seen = 0;
-    for (std::uint64_t m : cand) { if (seen & m) continue; masks.push_back(m); seen |= m; }
-    std::sort(masks.begin(), masks.end(), [](std::uint64_t a, std::uint64_t b) { return Ctz(a) < Ctz(b); });
-    for (std::uint64_t m : masks) {
-        const Val& v = r.vals[(std::size_t)last[m]];
-        Field f; f.sign = v.sign; f.mask = m;
-        for (const auto& p : v.parts) { if (p.off == -1) f.sign = true; else f.parts.push_back(p); }
-        int hi = 0; for (const auto& p : v.parts) hi = std::max(hi, (int)p.shift);
-        f.width = hi / 8 + 1;
-        std::sort(f.parts.begin(), f.parts.end(), [](const Part& a, const Part& b) { return a.off < b.off; });
-        auto it = r.sinks.find(m); if (it != r.sinks.end()) f.sinks = it->second;
-        f.sinks.erase("stack");
-        auto rk = r.idxRank.find(m); if (rk != r.idxRank.end()) f.rank = rk->second;
-        out.fields.push_back(std::move(f));
+    for (std::size_t i = 0; i < forms.size(); ++i)
+        for (std::size_t j = i + 1; j < forms.size();) {
+            if (forms[i].key != forms[j].key) { ++j; continue; }
+            if (forms[j].fields.size() > forms[i].fields.size()) forms[i] = forms[j];   // the way that read on
+            forms.erase(forms.begin() + (std::ptrdiff_t)j);
+        }
+    if (forms.size() == 1) {
+        out = forms[0]; out.key.clear(); out.forms.clear();
+        if (out.ok && out.read != all) { char t[64]; std::snprintf(t, sizeof(t), "%d of %d bytes read", Pop(out.read), len); out.why = t; out.ok = false; }
+        return out.ok;
     }
-    if (r.bad) { out.why = "a read the run could not place"; return false; }
-    if (out.read == all && (seen & all) != all) { out.why = "two ways through the code read the bytes differently"; return false; }
-    if (out.read != all) { char t[64]; std::snprintf(t, sizeof(t), "%d of %d bytes read", Pop(out.read), len); out.why = t; out.ok = false; return false; }
-    out.ok = true;
-    return true;
+    out.forms = forms;
+    std::string by; for (const auto& kv : out.forms[0].key) { if (!by.empty()) by += ", "; by += "b" + std::to_string(kv.first); }
+    out.why = std::to_string(out.forms.size()) + " forms by " + by;
+    out.read = 0; for (const auto& f : out.forms) out.read |= f.read;
+    out.ok = true; for (const auto& f : out.forms) if (!f.ok) out.ok = false;
+    return out.ok;
 }
 
 // A field's value in a payload: every byte through its transforms, shifted into place, then the
@@ -835,10 +1129,11 @@ inline bool Pair(const std::vector<RefField>& ref, const std::vector<Field>& liv
 // kPaired: both programs whole and paired, payloads translate to the reference form.
 // kSame: the reference program could not be read whole, and the live one reads the same as far as
 // both go: the bytes stand as they come. kOff: neither; the decoders leave the packet raw.
+// A packet with forms is kPaired when at least one form paired; each form says for itself.
 enum State : std::uint8_t { kUnknown, kPaired, kSame, kOff };
-struct Layout {
+// One form of a packet: the live program with its key, paired with a reference form or not.
+struct Form {
     bool ok = false;                // derived and paired
-    State state = kUnknown;
     bool identical = false;         // paired with every field reading the same bytes the same way
     int ambiguous = 0;
     std::vector<int> map;           // reference field -> live field
@@ -847,20 +1142,44 @@ struct Layout {
     // the reference build's, per reference field; equal when there is nothing to map
     std::vector<std::pair<std::int64_t, std::int64_t>> flag;
     Program prog;                   // the live program
+    std::string keyText, refKeyText;   // the live form's byte values, and the reference form's it paired with
     std::string why;
-    // reference field i read from `b`; false when the layout or the payload does not have it
+    // whether a payload is of this form
+    bool Holds(const std::uint8_t* b, std::uint32_t n) const {
+        for (const auto& kv : prog.key) if (kv.first < 0 || (std::uint32_t)kv.first >= n || !kv.second[b[kv.first]]) return false;
+        return true;
+    }
+    // reference field i read from `b`; false when the form or the payload does not have it
     bool Get(int i, const std::uint8_t* b, std::uint32_t n, std::int64_t& v) const {
         if (!ok || i < 0 || (std::size_t)i >= map.size()) return false;
         return Value(prog.fields[(std::size_t)map[(std::size_t)i]], b, n, v);
     }
+    // the one live field that goes to `sink` (a store displacement, an argument register), read
+    // from `b`; false when none or several do. Reads a packet whose wire form changed by where its
+    // values end up, which an update keeps.
+    bool BySink(const char* sink, const std::uint8_t* b, std::uint32_t n, std::int64_t& v) const {
+        const Field* hit = nullptr;
+        for (const auto& f : prog.fields) if (f.sinks.count(sink)) { if (hit) return false; hit = &f; }
+        return hit && Value(*hit, b, n, v);
+    }
+};
+struct Layout {
+    State state = kUnknown;
+    std::vector<Form> forms;        // one for a packet read a single way, else one per live form
+    std::vector<std::string> unpairedRef;   // reference forms no live form took
+    std::string why;
+    const Form* Pick(const std::uint8_t* b, std::uint32_t n) const { for (const auto& f : forms) if (f.Holds(b, n)) return &f; return nullptr; }
 };
 struct Layouts { bool ran = false; std::map<int, Layout> byRef; int known = 0, derived = 0, paired = 0, changed = 0, ambiguous = 0; std::string why, detail; };
 inline Layouts& Current() { static Layouts l; return l; }
-inline const Layout* Of(int refOp) { auto& L = Current(); auto it = L.byRef.find(refOp); return it == L.byRef.end() || !it->second.ok ? nullptr : &it->second; }
+inline const Layout* Of(int refOp) { auto& L = Current(); auto it = L.byRef.find(refOp); return it == L.byRef.end() || it->second.state != kPaired ? nullptr : &it->second; }
+// the live form a payload of reference packet `refOp` is in, paired or not; null without a layout
+inline const Form* Pick(int refOp, const std::uint8_t* b, std::uint32_t n) { auto& L = Current(); auto it = L.byRef.find(refOp); return it == L.byRef.end() ? nullptr : it->second.Pick(b, n); }
 inline State StateOf(int refOp) { auto& L = Current(); auto it = L.byRef.find(refOp); return it == L.byRef.end() ? kUnknown : it->second.state; }
 
-// The reference build's programs (PacketReadsRef.h): opcode, length, whole (every byte read), fields
-// as FieldText separated by '|'.
+// The reference build's programs (PacketReadsRef.h): opcode, length, whole (every byte read, or a
+// form followed to its end), fields as FieldText separated by '|'. A form's row starts its text with
+// the key in brackets; the rows of one opcode's forms follow each other.
 struct RefProgram { int op; int len; bool whole; const char* fields; };
 
 // The parts of a field from its text: "b2<<24 b3.neg<<16 b4.add80".
@@ -890,9 +1209,11 @@ inline bool ParseParts(const std::string& t, std::vector<Part>& out) {
     return !out.empty();
 }
 
-inline std::vector<RefField> ParseRef(const char* text, std::vector<std::string>* shown = nullptr, std::vector<Field>* full = nullptr) {
+inline std::vector<RefField> ParseRef(const char* text, std::vector<std::string>* shown = nullptr, std::vector<Field>* full = nullptr, SelKey* key = nullptr) {
     std::vector<RefField> out;
     std::string s = text ? text : "";
+    if (key) key->clear();
+    if (!s.empty() && s[0] == '[') { const std::size_t e = s.find(']'); if (e == std::string::npos) return out; if (key) ParseKey(s.substr(1, e - 1), *key); s = s.substr(e + 1); while (!s.empty() && s[0] == ' ') s.erase(0, 1); }
     std::size_t at = 0;
     while (at <= s.size() && !s.empty()) {
         std::size_t bar = s.find('|', at); if (bar == std::string::npos) bar = s.size();
@@ -931,64 +1252,118 @@ inline std::string ProgramText(const Program& p) {
     return s;
 }
 
+// Pairs one reference program with one live program (fields, flags, identical); false with `why`.
+inline bool PairForm(const RefProgram& R, const Program& live, Form& f) {
+    f = Form{}; f.prog = live; f.keyText = KeyText(live.key);
+    std::vector<std::string> shown;
+    SelKey rk;
+    const std::vector<RefField> rf = ParseRef(R.fields, &shown, &f.ref, &rk);
+    f.refKeyText = KeyText(rk);
+    if (!Pair(rf, f.prog.fields, f.map, &f.ambiguous, &f.why)) return false;
+    f.ok = true;
+    f.flag.assign(rf.size(), { 0, 0 });
+    for (std::size_t k = 0; k < rf.size(); ++k) {
+        auto only = [](const std::set<std::string>& t, std::int64_t& c) {
+            int n = 0; for (const auto& x : t) { if (x == "ord") return false; if (x.rfind("cmp:", 0) == 0 && x != "cmp:r") { c = std::atoll(x.c_str() + 4); ++n; } }
+            return n == 1;
+        };
+        std::int64_t a = 0, b = 0;
+        if (rf[k].width <= 2 && only(rf[k].sinks, b) && only(f.prog.fields[(std::size_t)f.map[k]].sinks, a) && a != b) f.flag[k] = { a, b };
+    }
+    f.identical = true;   // every paired field reads the same bytes the same way
+    for (std::size_t k = 0; k < shown.size(); ++k) {
+        const std::string a = shown[k], b = FieldText(f.prog.fields[(std::size_t)f.map[k]]);
+        if (a.substr(0, a.find("->")) != b.substr(0, b.find("->"))) f.identical = false;
+    }
+    for (const auto& fl : f.flag) if (fl.first != fl.second) f.identical = false;   // a flag to map
+    return true;
+}
 // Every reference packet's layout in the exe `file`, its handlers at `invokeOf[liveOp]`: extracted,
-// paired with the reference, kept in Current().
+// paired with the reference, kept in Current(). The rows of one opcode are its forms: each pairs
+// with a live form whose byte values overlap its own and whose fields pair.
 inline void Derive(const std::uint8_t* file, std::size_t size, const RefProgram* ref, std::size_t refN, const std::uint32_t* invokeOf, std::size_t invokeN) {
     Layouts L; L.ran = true;
     rtx::pktid::detail::Pe pe;
     if (!rtx::pktid::detail::Open(file, size, pe)) { L.why = "exe not readable"; Current() = L; return; }
-    for (std::size_t i = 0; i < refN; ++i) {
+    for (std::size_t i = 0; i < refN;) {
+        std::size_t j = i; while (j < refN && ref[j].op == ref[i].op) ++j;   // the rows of this opcode
         const RefProgram& R = ref[i];
         ++L.known;
         Layout lay;
         const int live = rtx::pktid::LiveOf(R.op);
         lay.state = kOff;
-        if (live < 0 || (std::size_t)live >= invokeN || !invokeOf[live]) { lay.why = "packet not in this exe"; L.byRef[R.op] = lay; continue; }
-        const bool whole = Extract(pe, invokeOf[live], R.len, lay.prog);
-        if (!R.whole) {
+        if (live < 0 || (std::size_t)live >= invokeN || !invokeOf[live]) { lay.why = "packet not in this exe"; L.byRef[R.op] = lay; i = j; continue; }
+        Program prog;
+        const bool whole = Extract(pe, invokeOf[live], R.len, prog);
+        const bool refForms = R.fields && R.fields[0] == '[';
+        if (!refForms && prog.forms.empty() && !R.whole) {
             // the reference was not read to its last byte: the bytes stand only where the live
             // handler reads exactly what the reference did, as far as either goes
             const std::string a = R.fields ? R.fields : "";
-            std::string b; for (std::size_t k = 0; k < lay.prog.fields.size(); ++k) { if (k) b += '|'; b += FieldText(lay.prog.fields[k]); }
+            std::string b; for (std::size_t k = 0; k < prog.fields.size(); ++k) { if (k) b += '|'; b += FieldText(prog.fields[k]); }
             auto bare = [](const std::string& t) { std::string o; std::size_t at = 0; while (at <= t.size()) { std::size_t bar = t.find('|', at); if (bar == std::string::npos) bar = t.size(); const std::string f = t.substr(at, bar - at); o += f.substr(0, f.find("->")) + '|'; at = bar + 1; } return o; };
+            Form f; f.prog = prog; lay.forms.push_back(f);
             if (!a.empty() && bare(a) == bare(b)) { lay.state = kSame; lay.why = "reads the same as the reference as far as both go"; }
             else lay.why = "the reference is not read whole and the live handler reads otherwise";
-            L.byRef[R.op] = lay; continue;
+            L.byRef[R.op] = lay; i = j; continue;
         }
-        if (!whole) { lay.why = lay.prog.why.empty() ? "handler not read" : lay.prog.why; L.byRef[R.op] = lay; continue; }
+        // the live forms (one, keyless, when the handler reads a single way) and the reference rows
+        std::vector<Program> liveForms = prog.forms.empty() ? std::vector<Program>{ prog } : prog.forms;
+        if (!whole && prog.forms.empty()) { lay.why = prog.why.empty() ? "handler not read" : prog.why; Form f; f.prog = prog; lay.forms.push_back(f); L.byRef[R.op] = lay; i = j; continue; }
         ++L.derived;
-        std::vector<std::string> shown;
-        const std::vector<RefField> rf = ParseRef(R.fields, &shown, &lay.ref);
-        if (!Pair(rf, lay.prog.fields, lay.map, &lay.ambiguous, &lay.why)) { L.byRef[R.op] = lay; continue; }
-        lay.ok = true; lay.state = kPaired; ++L.paired;
-        lay.flag.assign(rf.size(), { 0, 0 });
-        for (std::size_t k = 0; k < rf.size(); ++k) {
-            auto only = [](const std::set<std::string>& t, std::int64_t& c) {
-                int n = 0; for (const auto& x : t) { if (x == "ord") return false; if (x.rfind("cmp:", 0) == 0 && x != "cmp:r") { c = std::atoll(x.c_str() + 4); ++n; } }
-                return n == 1;
-            };
-            std::int64_t a = 0, b = 0;
-            if (rf[k].width <= 2 && only(rf[k].sinks, b) && only(lay.prog.fields[(std::size_t)lay.map[k]].sinks, a) && a != b) lay.flag[k] = { a, b };
+        std::vector<Form> forms(liveForms.size());
+        std::vector<char> taken(liveForms.size(), 0);
+        std::vector<int> gap(liveForms.size(), 1 << 30);   // per live form: how far in fields the nearest reference form that failed to pair was
+        for (std::size_t k = 0; k < liveForms.size(); ++k) { forms[k].prog = liveForms[k]; forms[k].keyText = KeyText(liveForms[k].key); forms[k].why = liveForms[k].ok ? "no reference form for " + forms[k].keyText : liveForms[k].why; }
+        for (std::size_t q = i; q < j; ++q) {
+            // a reference form takes the live form with overlapping byte values whose fields pair
+            // best (fewest changed); without one it is noted with the reason the nearest gave
+            SelKey rk; const std::size_t refFields = ParseRef(ref[q].fields, nullptr, nullptr, &rk).size();
+            int best = -1, bestChanged = 1 << 30; Form bestForm; std::string nearest;
+            for (std::size_t k = 0; k < liveForms.size(); ++k) {
+                if (taken[k] || !liveForms[k].ok) continue;
+                bool compatible = true;
+                for (const auto& kv : rk) { auto it = liveForms[k].key.find(kv.first); if (it != liveForms[k].key.end() && (it->second & kv.second).none()) compatible = false; }
+                if (!compatible) continue;
+                Form f;
+                if (!PairForm(ref[q], liveForms[k], f)) {
+                    if (nearest.empty()) nearest = f.why;
+                    const int g = std::abs((int)refFields - (int)liveForms[k].fields.size());
+                    if (g < gap[k]) { gap[k] = g; forms[k].why = f.why; }   // the reference form nearest in fields gives the reason
+                    continue;
+                }
+                int changed = 0; for (std::size_t m = 0; m < f.map.size(); ++m) { const std::string a = FieldText(f.ref[m]), b = FieldText(f.prog.fields[(std::size_t)f.map[m]]); if (a.substr(0, a.find("->")) != b.substr(0, b.find("->"))) ++changed; }
+                if (changed < bestChanged) { best = (int)k; bestChanged = changed; bestForm = f; }
+            }
+            if (best < 0) { lay.unpairedRef.push_back(KeyText(rk) + (nearest.empty() ? "" : " (" + nearest + ")")); continue; }
+            forms[(std::size_t)best] = bestForm; taken[(std::size_t)best] = 1;
+            if (!bestForm.identical) ++L.changed;
+            if (bestForm.ambiguous) ++L.ambiguous;
         }
-        lay.identical = true;   // every paired field reads the same bytes the same way
-        for (std::size_t k = 0; k < shown.size(); ++k) {
-            const std::string a = shown[k], b = FieldText(lay.prog.fields[(std::size_t)lay.map[k]]);
-            if (a.substr(0, a.find("->")) != b.substr(0, b.find("->"))) lay.identical = false;
+        lay.forms = forms;
+        int paired = 0; for (const auto& f : forms) if (f.ok) ++paired;
+        if (paired) { lay.state = kPaired; ++L.paired; }
+        // the reason, form by form: a live form without a partner is read by its sinks only
+        if (forms.size() == 1 && !paired) lay.why = forms[0].why;
+        else {
+            lay.why = std::to_string(paired) + " of " + std::to_string(forms.size()) + " live forms paired";
+            for (const auto& f : forms) if (!f.ok) lay.why += "; live form [" + f.keyText + "]: " + f.why;
+            for (const auto& u : lay.unpairedRef) lay.why += "; reference form [" + u + "] has no live form";
         }
-        for (const auto& f : lay.flag) if (f.first != f.second) lay.identical = false;   // a flag to map
-        if (!lay.identical) ++L.changed;
-        if (lay.ambiguous) ++L.ambiguous;
         L.byRef[R.op] = lay;
+        i = j;
     }
     Current() = L;
 }
 
-// A packet of this build in the reference build's wire form: every reference field takes the value
-// its partner makes of the live bytes, written back through the reference parts (each transform
-// undone, last first). False, `out` untouched, when the packet has no paired layout or does not fit.
+// A packet of this build in the reference build's wire form: the form its bytes pick, every
+// reference field taking the value its partner makes of the live bytes, written back through the
+// reference parts (each transform undone, last first). False, `out` untouched, when the packet has
+// no paired form or does not fit.
 inline bool Translate(int refOp, const std::uint8_t* b, std::uint32_t n, std::uint8_t* out, std::uint32_t cap) {
-    const Layout* L = Of(refOp);
-    if (!L || L->state != kPaired || (int)n != L->prog.len || n > cap) return false;
+    const Layout* lay = Of(refOp);
+    const Form* L = lay ? lay->Pick(b, n) : nullptr;
+    if (!L || !L->ok || (int)n != L->prog.len || n > cap) return false;
     if (L->identical) { std::memcpy(out, b, n); return true; }
     std::uint8_t tmp[64] = {};
     if (n > sizeof(tmp)) return false;
@@ -1045,6 +1420,15 @@ inline std::string RefReadsText(const std::uint8_t* file, std::size_t size, cons
         Program p;
         char head[48];
         const bool whole = Extract(pe, r.invoke, r.len, p);
+        if (!p.forms.empty()) {
+            // one row per form, the key first
+            for (const auto& f : p.forms) {
+                if (!f.ok) { ++skipped; std::snprintf(head, sizeof(head), "partial 0x%02X: ", r.op); log += head + ("form [" + KeyText(f.key) + "] " + f.why) + "\n"; } else ++ok;
+                std::snprintf(head, sizeof(head), "    { 0x%02X, %2d, %s, \"[", r.op, r.len, f.ok ? "true " : "false");
+                s += head; s += KeyText(f.key); s += "] "; s += ProgramText(f); s += "\" },\n";
+            }
+            continue;
+        }
         if (!whole) {
             ++skipped; std::snprintf(head, sizeof(head), "partial 0x%02X: ", r.op); log += head + p.why + "\n";
             if (p.fields.empty()) continue;
@@ -1131,24 +1515,34 @@ inline std::string DiffText(const std::uint8_t* refFile, std::size_t refSize, co
         for (const auto& kv : L.byRef) {
             const Layout& lay = kv.second;
             if (lay.state != kPaired) continue;
-            const std::uint32_t n = (std::uint32_t)lay.prog.len;
-            for (int t = 0; t < 200; ++t) {
-                std::uint8_t in[64], out[64];
-                for (std::uint32_t k = 0; k < n; ++k) { x ^= x << 13; x ^= x >> 7; x ^= x << 17; in[k] = (std::uint8_t)x; }
-                ++tried;
-                bool ok = Translate(kv.first, in, n, out, sizeof(out));
-                for (std::size_t i = 0; ok && i < lay.ref.size(); ++i) {
-                    std::int64_t a, b;
-                    if (!Value(lay.prog.fields[(std::size_t)lay.map[i]], in, n, a) || !Value(lay.ref[i], out, n, b)) { ok = false; break; }
-                    const int bits = lay.ref[i].width * 8;
-                    const std::uint64_t m = bits >= 64 ? ~0ull : ((1ull << bits) - 1);
-                    if (i < lay.flag.size() && lay.flag[i].first != lay.flag[i].second) {
-                        const std::uint64_t u = (std::uint64_t)a & m, fa = (std::uint64_t)lay.flag[i].first & m, fr = (std::uint64_t)lay.flag[i].second & m;
-                        a = (std::int64_t)(u == fa ? fr : u == fr ? fa : u);
+            for (const Form& f : lay.forms) {
+                if (!f.ok) continue;
+                const std::uint32_t n = (std::uint32_t)f.prog.len;
+                for (int t = 0; t < 200; ++t) {
+                    std::uint8_t in[64], out[64];
+                    for (std::uint32_t k = 0; k < n; ++k) { x ^= x << 13; x ^= x >> 7; x ^= x << 17; in[k] = (std::uint8_t)x; }
+                    // the bytes the form is chosen by take a value of the form's set
+                    for (const auto& sk : f.prog.key) {
+                        if (sk.first < 0 || (std::uint32_t)sk.first >= n) continue;
+                        int v = in[sk.first];
+                        for (int q = 0; q < 256 && !sk.second[(std::size_t)v]; ++q) v = (v + 1) & 0xFF;
+                        in[sk.first] = (std::uint8_t)v;
                     }
-                    if (((std::uint64_t)a & m) != ((std::uint64_t)b & m)) ok = false;
+                    ++tried;
+                    bool ok = lay.Pick(in, n) == &f && Translate(kv.first, in, n, out, sizeof(out));
+                    for (std::size_t i = 0; ok && i < f.ref.size(); ++i) {
+                        std::int64_t a, b;
+                        if (!Value(f.prog.fields[(std::size_t)f.map[i]], in, n, a) || !Value(f.ref[i], out, n, b)) { ok = false; break; }
+                        const int bits = f.ref[i].width * 8;
+                        const std::uint64_t m = bits >= 64 ? ~0ull : ((1ull << bits) - 1);
+                        if (i < f.flag.size() && f.flag[i].first != f.flag[i].second) {
+                            const std::uint64_t u = (std::uint64_t)a & m, fa = (std::uint64_t)f.flag[i].first & m, fr = (std::uint64_t)f.flag[i].second & m;
+                            a = (std::int64_t)(u == fa ? fr : u == fr ? fa : u);
+                        }
+                        if (((std::uint64_t)a & m) != ((std::uint64_t)b & m)) ok = false;
+                    }
+                    if (!ok) { ++failed; if (bad.size() < 200) { char t2[16]; std::snprintf(t2, sizeof(t2), " 0x%02X", kv.first); if (bad.find(t2) == std::string::npos) bad += t2; } }
                 }
-                if (!ok) { ++failed; if (bad.size() < 200) { char t2[16]; std::snprintf(t2, sizeof(t2), " 0x%02X", kv.first); if (bad.find(t2) == std::string::npos) bad += t2; } }
             }
         }
         std::snprintf(line, sizeof(line), "round trip: %d payloads, %d wrong%s\n\n", tried, failed, failed ? " in" : "");
@@ -1158,15 +1552,18 @@ inline std::string DiffText(const std::uint8_t* refFile, std::size_t refSize, co
         auto it = L.byRef.find(R.op);
         if (it == L.byRef.end()) continue;
         const Layout& lay = it->second;
-        const std::string state = lay.state == kPaired ? std::string(lay.identical ? "paired, unchanged" : "paired, CHANGED") : lay.state == kSame ? "as read: " + lay.why : "OFF: " + lay.why;
-        std::snprintf(line, sizeof(line), "0x%02X len %d -> live 0x%02X: %s%s\n", R.op, R.len, rtx::pktid::LiveOf(R.op), state.c_str(), lay.ambiguous ? " (ambiguous)" : "");
-        s += line;
-        std::vector<std::string> shown; ParseRef(R.fields, &shown);
+        SelKey rk; std::vector<std::string> shown; ParseRef(R.fields, &shown, nullptr, &rk);
+        const std::string rkt = KeyText(rk);
+        const Form* f = nullptr;
+        for (const auto& x : lay.forms) if (x.ok && x.refKeyText == rkt) f = &x;
+        const std::string state = f ? std::string(f->identical ? "paired, unchanged" : "paired, CHANGED") : lay.state == kSame ? "as read: " + lay.why : "OFF: " + lay.why;
+        std::snprintf(line, sizeof(line), "0x%02X len %d%s%s -> live 0x%02X: ", R.op, R.len, rkt.empty() ? "" : " form ", rkt.c_str(), rtx::pktid::LiveOf(R.op));
+        s += line; s += state; s += f && f->ambiguous ? " (ambiguous)\n" : "\n";
         for (std::size_t k = 0; k < shown.size(); ++k) {
             s += "    ref  " + shown[k] + "\n";
-            if (lay.ok) s += "    live " + FieldText(lay.prog.fields[(std::size_t)lay.map[k]]) + "\n";
+            if (f) s += "    live " + FieldText(f->prog.fields[(std::size_t)f->map[k]]) + "\n";
         }
-        if (!lay.ok) for (const auto& f : lay.prog.fields) s += "    live? " + FieldText(f) + "\n";
+        if (!f) for (const auto& x : lay.forms) { if (!x.keyText.empty()) s += "    live form [" + x.keyText + "]: " + x.why + "\n"; for (const auto& fl : x.prog.fields) s += "    live? " + FieldText(fl) + "\n"; }
     }
     return s;
 }

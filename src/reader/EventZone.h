@@ -166,7 +166,7 @@ inline bool zoneItem(const std::uint8_t* b, std::uint32_t n, std::uint32_t p, Zo
     if (st == rtx::preads::kOff) return false;
     if (st == rtx::preads::kPaired) {
         const rtx::preads::Layout* L = rtx::preads::Of(prog);
-        const std::uint32_t fixed = L ? (std::uint32_t)L->prog.len : 0;
+        const std::uint32_t fixed = L && !L->forms.empty() ? (std::uint32_t)L->forms[0].prog.len : 0;
         if (!fixed || fixed > avail || fixed > tbCap) return false;
         const std::uint32_t copy = avail < tbCap ? avail : tbCap;
         std::memcpy(tb, q, copy);
