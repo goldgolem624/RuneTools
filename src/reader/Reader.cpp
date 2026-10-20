@@ -3668,7 +3668,11 @@ std::string ServerPacketFeedJson(std::uint32_t pid, std::uint64_t since) {
                 "%s{\"seq\":%llu,\"t\":%llu,\"op\":%d,\"len\":%d,\"kept\":%u,\"hex\":\"",
                 first ? "" : ",", (unsigned long long)r.seq, (unsigned long long)r.tick,
                 (int)r.opcode, (int)r.length, kept);
-            out += b; out += hex; out += "\"}";
+            out += b; out += hex; out += "\"";
+            // the form a branching handler reads these bytes by (its byte values), for the panel's decoders
+            if (const rtx::preads::Form* f = rtx::preads::Pick(rtx::pktid::RefOf((int)r.opcode), r.data, kept); f && !f->keyText.empty())
+                out += ",\"form\":\"" + rtx::health::Escape(f->keyText) + "\"";
+            out += "}";
             first = false;
         }
         out += "]}";

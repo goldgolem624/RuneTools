@@ -303,7 +303,8 @@
   .miss.hc.bad .miss-icon { color: #f06254; }
   .miss.hc.ok .miss-icon { color: #4dd28a; }
   .hc-detail { flex: 1 0 100%; margin: 4px 0 0; max-height: 220px; overflow: auto; font: 11px/1.45 var(--font-mono, monospace);
-               white-space: pre-wrap; color: var(--text-dim); background: rgba(0,0,0,0.25); border-radius: 4px; padding: 8px 10px; }
+               white-space: pre-wrap; color: var(--text-dim); background: rgba(0,0,0,0.25); border-radius: 4px; padding: 8px 10px;
+               -webkit-user-select: text; user-select: text; }
   .hc-detail[hidden] { display: none; }
 
   /* Update banner: accent when optional, amber when below minVersion (Launch gated). */
@@ -2339,6 +2340,7 @@
     </div>
     <div class="miss-actions">
       <button class="ghost" id="hc-details-btn" type="button">Details</button>
+      <button class="ghost" id="hc-copy-btn" type="button">Copy</button>
       <button class="ghost" id="hc-dismiss-btn" type="button">Dismiss</button>
     </div>
     <pre class="hc-detail" id="hc-detail" hidden></pre>
@@ -3466,6 +3468,14 @@
     if (!text) text = hcRun ? JSON.stringify(hcRun.summary || {}, null, 1) : 'No health run yet. It runs when you log in after a game update.';
     pre.textContent = text.split('\n').slice(0, 80).join('\n');
     pre.hidden = false;
+  });
+  // the whole report to the clipboard (the Details block shows its first 80 lines)
+  $('hc-copy-btn').addEventListener('click', async () => {
+    let text = '';
+    try { if (bridge().healthSummary) text = await bridge().healthSummary(''); } catch (e) {}
+    if (!text) text = hcRun ? JSON.stringify(hcRun, null, 1) : '';
+    if (!text || !bridge().copyClipboard) return;
+    try { bridge().copyClipboard(text); if (typeof uiNotify === 'function') uiNotify('Report copied'); } catch (e) {}
   });
   hcPoll();
   setInterval(hcPoll, HC_POLL_MS);

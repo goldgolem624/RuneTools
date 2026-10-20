@@ -399,12 +399,21 @@
       if (b.length < 8) return '';
       return 'echo ' + npU32(b, 0) + ' / ' + npU32(b, 4) + ' (client replies 9B)';
     },
-    ge_offer: function (b) {                                       // [market][slot][header: 0 clears, status = h&7, buy/sell bit 3; 7 = extended: w, status/type, item, price, count, filled, gold]
+    ge_offer: function (b, r) {                                    // [market][slot][header: 7 = extended: w, status/type, item, price, count, filled, gold; else the plain form, whose shape the record's form key tells (950-1: status in the header, 951-1: a status byte after it)]
       if (b.length < 3) return '';
       const market = b[0], slot = b[1], hdr = b[2];
-      if (hdr === 0) return 'market ' + market + ' slot ' + slot + ' cleared';
+      const form = (r && r.form) || '';
+      if (hdr === 0 && (!form || form.indexOf('[b2=0]') === 0)) return 'market ' + market + ' slot ' + slot + ' cleared';
       let status = hdr & 7, type = (hdr >> 3) & 1;
-      if (status !== 7) return 'market ' + market + ' slot ' + slot + ' status ' + status + (type ? ' sell' : ' buy');
+      if (status !== 7) {
+        const plain951 = form.indexOf('[b2&0x7<7]') === 0;
+        const st = plain951 ? b[3] : hdr, q = plain951 ? 4 : 3;
+        if (plain951 && b.length < 4) return '';
+        status = st & 7; type = (st >> 3) & 1;
+        if (b.length < q + 18) return 'market ' + market + ' slot ' + slot + ' status ' + status + (type ? ' sell' : ' buy');
+        const item = npU16(b, q), price = npU32(b, q + 2), count = npI32(b, q + 6), filled = npI32(b, q + 10), gold = npU32(b, q + 14);
+        return 'market ' + market + ' slot ' + slot + (type ? ' sell ' : ' buy ') + npItemName(item) + ' x' + npNum(count) + ' @ ' + npNum(price) + ' filled ' + npNum(filled) + ' (' + npNum(gold) + ' gp) status ' + status;
+      }
       if (b.length < 5) return '';
       const w = b[3]; status = b[4] & 7; type = (b[4] >> 3) & 1;
       let p = 5, item, price, gold;
@@ -468,7 +477,7 @@
     if (!r.kept) return r.len === 0 ? '(empty)' : '';
     const body = npAscii ? npAsciiOf(r.hex) : npHexSpaced(r.hex);
     const more = (r.len > r.kept) ? ' ...(+' + (r.len - r.kept) + 'B)' : '';
-    const dec = (!r._out && npDecoders[r.op]) ? npDecoders[r.op](npParseBytes(r)) : '';
+    const dec = (!r._out && npDecoders[r.op]) ? npDecoders[r.op](npParseBytes(r), r) : '';
     const hint = dec ? ('<span style="color:#7ec699">' + htmlEsc(dec) + '</span>  ') : npNumHint(r);
     return hint + htmlEsc(body) + more;
   }

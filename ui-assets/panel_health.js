@@ -254,6 +254,7 @@
           .hc-grp { display: flex; align-items: center; gap: 8px; padding: 8px 12px; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; color: var(--accent-hi); cursor: pointer; }
           .hc-grp .hc-n { margin-left: auto; color: var(--text-dim); font-weight: 600; letter-spacing: 0; text-transform: none; }
           .hc-grp .hc-gf { color: var(--text-mute, #777); font-weight: 500; letter-spacing: 0; text-transform: none; font-size: 10.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+          #hcBody { -webkit-user-select: text; user-select: text; }
           .hc-status { margin: 0 14px 10px; padding: 9px 11px; border-radius: 8px; border: 1px solid; line-height: 1.4; }
           .hc-sline { display: flex; align-items: center; gap: 9px; }
           .hc-sdot { width: 9px; height: 9px; border-radius: 50%; flex: 0 0 auto; background: currentColor; box-shadow: 0 0 8px currentColor; }
