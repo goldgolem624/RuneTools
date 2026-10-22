@@ -27,7 +27,24 @@
     if (!rules || typeof rules !== 'object' || !Object.keys(rules).length) return false;
     mnuRules = rules;
     if (versioned) mnuNames = o.names || {};
+    mnuDropOwnRows();
     return true;
+  }
+  // Rows of ours in the game's menu are never options of a rule. A rule saved while they were listed
+  // loses them here, and the cleaned rules are saved back.
+  const mnuOwnLabels = () => (typeof rtxMenuRows !== 'undefined' ? rtxMenuRows.labels() : new Set());
+  const mnuIsOwnRow = e => typeof rtxMenuRows !== 'undefined' && rtxMenuRows.isOurs(e);
+  function mnuDropOwnRows() {
+    const own = mnuOwnLabels();
+    const fixed = new Set(['Hide', 'Show', 'Mark tile', 'Unmark tile', 'Customize tile']);
+    let changed = false;
+    for (const k of Object.keys(mnuRules)) {
+      if (!Array.isArray(mnuRules[k])) continue;
+      // Hide and Show can also be a game option, so only our table's own wordings are taken out of saved rules
+      const kept = mnuRules[k].filter(v => !(own.has(v) && !fixed.has(v)));
+      if (kept.length !== mnuRules[k].length) { mnuRules[k] = kept; changed = true; }
+    }
+    if (changed) setTimeout(() => { mnuSaveRules(); mnuPush(); }, 0);
   }
 
   async function mnuLoadRules() {
@@ -286,6 +303,7 @@
       }
     }
     if (d && mnuData && d.seq !== mnuData.seq) mnuOrder = null;
+    if (d && Array.isArray(d.entries)) d.entries = d.entries.filter(e => !mnuIsOwnRow(e));
     mnuData = d || {};
     mnuSelfResolve();
     mnuResolveFromScene(mnuTargets((mnuData.entries) || []));
@@ -408,6 +426,66 @@
     mnuSig = ''; mnuListSig = ''; renderMenuSwap();
   }
 
+  // "Set left-click" in the game's own menu, under things with more than one option: opens this
+  // panel's editor for that thing with its options in the menu's order, or its saved rule.
+  async function mnuEditFromMenu(d) {
+    const name = mnuPlain(d.target) || d.plain;
+    if (!name) return;
+    let rec = null, ents = null;
+    if (Array.isArray(d.verbs) && d.verbs.length) {
+      // the click carries the target's own options, in the order the menu showed them
+      ents = d.verbs.map(v => ({ verb: v, target: d.target, type: d.type | 0 }));
+      rec = { name: name, ents: ents, handle: 0, ts: Date.now() };
+    } else {
+      rec = mnuRecent.find(r => r.name === name || mnuBaseName(r.name) === mnuBaseName(name));
+      ents = rec ? rec.ents : null;
+    }
+    if (!ents || !ents.length) {
+      let s = null;
+      try { s = JSON.parse(await rtxData.raw('host.menuStatus') || '{}'); } catch (e) {}
+      const all = (s && s.entries) || (mnuData && mnuData.entries) || [];
+      ents = all.filter(e => mnuPlain(e.target) === name && !mnuIsOwnRow(e));
+      if (ents.length) rec = { name: name, ents: ents, handle: (s && s.handle) | 0, ts: Date.now() };
+    }
+    if (!ents || !ents.length) { mnuNote = 'The menu for "' + name + '" was not captured; open it again and retry.'; return; }
+    mnuResolveFromScene([name]);
+    const key = mnuRuleKey(ents, name, rec) || ('noid:' + name + '@' + mnuSetSig(ents, name));
+    mnuNames[key] = name;
+    const own = mnuOwnLabels();
+    mnuAdd = { name: name, order: (mnuRules[key] || ents.map(e => e.verb).filter(Boolean)).filter(v => !own.has(v) || v === 'Hide' || v === 'Show').slice(), editKey: key };
+    mnuView = 'edit'; mnuSel = '';
+    try {
+      const t = (typeof allTabs === 'function' ? allTabs() : TABS).find(x => x.id === 'menuswap');
+      if (t) openTab(t);
+    } catch (e) {}
+    mnuSig = ''; mnuListSig = ''; renderMenuSwap();
+  }
+  if (typeof rtxMenuRows !== 'undefined') {
+    rtxMenuRows.register('setLeft', { label: 'Set left-click', types: ['npc', 'loc', 'grounditem', 'interface'], minVerbs: 3,
+      title: 'Set left-click', note: 'Opens the reorder editor, on things with 3+ options',
+      onClick: d => { mnuEditFromMenu(d); } });
+  }
+  // The in-game rows block of the Saved rules view, in the Overlay panel's language: switch rows,
+  // a segmented choice, a short hint. The diagnostic counters sit in the hint's tooltip.
+  function mnuRowsSettingsHtml() {
+    if (typeof rtxMenuRows === 'undefined') return '';
+    let h = '<div class="ov-sep"></div>';
+    for (const k of rtxMenuRows.list())
+      h += '<div class="ov-row' + (k.on ? ' on' : '') + '" role="button" data-rowkind="' + htmlEsc(k.id) + '">'
+         + '<div class="ov-l"><div class="ov-name">' + htmlEsc(k.title) + '</div><div class="ov-sub">' + htmlEsc(k.note) + '</div></div>'
+         + '<div class="ov-pill"><span></span></div></div>';
+    const per = rtxMenuRows.perTarget();
+    h += '<div class="ov-row"><div class="ov-l"><div class="ov-name">Rows per thing</div><div class="ov-sub">Hide counts as one</div></div>'
+       + '<div class="al-seg">' + [1, 2, 3].map(n => '<button type="button" data-rowsper="' + n + '"' + (per === n ? ' class="on"' : '') + '>' + n + '</button>').join('') + '</div></div>';
+    const d = mnuData || {};
+    const state = !d.ok ? 'Game client not connected'
+      : d.rowsReady === false ? 'Not available on this game client'
+      : (d.rows | 0) + ' row' + ((d.rows | 0) === 1 ? '' : 's') + ' active in game';
+    const tip = Array.isArray(d.rowDiag) ? 'rows added ' + d.rowDiag[0] + ', menus ' + d.rowDiag[1] + ', game rows ' + d.rowDiag[2] + ', crowded out ' + d.rowDiag[3] : '';
+    h += '<div class="ov-hint" title="' + htmlEsc(tip) + '">' + htmlEsc(state) + '. Hide and Mark tile: Rendering and Markers panels.</div>';
+    return h;
+  }
+
   function mnuAddMove(i, dir) {
     const j = i + dir;
     if (j < 0 || j >= mnuAdd.order.length) return;
@@ -450,6 +528,12 @@
         + '<div id="mnuInfo" class="pet-count" style="opacity:.35;margin-top:2px"></div>';
       c.appendChild(wrap);
       wrap.addEventListener('click', function (e) {
+        if (typeof rtxMenuRows !== 'undefined') {
+          const rk = e.target.closest('[data-rowkind]');
+          if (rk) { rtxMenuRows.setEnabled(rk.dataset.rowkind, !rk.classList.contains('on')); mnuListSig = ''; renderMenuSwap(); return; }
+          const rp = e.target.closest('[data-rowsper]');
+          if (rp) { rtxMenuRows.setPerTarget(parseInt(rp.dataset.rowsper, 10)); mnuListSig = ''; renderMenuSwap(); return; }
+        }
         const vb = e.target.closest('[data-view]');
         if (vb) {
           mnuConfirmForget = '';
@@ -505,6 +589,8 @@
               + '|' + JSON.stringify(mnuRules)
               + '|' + mnuAdd.editKey + '|' + mnuAdd.order.join(',')
               + '|' + mnuConfirmForget + '|' + mnuSel
+              + '|' + (typeof rtxMenuRows !== 'undefined' ? JSON.stringify(rtxMenuRows.list()) + rtxMenuRows.perTarget() : '')
+              + '|' + (d.rows | 0) + ':' + (d.rowsPer | 0) + ':' + (d.rowsReady === false ? 0 : 1) + ':' + (d.ok ? 1 : 0) + ':' + (Array.isArray(d.rowDiag) ? d.rowDiag.join(',') : '')
               + '|' + ents.map(mnuKey).join(',')
               + '|' + ents.map(e => (e.slot | 0) + ':' + (e.type | 0)).join(',');
     if (statusSig === mnuSig && listSig === mnuListSig) return;
@@ -626,7 +712,7 @@
                   + '<button class="pet-chip" data-forget="' + htmlEsc(r.key) + '">Forget</button>')
             + '</div>';
       }
-      list.innerHTML = ah || '<div class="pet-row" style="opacity:.5">No saved reorderings yet.</div>';
+      list.innerHTML = (ah || '<div class="pet-row" style="opacity:.5">No saved reorderings yet.</div>') + mnuRowsSettingsHtml();
       return;
     }
     if (mnuView === 'menu' && !mnuSel) {

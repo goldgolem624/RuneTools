@@ -14,6 +14,7 @@
 
 #include <cstdarg>
 #include <intrin.h>
+#include <cctype>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -430,6 +431,13 @@ bool RankLane(std::uint64_t begin, int n, unsigned char recs[][kRecSize], int* r
         rowVerb[i][rtx::menu::kVerbLen - 1] = 0;
         std::strncpy(rowTgt[i], tgt, rtx::menu::kTargetLen - 1);
         rowTgt[i][rtx::menu::kTargetLen - 1] = 0;
+        // A row of ours is never a rule's option: it stays where it is, cannot become the left-click,
+        // and does not count among the target's options when a rule checks that it names them all.
+        {
+            std::uint64_t ent = 0, tag = 0;
+            std::memcpy(&ent, recs[i] + kRecTarget, 8);
+            if (ent && Rd(ent + kDispTag, &tag, 8) && OwnRowClass(tag)) { fixedSlot[i] = true; continue; }
+        }
         rowOk[i] = true;
         if (i == 0 || (anyTargeted && !tgt[0])) { fixedSlot[i] = true; continue; }
     }
@@ -1202,19 +1210,34 @@ constexpr std::int32_t kRowAction = 3000;       // sorts with the low-priority r
 constexpr std::uint64_t kRowActorLo = 0x44, kRowActorHi = 0x48;   // two of the row's four ints, ours to use on a row of our class
 constexpr std::uint64_t kClassEntry = 0x44;
 void* __fastcall RowNoop(void*) { return nullptr; }
-void __fastcall RowClicked(RowCall* self, std::uint64_t rec) {
-    rtx::menu::Share* sh = g_share;
-    std::uint64_t obj = 0; std::uint32_t lo = 0, hi = 0;
-    if (!sh || !self || !Rd(rec + 8, &obj, 8) || !obj || !Rd(obj + kRowActorLo, &lo, 4) || !Rd(obj + kRowActorHi, &hi, 4)) return;
-    sh->hideClickKind = self->kind;
-    sh->hideClickActor = ((std::uint64_t)hi << 32) | lo;
-    MemoryBarrier();
-    sh->hideClickSeq = sh->hideClickSeq + 1;
-}
+// The subjects of the menu being built: one record per target the game added rows for, with its
+// text and placement arguments, how many of the game's own verbs it has, and which rows of the
+// table it carries. Reset when the first row of a build goes in; a row of the table refers to
+// its subject by index, which is what its click reports.
+struct Subject {
+    std::uint64_t key;                      // the actor, the tile, or a hash of the text and placement
+    char          target[rtx::menu::kTargetLen];
+    std::int32_t  type;
+    std::uint64_t actor;
+    std::uint32_t ints[rtx::menu::kRowInts];
+    std::uint32_t verbs;
+    std::uint32_t added;                    // bit per table row already under this subject
+    std::uint32_t ours;                     // rows of ours under this subject, the Hide row included
+};
+constexpr int kMaxSubjects = 48;
+Subject g_subjects[kMaxSubjects];
+int g_subjectCount = 0;
+// Records in the menu list after the last table pass. Within one build the list only grows, so a
+// list no longer than that is a new build: the subjects start over. (The game may put rows such as
+// Cancel in without the add-row routine, so "the list holds one record" cannot mark a build.)
+std::uint64_t g_lastRecords = 0;
+constexpr std::int32_t kTableRowKind = 0x10000;   // RowCall kinds of table rows: this | (row << 1) | on
+void __fastcall RowClicked(RowCall* self, std::uint64_t rec);
 void* const g_rowVtbl[6] = { (void*)&RowNoop, (void*)&RowNoop, (void*)&RowClicked, (void*)&RowNoop, (void*)&RowNoop, (void*)&RowNoop };
 // NPC, player, then the same two for an actor that is hidden now (its row reads "Show"), then a
-// tile, a tile that is marked now ("Unmark tile") and that tile's "Customize tile".
-constexpr int kRowClasses = 7, kRowTile = 4, kRowHideClasses = 4;
+// tile, a tile that is marked now ("Unmark tile") and that tile's "Customize tile"; after those,
+// two classes per table row (its label and its labelOn wording).
+constexpr int kRowFixed = 7, kRowTile = 4, kRowHideClasses = 4, kRowClasses = kRowFixed + rtx::menu::kMaxRows * 2;
 RowCall g_rowCall[kRowClasses] = { { g_rowVtbl, rtx::menu::kTypeNpc }, { g_rowVtbl, rtx::menu::kTypePlayer },
                                    { g_rowVtbl, rtx::menu::kTypeNpc | rtx::menu::kHideClickShow }, { g_rowVtbl, rtx::menu::kTypePlayer | rtx::menu::kHideClickShow },
                                    { g_rowVtbl, rtx::menu::kHideClickTile }, { g_rowVtbl, rtx::menu::kHideClickTile | rtx::menu::kHideClickShow },
@@ -1223,8 +1246,86 @@ RowClass g_rowClass[kRowClasses] = { { {}, &g_rowCall[0], kRowAction, rtx::menu:
                                      { {}, &g_rowCall[2], kRowAction, rtx::menu::kTypeGround, 0 }, { {}, &g_rowCall[3], kRowAction, rtx::menu::kTypeGround, 0 },
                                      { {}, &g_rowCall[4], kRowAction, rtx::menu::kTypeGround, 0 }, { {}, &g_rowCall[5], kRowAction, rtx::menu::kTypeGround, 0 },
                                      { {}, &g_rowCall[6], kRowAction, rtx::menu::kTypeGround, 0 } };
+bool g_tableClassesReady = false;
+void PrepareTableClasses() {
+    if (g_tableClassesReady) return;
+    for (int i = 0; i < rtx::menu::kMaxRows * 2; ++i) {
+        g_rowCall[kRowFixed + i] = { g_rowVtbl, kTableRowKind | i };
+        g_rowClass[kRowFixed + i] = { {}, &g_rowCall[kRowFixed + i], kRowAction, rtx::menu::kTypeGround, 0 };
+    }
+    g_tableClassesReady = true;
+}
 constexpr std::uint64_t kClassAction = 0x40;
 bool OwnRowClass(std::uint64_t tag) { return tag >= (std::uint64_t)&g_rowClass[0] && tag <= (std::uint64_t)&g_rowClass[kRowClasses - 1]; }
+
+// The target as a name: colour tags removed, then the "(level: 2)", "(skill: 99)" or "(tier: 3)"
+// suffix the menu adds to NPC and player names, then the surrounding spaces.
+void PlainName(const char* target, char* out, std::size_t cap) {
+    std::size_t n = 0;
+    for (const char* p = target; *p && n + 1 < cap; ++p) {
+        if (*p == '<') { while (*p && *p != '>') ++p; if (!*p) break; continue; }
+        out[n++] = *p;
+    }
+    out[n] = 0;
+    while (n && out[n - 1] == ' ') out[--n] = 0;
+    if (n && out[n - 1] == ')') {
+        std::size_t open = n;
+        while (open && out[open - 1] != '(') --open;
+        if (open && (std::strncmp(out + open, "level", 5) == 0 || std::strncmp(out + open, "skill", 5) == 0 || std::strncmp(out + open, "tier", 4) == 0)) {
+            n = open - 1;
+            while (n && out[n - 1] == ' ') --n;
+            out[n] = 0;
+        }
+    }
+}
+// Names compare as the entity hider keys them: case-insensitive over printable ASCII, every other
+// byte skipped, so the game's own spelling ("Sofía" in its code page) matches the launcher's list
+// whatever its encoding, and a no-break space or underscore counts as a space.
+bool SameName(const char* a, const char* b) {
+    auto next = [](const char*& p) -> int {
+        while (*p) {
+            unsigned char c = (unsigned char)*p++;
+            if (c == 0xA0 || c == '_') c = ' ';
+            if (c >= 0x20 && c <= 0x7E) return std::tolower(c);
+        }
+        return 0;
+    };
+    while (*a == ' ') ++a;
+    while (*b == ' ') ++b;
+    for (;;) {
+        const int x = next(a), y = next(b);
+        if (x != y) {
+            // trailing spaces on either side do not matter
+            const char* ra = a; const char* rb = b;
+            int tx = x, ty = y;
+            while (tx == ' ') tx = next(ra);
+            while (ty == ' ') ty = next(rb);
+            return tx == 0 && ty == 0;
+        }
+        if (!x) return true;
+    }
+}
+bool RowNamesTarget(const rtx::menu::Share* sh, const rtx::menu::Row& row, const char* plain) {
+    std::uint32_t first = row.nameFirst, count = row.nameCount;
+    if (first >= (std::uint32_t)rtx::menu::kMaxRowNames) return false;
+    if (count > (std::uint32_t)rtx::menu::kMaxRowNames - first) count = (std::uint32_t)rtx::menu::kMaxRowNames - first;
+    for (std::uint32_t i = 0; i < count; ++i) if (SameName(sh->names[first + i], plain)) return true;
+    return false;
+}
+std::uint64_t TextKey(const char* target, std::uint32_t a, std::uint32_t b, std::uint32_t c) {
+    std::uint64_t h = 1469598103934665603ull;
+    for (const char* p = target; *p; ++p) h = (h ^ (unsigned char)*p) * 1099511628211ull;
+    h = (h ^ a) * 1099511628211ull; h = (h ^ b) * 1099511628211ull; h = (h ^ c) * 1099511628211ull;
+    return h | 1;
+}
+Subject* FindSubject(std::uint64_t key) {
+    for (int i = 0; i < g_subjectCount; ++i) if (g_subjects[i].key == key) return &g_subjects[i];
+    if (g_subjectCount >= kMaxSubjects) return nullptr;
+    Subject& s = g_subjects[g_subjectCount++];
+    std::memset(&s, 0, sizeof(s));
+    s.key = key;
+    return &s;
+}
 constexpr std::int32_t kActionWalk = 23;        // the class of "Walk here"; its row's third and fourth ints are the tile
 
 typedef void(__fastcall* AddRow_t)(std::uint64_t mgr, const char* verb, const char* target, std::uint64_t cursor, std::uint64_t cls, std::uint64_t actorRef,
@@ -1247,15 +1348,127 @@ bool RowPresent(std::uint64_t mgr, std::uint64_t actor, int first, int last) {
     }
     return false;
 }
+void __fastcall RowClicked(RowCall* self, std::uint64_t rec) {
+    rtx::menu::Share* sh = g_share;
+    std::uint64_t obj = 0; std::uint32_t lo = 0, hi = 0;
+    if (!sh || !self || !Rd(rec + 8, &obj, 8) || !obj || !Rd(obj + kRowActorLo, &lo, 4) || !Rd(obj + kRowActorHi, &hi, 4)) return;
+    if (self->kind & kTableRowKind) {
+        // A table row carries what its click needs in itself: lo is its index in the table, hi the
+        // target's type, and the target text is the row's own (the entry starts with it). Nothing is
+        // looked up in the build list, which the game has rebuilt many times by the time of a click.
+        const int row = (int)lo;
+        if (row < 0 || row >= (int)sh->rowCount || row >= rtx::menu::kMaxRows) return;
+        char text[rtx::menu::kTargetLen] = { 0 };
+        bool heap = false;
+        if (ReadEastl(obj, text, sizeof(text), &heap) <= 0) text[0] = 0;
+        sh->rowClickKind = sh->rows[row].kind;
+        sh->rowClickOn = (self->kind & 1) ? 1u : 0u;
+        sh->rowClickType = (std::int32_t)hi;
+        sh->rowClickActor = 0;
+        for (int i = 0; i < rtx::menu::kRowInts; ++i) sh->rowClickInts[i] = 0;
+        std::memcpy(sh->rowClickTarget, text, sizeof(sh->rowClickTarget));
+        // The target's own options, from the menu's lines with the same target text: the list runs
+        // bottom to top, so it is walked from its end to read them in the order the menu showed.
+        std::uint32_t nv = 0;
+        std::uint64_t b = 0, e = 0;
+        const std::uint64_t mgr = g_mgr;
+        if (text[0] && mgr && Rd(mgr + kEntriesBegin, &b, 8) && Rd(mgr + kEntriesEnd, &e, 8) && b && e > b &&
+            (e - b) % kRecSize == 0 && (e - b) <= kRecSize * 700) {
+            for (std::uint64_t r = e; r > b && nv < (std::uint32_t)rtx::menu::kMaxClickVerbs;) {
+                r -= kRecSize;
+                std::uint64_t ent = 0, cb = 0, tag = 0;
+                if (!Rd(r + 8, &ent, 8) || !ent) continue;
+                if (Rd(ent + kDispTag, &tag, 8) && OwnRowClass(tag)) continue;
+                char other[rtx::menu::kTargetLen] = { 0 };
+                if (ReadEastl(ent, other, sizeof(other), &heap) <= 0 || std::strcmp(other, text) != 0) continue;
+                char verb[rtx::menu::kVerbLen] = { 0 };
+                if (!Rd(r, &cb, 8) || !cb || ReadEastl(cb + kObjVerb, verb, sizeof(verb), &heap) <= 0) continue;
+                std::memcpy(sh->rowClickVerbs[nv++], verb, sizeof(verb));
+            }
+        }
+        sh->rowClickVerbCount = nv;
+        MemoryBarrier();
+        sh->rowClickSeq = sh->rowClickSeq + 1;
+        return;
+    }
+    sh->hideClickKind = self->kind;
+    sh->hideClickActor = ((std::uint64_t)hi << 32) | lo;
+    MemoryBarrier();
+    sh->hideClickSeq = sh->hideClickSeq + 1;
+}
+
+// Rows of the table for the row the game just added: its subject gains a verb, and every row of
+// the table that fits the subject's type, has its verb minimum and its share of the per-target
+// allowance goes in with the subject's placement arguments.
+void AddTableRows(rtx::menu::Share* sh, std::uint64_t mgr, const char* target, std::int32_t entry, std::uint64_t actorRef,
+                  std::uint64_t a9, std::uint64_t a10, std::uint64_t a11, std::uint64_t a12, std::uint64_t a13,
+                  std::uint64_t a14, std::uint64_t a15, std::uint64_t a17) {
+    if (!sh->rowCount || (sh->rowSeq & 1) || entry < 0 || entry > 31) return;
+    auto records = [&]() -> std::uint64_t {
+        std::uint64_t b = 0, e = 0;
+        return (Rd(mgr + kEntriesBegin, &b, 8) && Rd(mgr + kEntriesEnd, &e, 8) && e >= b) ? (e - b) / kRecSize : 0;
+    };
+    const std::uint64_t now = records();
+    if (now <= g_lastRecords) { g_subjectCount = 0; ++sh->rowDiag[1]; }
+    g_lastRecords = now;
+    ++sh->rowDiag[2];
+    PrepareTableClasses();
+    std::uint64_t actor = 0;
+    if ((entry == rtx::menu::kTypeNpc || entry == rtx::menu::kTypePlayer) && actorRef) Rd(actorRef + 8, &actor, 8);
+    const std::uint32_t ints[rtx::menu::kRowInts] = { (std::uint32_t)a11, (std::uint32_t)a12, (std::uint32_t)a13 };
+    std::uint64_t key = 0;
+    if (actor) key = actor;
+    else if (entry == rtx::menu::kTypeGround) key = ((std::uint64_t)(std::uint32_t)a10 << 32) | (std::uint32_t)a9;
+    else key = TextKey(target ? target : "", ints[0], ints[1], ints[2]);
+    Subject* s = FindSubject(key);
+    if (!s) { ++sh->rowDiag[3]; return; }
+    if (!s->verbs) {
+        s->type = entry; s->actor = actor;
+        if (entry == rtx::menu::kTypeGround) s->actor = key;
+        for (int i = 0; i < rtx::menu::kRowInts; ++i) s->ints[i] = ints[i];
+        std::strncpy(s->target, target ? target : "", sizeof(s->target) - 1);
+    }
+    ++s->verbs;
+    std::uint32_t allowance = sh->rowsPerTarget;
+    if (allowance < 1) allowance = 1;
+    if (allowance > 3) allowance = 3;
+    // the Hide row goes under every NPC and player while it is on, so it holds one of the places
+    if (sh->hideRows && (entry == rtx::menu::kTypeNpc || entry == rtx::menu::kTypePlayer)) --allowance;
+    char plain[rtx::menu::kTargetLen];
+    PlainName(target ? target : "", plain, sizeof(plain));
+    static std::uint64_t s_none[2] = { 0, 0 };
+    std::uint32_t count = sh->rowCount;
+    if (count > (std::uint32_t)rtx::menu::kMaxRows) count = rtx::menu::kMaxRows;
+    for (std::uint32_t r = 0; r < count && s->ours < allowance; ++r) {
+        const rtx::menu::Row& row = sh->rows[r];
+        if (!(row.types & (1u << entry)) || (s->added & (1u << r)) || s->verbs < row.minVerbs || !row.label[0]) continue;
+        const bool on = row.labelOn[0] && RowNamesTarget(sh, row, plain);
+        const char* verb = on ? row.labelOn : row.label;
+        const int cls = kRowFixed + (int)r * 2 + (on ? 1 : 0);
+        if (g_addRowArgs == 14)
+            g_origAddRow(mgr, verb, target, ~0ull, (std::uint64_t)&g_rowClass[cls], (std::uint64_t)s_none,
+                         r, (std::uint32_t)entry, 0, 0, a11, a12, a13, 2, 0, 0, 0, 0);
+        else
+            g_origAddRow(mgr, verb, target, ~0ull, (std::uint64_t)&g_rowClass[cls], (std::uint64_t)s_none,
+                         r, (std::uint32_t)entry, 0, 0, a11, a12, a13, a14, a15, 0, a17, 2);
+        s->added |= 1u << r;
+        ++s->ours;
+        ++sh->rowDiag[0];
+    }
+    g_lastRecords = records();
+}
+
 void __fastcall Detour_AddRow(std::uint64_t mgr, const char* verb, const char* target, std::uint64_t cursor, std::uint64_t cls, std::uint64_t actorRef,
                               std::uint64_t a7, std::uint64_t a8, std::uint64_t a9, std::uint64_t a10, std::uint64_t a11, std::uint64_t a12,
                               std::uint64_t a13, std::uint64_t a14, std::uint64_t a15, std::uint64_t a16, std::uint64_t a17, std::uint64_t a18) {
     g_origAddRow(mgr, verb, target, cursor, cls, actorRef, a7, a8, a9, a10, a11, a12, a13, a14, a15, a16, a17, a18);
     rtx::menu::Share* sh = g_share;
-    if (!sh || (!sh->hideRows && !sh->markRows) || !mgr || !cls) return;
+    if (!sh || (!sh->hideRows && !sh->markRows && !sh->rowCount) || !mgr || !cls) return;
     static std::uint64_t s_none[2] = { 0, 0 };
     std::int32_t entry = -1, action = -1;
     if (!Rd(cls + kClassEntry, &entry, 4) || !Rd(cls + kClassAction, &action, 4)) return;
+    if (!(entry == rtx::menu::kTypeGround && action == kActionWalk))
+        AddTableRows(sh, mgr, target, entry, actorRef, a9, a10, a11, a12, a13, a14, a15, a17);
     if (entry == rtx::menu::kTypeGround && action == kActionWalk) {
         // "Walk here": a row for its tile, "Unmark tile" when the launcher lists the tile as marked
         const std::uint32_t x = (std::uint32_t)a9, y = (std::uint32_t)a10;

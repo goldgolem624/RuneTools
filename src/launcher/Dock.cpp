@@ -102,6 +102,7 @@ const char* const kCoreFiles[] = {
     "core/rtx-layout.js",     // layout persistence, openTab, tabEntryKicks
     "core/rtx-menubar.js",    // menu bar, wiki pane, fullscreen, tab search
     "core/rtx-pane.js",       // renderPane / renderHeader
+    "core/rtx-menurows.js",   // rows of our own in the game's right-click menu: registry, table push, click dispatch
     "core/rtx-gameevents.js", // captured packets -> game events under the official API's names (rtxGameEvents)
     "core/rtx-plugin-api.js", // plugin SDK method table, clamps, rate limiter, SDK shim
     "core/rtx-plugin-hud.js", // host-rendered plugin ability HUD strip

@@ -56,7 +56,7 @@ struct Config {
     std::uint32_t pid      = 0;      // target client (0 = none)
     int           radius   = 12;     // grid radius in tiles
     std::vector<std::string> highlight;
-    std::vector<int>         outline;    // NPC uids (sec+0x88) to box-outline
+    std::vector<rtx::reader::OutlineNpcReq> outline;   // NPC uids (sec+0x88) to box-outline, each with its colour
     std::vector<rtx::reader::OutlineLocReq> outlineLocs;   // objects to box-outline
 };
 
@@ -75,7 +75,7 @@ void SetHighlight(std::uint32_t pid, const std::vector<std::string>& names);
 
 // Player uids (sec+0x88) to nameplate in addition to np_players. Stored apart from Config.
 void SetNameplatePlayers(std::uint32_t pid, const std::vector<int>& uids);
-void SetOutline(std::uint32_t pid, const std::vector<int>& uids);
+void SetOutline(std::uint32_t pid, const std::vector<rtx::reader::OutlineNpcReq>& uids);
 void SetOutlineLocs(std::uint32_t pid, const std::vector<rtx::reader::OutlineLocReq>& locs);
 
 void Metronome(std::uint32_t pid, bool visual, bool audio, int interval, bool locked);

@@ -29,4 +29,21 @@ bool HideClick(std::uint32_t pid, std::uint32_t& seq, int& kind, std::uint64_t& 
 // False when the companion cannot add rows.
 bool SetMarkRows(std::uint32_t pid, bool on, const std::vector<std::uint32_t>& marked);
 
+// The row table (companion/MenuShare.h Row): one row per line as
+// "label<TAB>labelOn<TAB>types<TAB>minVerbs<TAB>kind<TAB>name|name|...", types a bit mask by
+// target type (1 << kType*). `perTarget` caps the rows of ours under one target (1..3).
+// False when the companion cannot add rows.
+bool SetRows(std::uint32_t pid, const std::string& rowsNewlineSeparated, std::uint32_t perTarget);
+
+struct RowClick {
+    std::uint32_t seq = 0, kind = 0, on = 0;
+    int           type = -1;
+    std::uint64_t actor = 0;
+    std::uint32_t ints[3] = { 0, 0, 0 };
+    std::string   target;
+    std::vector<std::string> verbs;   // the target's own options as the menu showed them, JSON-escaped
+};
+// The last click on a row of the table. False when there is no channel.
+bool LastRowClick(std::uint32_t pid, RowClick& out);
+
 }  // namespace rtx::launcher::menuswap

@@ -408,7 +408,7 @@ bool cursor_tile(std::uint32_t pid, int& outTx, int& outTy, int& outPlane) {
 
     rtx::reader::OverlayFrame f;
     std::vector<std::string> none;
-    std::vector<int> noOutline;
+    std::vector<rtx::reader::OutlineNpcReq> noOutline;
     std::vector<rtx::reader::GuideSite> noGuides;
     std::vector<rtx::reader::OutlineLocReq> noOutlineLocs;
     if (!rtx::reader::BuildOverlayFrame(pid, false, false, false, false, 0, false, false, none, noOutline, noOutlineLocs, noGuides, f) || !f.ok)

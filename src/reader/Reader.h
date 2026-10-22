@@ -237,13 +237,14 @@ struct OverlayFrame {
     float ui_scale = 0.0f;
 };
 
-struct OutlineLocReq { int id = 0, x = 0, y = 0, plane = 0; };
+struct OutlineLocReq { int id = 0, x = 0, y = 0, plane = 0; int rgb = 0; };   // rgb 0 = the default box colour
+struct OutlineNpcReq { int uid = 0; int rgb = 0; };
 
 bool BuildOverlayFrame(std::uint32_t pid, bool want_players, bool want_npcs,
                        bool want_objects, bool want_specials, int grid_radius, bool interactable,
                        bool want_true_tile,
                        const std::vector<std::string>& highlight_names,
-                       const std::vector<int>& outline_uids,
+                       const std::vector<OutlineNpcReq>& outline_uids,
                        const std::vector<OutlineLocReq>& outline_locs,
                        const std::vector<GuideSite>& guide_sites,
                        OverlayFrame& out);

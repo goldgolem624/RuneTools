@@ -21,6 +21,124 @@
   sceneInteractable = false;
   sceneNameplates = false;
   const sceneObjOutlines = new Set();   // 'id:x:y:plane' outlined this session
+  // Names highlighted in-world, from the game's right-click menu or this panel: name -> 0xRRGGBB for
+  // NPCs and for objects. Every NPC or object with the name gets a box in that colour on each refresh.
+  const hlNames = { npc: {}, loc: {} };
+  try {
+    const v = JSON.parse(prefGet('rtxHighlightNames', '{}'));
+    for (const k of ['npc', 'loc']) if (v && v[k] && typeof v[k] === 'object')
+      for (const n in v[k]) if (n && Number.isInteger(v[k][n])) hlNames[k][n] = v[k][n];
+  } catch (e) {}
+  const hlApplied = { npc: new Map(), loc: new Map() };   // uid or object key -> the colour asked for
+  const HL_PALETTE = [0xFFB400, 0x2EE6A8, 0xFF5A8C, 0x5AB4FF, 0xC88CFF, 0xF0F0F0];
+  function hlSave() {
+    try { prefSet('rtxHighlightNames', JSON.stringify(hlNames)); } catch (e) {}
+    if (typeof rtxMenuRows !== 'undefined') rtxMenuRows.refresh();
+  }
+  // Names are matched as the entity hider matches them (the key a menu click reports): lower case,
+  // printable ASCII only, so "Sofía" from the scene and "sofa" from a click are the same name.
+  function hlKey(name) { return String(name || '').replace(/[ _]/g, ' ').replace(/[^\x20-\x7e]/g, '').toLowerCase().trim(); }
+  function hlFind(kind, name) { const k = hlKey(name); if (!k) return ''; for (const n in hlNames[kind]) if (hlKey(n) === k) return n; return ''; }
+  // The scene's own spelling of a name, when something by that name is in view.
+  function hlSceneName(kind, name) {
+    const k = hlKey(name);
+    const list = sceneData ? (kind === 'npc' ? sceneData.npcs : sceneData.objects) : null;
+    for (const e of list || []) if (e && e.name && hlKey(e.name) === k) return e.name;
+    return String(name || '').trim();
+  }
+  function hlCount() { return Object.keys(hlNames.npc).length + Object.keys(hlNames.loc).length; }
+  function hlNextColour() {
+    const used = Object.values(hlNames.npc).concat(Object.values(hlNames.loc));
+    for (const c of HL_PALETTE) if (used.indexOf(c) < 0) return c;
+    return HL_PALETTE[used.length % HL_PALETTE.length];
+  }
+  function hlToggle(kind, name) {
+    name = hlSceneName(kind, name);
+    const have = hlFind(kind, name);
+    if (have) delete hlNames[kind][have]; else if (hlKey(name)) hlNames[kind][name] = hlNextColour();
+    hlSave(); reconcileHighlights();
+    fetchScene();   // a fresh scene puts the boxes on at once, wherever the Scene panel is; it redraws the panel if open
+    sceneSig = '';
+  }
+  // A name stored from a click (the lower-case key) takes the scene's spelling once that is in view.
+  function hlAdoptSpelling(kind, sceneName) {
+    const have = hlFind(kind, sceneName);
+    if (!have || have === sceneName || have !== have.toLowerCase()) return;
+    hlNames[kind][sceneName] = hlNames[kind][have];
+    delete hlNames[kind][have];
+    hlSave();
+  }
+  function hlSetColour(kind, name, rgb) {
+    if (hlNames[kind][name] === undefined) return;
+    hlNames[kind][name] = rgb & 0xFFFFFF;
+    hlSave(); reconcileHighlights();
+  }
+  // Boxes for every NPC and object carrying a highlighted name, in the name's colour; boxes no longer
+  // wanted come down, unless the row's own outline toggle still asks for them.
+  function reconcileHighlights() {
+    const b = bridge(), pid = myPid();
+    if (!b || !b.outlineNpc || !b.outlineObject || !pid || !sceneData) return;
+    const wantN = new Map();
+    for (const n of sceneData.npcs || []) {
+      if (!n.uid) continue;
+      const nm = hlFind('npc', n.name);
+      if (!nm) continue;
+      if (nm !== n.name) hlAdoptSpelling('npc', n.name);
+      wantN.set(n.uid, hlNames.npc[hlFind('npc', n.name)]);
+    }
+    for (const [uid, rgb] of wantN) if (hlApplied.npc.get(uid) !== rgb) { try { b.outlineNpc(pid, uid, true, rgb); } catch (e) {} hlApplied.npc.set(uid, rgb); }
+    for (const uid of [...hlApplied.npc.keys()]) if (!wantN.has(uid)) {
+      if (!outlineSet.has(uid)) { try { b.outlineNpc(pid, uid, false, 0); } catch (e) {} }
+      hlApplied.npc.delete(uid);
+    }
+    const wantO = new Map();
+    for (const o of sceneData.objects || []) {
+      const nm = hlFind('loc', o.name);
+      if (!nm) continue;
+      if (nm !== o.name) hlAdoptSpelling('loc', o.name);
+      wantO.set(o.id + ':' + o.x + ':' + o.y + ':' + (o.plane | 0), { o: o, rgb: hlNames.loc[hlFind('loc', o.name)] });
+    }
+    for (const [k, w] of wantO) if (hlApplied.loc.get(k) !== w.rgb) {
+      try { b.outlineObject(pid, w.o.id, w.o.x, w.o.y, w.o.plane | 0, true, w.rgb); } catch (e) {}
+      hlApplied.loc.set(k, w.rgb);
+    }
+    for (const k of [...hlApplied.loc.keys()]) if (!wantO.has(k)) {
+      if (!sceneObjOutlines.has(k)) { const p = k.split(':').map(Number); try { b.outlineObject(pid, p[0], p[1], p[2], p[3], false, 0); } catch (e) {} }
+      hlApplied.loc.delete(k);
+    }
+  }
+  function renderHlChips() {
+    const el = document.getElementById('sceneHlChips');
+    if (!el) return;
+    const sig = JSON.stringify(hlNames);
+    if (el.dataset.sig === sig) return;
+    el.dataset.sig = sig;
+    el.innerHTML = '';
+    el.style.display = hlCount() ? '' : 'none';
+    for (const kind of ['npc', 'loc']) for (const name of Object.keys(hlNames[kind]).sort()) {
+      const chip = document.createElement('span'); chip.className = 'pet-chip on';
+      chip.style.display = 'inline-flex'; chip.style.alignItems = 'center'; chip.style.gap = '6px';
+      const col = document.createElement('input'); col.type = 'color';
+      col.value = '#' + (hlNames[kind][name] | 0).toString(16).padStart(6, '0');
+      col.style.width = '18px'; col.style.height = '18px'; col.style.padding = '0'; col.style.border = '0'; col.style.background = 'none';
+      col.title = 'Colour of the boxes for ' + name;
+      col.addEventListener('input', () => hlSetColour(kind, name, parseInt(col.value.slice(1), 16)));
+      const txt = document.createElement('span'); txt.textContent = (kind === 'npc' ? 'NPC ' : 'Object ') + name;
+      const x = document.createElement('button'); x.type = 'button'; x.className = 'mk-btn'; x.textContent = '×';
+      x.title = 'Stop highlighting ' + name;
+      x.addEventListener('click', (e) => { e.stopPropagation(); hlToggle(kind, name); });
+      chip.appendChild(col); chip.appendChild(txt); chip.appendChild(x);
+      el.appendChild(chip);
+    }
+  }
+  if (typeof rtxMenuRows !== 'undefined') {
+    rtxMenuRows.register('hlNpc', { label: 'Highlight', labelOn: 'Unhighlight', types: ['npc'], minVerbs: 1,
+      title: 'Highlight NPC', note: 'Coloured box on every NPC with that name',
+      names: () => Object.keys(hlNames.npc), onClick: d => hlToggle('npc', d.plain || d.name) });
+    rtxMenuRows.register('hlLoc', { label: 'Highlight', labelOn: 'Unhighlight', types: ['loc'], minVerbs: 1,
+      title: 'Highlight object', note: 'Coloured box on every object with that name',
+      names: () => Object.keys(hlNames.loc), onClick: d => hlToggle('loc', d.plain) });
+  }
   let sceneSig      = '';
   let sceneScroll   = 0;
   let sceneGround   = [];     // dropped ground items (companion type-3 publish): [{id,x,y,plane}]
@@ -53,6 +171,7 @@
     } else { sceneGround = []; }
     sceneFetching = false;
     reconcileNameplates();   // keep pinned nameplates applied to the current uids (even when the tab is closed)
+    reconcileHighlights();
     paneRun('scene', renderScene);
   }
 
@@ -301,7 +420,7 @@
   const nameplateNames   = new Set();
   const nameplateSet     = new Set();
   nameplatesLoaded = false;
-  function nameplatesActive() { return nameplateNames.size > 0 || sceneMarkCount() > 0; }   // keeps scene data fresh in the background (pinned nameplates, outstanding item marks)
+  function nameplatesActive() { return nameplateNames.size > 0 || sceneMarkCount() > 0 || hlCount() > 0; }   // keeps scene data fresh in the background (pinned nameplates, outstanding item marks)
   function loadNameplateNames() {
     const b = bridge();
     if (!b || !b.nameplatesLoad || !myPid()) return;
@@ -390,6 +509,8 @@
       lcnt.title = 'Objects the client is tracking live, of the objects listed. Only these know whether the game is showing them right now.';
       srow.appendChild(srch); srow.appendChild(addB); srow.appendChild(lcnt); srow.appendChild(cnt);
       const chips = document.createElement('div'); chips.className = 'scene-chips'; chips.id = 'sceneChips';
+      const hlChips = document.createElement('div'); hlChips.className = 'scene-chips'; hlChips.id = 'sceneHlChips';
+      hlChips.title = 'Names highlighted in the game world, from the right-click menu';
       const rangeRow = document.createElement('div'); rangeRow.className = 'scene-range';
       const rlbl = document.createElement('span'); rlbl.className = 'lbl'; rlbl.textContent = 'Range';
       const rng = document.createElement('input');
@@ -439,9 +560,10 @@
       pills.appendChild(intc); pills.appendChild(npc); pills.appendChild(clr);
       const list = document.createElement('div'); list.id = 'sceneList'; list.className = 'scene-list';
       list.addEventListener('scroll', () => { sceneScroll = list.scrollTop; });
-      sw.appendChild(hdr); sw.appendChild(srow); sw.appendChild(chips); sw.appendChild(rangeRow); sw.appendChild(pills); sw.appendChild(list); c.appendChild(sw);
+      sw.appendChild(hdr); sw.appendChild(srow); sw.appendChild(chips); sw.appendChild(hlChips); sw.appendChild(rangeRow); sw.appendChild(pills); sw.appendChild(list); c.appendChild(sw);
       sceneSig = '';
     }
+    renderHlChips();
     ['players', 'npcs', 'objects', 'ground', 'specials'].forEach(k => {
       const b = $('sceneTog_' + k); if (b) b.classList.toggle('is-active', !!sceneShow[k]);
     });

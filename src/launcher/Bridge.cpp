@@ -874,6 +874,46 @@ JSValueRef MenuHideClick(JSContextRef ctx, JSObjectRef, JSObjectRef,
     return utf8_to_js(ctx, out);
 }
 
+// menuRowsSet(pid, rows, perTarget): the row table (MenuSwap.h SetRows). True when the game client can take rows.
+JSValueRef MenuRowsSet(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                       size_t argc, const JSValueRef argv[], JSValueRef*) {
+    if (argc < 3) return JSValueMakeBoolean(ctx, false);
+    auto pid = static_cast<std::uint32_t>(JSValueToNumber(ctx, argv[0], nullptr));
+    return JSValueMakeBoolean(ctx, rtx::launcher::menuswap::SetRows(pid, js_to_utf8(ctx, argv[1]), (std::uint32_t)js_int(ctx, argv[2])));
+}
+
+// menuRowClick(pid): {"seq":n,"kind":n,"on":bool,"type":n,"target":"..","name":"..","x":n,"y":n,"verbs":[..]} for
+// the last click on a row of the table: the target text as the row showed it, and the target's own options
+// in the menu's order. seq counts clicks since the client started.
+JSValueRef MenuRowClick(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                        size_t argc, const JSValueRef argv[], JSValueRef*) {
+    if (argc < 1) return utf8_to_js(ctx, "{}");
+    auto pid = static_cast<std::uint32_t>(JSValueToNumber(ctx, argv[0], nullptr));
+    static std::mutex mu;
+    static std::map<std::uint32_t, std::pair<std::uint32_t, std::string>> last;
+    rtx::launcher::menuswap::RowClick c;
+    if (!rtx::launcher::menuswap::LastRowClick(pid, c)) return utf8_to_js(ctx, "{}");
+    std::lock_guard<std::mutex> lk(mu);
+    auto it = last.find(pid);
+    if (it != last.end() && it->second.first == c.seq) return utf8_to_js(ctx, it->second.second);
+    std::string name; int actorKind = 0;
+    if (c.seq && c.actor && (c.type == rtx::menu::kTypeNpc || c.type == rtx::menu::kTypePlayer))
+        rtx::reader::RenderActorName(pid, c.actor, actorKind, name);
+    std::string esc;
+    for (char ch : name) if (ch != '"' && ch != '\\' && (unsigned char)ch >= 0x20) esc.push_back(ch);
+    std::uint32_t x = 0, y = 0;
+    if (c.type == rtx::menu::kTypeGround) { x = (std::uint32_t)c.actor; y = (std::uint32_t)(c.actor >> 32); }
+    std::string out = "{\"seq\":" + std::to_string(c.seq) + ",\"kind\":" + std::to_string(c.kind) +
+                      ",\"on\":" + (c.on ? "true" : "false") + ",\"type\":" + std::to_string(c.type) +
+                      ",\"target\":\"" + c.target + "\",\"name\":\"" + esc + "\",\"x\":" + std::to_string(x) +
+                      ",\"y\":" + std::to_string(y) + ",\"ints\":[" + std::to_string(c.ints[0]) + "," +
+                      std::to_string(c.ints[1]) + "," + std::to_string(c.ints[2]) + "],\"verbs\":[";
+    for (std::size_t i = 0; i < c.verbs.size(); ++i) out += (i ? ",\"" : "\"") + c.verbs[i] + "\"";
+    out += "]}";
+    last[pid] = { c.seq, out };
+    return utf8_to_js(ctx, out);
+}
+
 JSValueRef MenuSwapFn(JSContextRef ctx, JSObjectRef, JSObjectRef,
                       size_t argc, const JSValueRef argv[], JSValueRef*) {
     if (argc < 2) return JSValueMakeBoolean(ctx, false);
@@ -1647,6 +1687,7 @@ JSValueRef OutlineObject(JSContextRef ctx, JSObjectRef, JSObjectRef,
     rq.y     = js_int(ctx, argv[3]);
     rq.plane = js_int(ctx, argv[4]);
     bool on  = JSValueToBoolean(ctx, argv[5]);
+    rq.rgb   = argc >= 7 ? (js_int(ctx, argv[6]) & 0xFFFFFF) : 0;   // 0xRRGGBB, 0 = the default box colour
     static std::mutex s_mu;
     static std::map<std::uint32_t, std::vector<rtx::reader::OutlineLocReq>> s_locs;
     std::lock_guard<std::mutex> lk(s_mu);
@@ -1665,12 +1706,13 @@ JSValueRef OutlineNpc(JSContextRef ctx, JSObjectRef, JSObjectRef,
     auto pid = static_cast<std::uint32_t>(JSValueToNumber(ctx, argv[0], nullptr));
     int  uid = js_int(ctx, argv[1]);
     bool on  = JSValueToBoolean(ctx, argv[2]);
+    const int rgb = argc >= 4 ? (js_int(ctx, argv[3]) & 0xFFFFFF) : 0;   // 0xRRGGBB, 0 = the default box colour
     static std::mutex s_mu;
-    static std::map<std::uint32_t, std::vector<int>> s_uids;
+    static std::map<std::uint32_t, std::vector<rtx::reader::OutlineNpcReq>> s_uids;
     std::lock_guard<std::mutex> lk(s_mu);
     auto& v = s_uids[pid];
-    v.erase(std::remove(v.begin(), v.end(), uid), v.end());
-    if (on) v.push_back(uid);
+    v.erase(std::remove_if(v.begin(), v.end(), [&](const rtx::reader::OutlineNpcReq& r) { return r.uid == uid; }), v.end());
+    if (on) v.push_back({ uid, rgb });
     rtx::launcher::companion::EnsureLoaded(pid);
     rtx::overlay::SetOutline(pid, v);
     return JSValueMakeBoolean(ctx, true);
@@ -6678,6 +6720,8 @@ void AttachBridge(ultralight::View* view) {
     install_fn(ctx, ns, "menuHideRows",      MenuHideRows);
     install_fn(ctx, ns, "menuHideClick",     MenuHideClick);
     install_fn(ctx, ns, "menuMarkRows",      MenuMarkRows);
+    install_fn(ctx, ns, "menuRowsSet",       MenuRowsSet);
+    install_fn(ctx, ns, "menuRowClick",      MenuRowClick);
     install_fn(ctx, ns, "hostInfo",          HostInfo);
     install_fn(ctx, ns, "readerHealth",      ReaderHealth);
     install_fn(ctx, ns, "readerHealthStart", ReaderHealthStart);

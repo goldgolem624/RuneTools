@@ -8,7 +8,7 @@ namespace rtx::menu {
 
 inline constexpr wchar_t kSectionPrefix[] = L"Local\\RuneToolsXMenu_v1_";
 inline constexpr std::uint32_t kMagic   = 0x554E454D;   // 'MENU'
-inline constexpr std::uint32_t kVersion = 12;           // rows of our own: hideRows, markRows, hideClick*
+inline constexpr std::uint32_t kVersion = 13;           // rows of our own: hideRows, markRows, hideClick*, the row table
 
 inline constexpr std::uint32_t kPromoSrcNone       = 0;
 inline constexpr std::uint32_t kPromoSrcLearned    = 1;
@@ -59,6 +59,25 @@ inline constexpr std::int32_t kHideClickTile = 0x200;   // a tile row: hideClick
 inline constexpr std::int32_t kHideClickCustom = 0x400; // "Customize tile" on a marked tile
 inline constexpr int kMaxMarkTiles = 512;
 
+// The row table: rows the launcher wants under the game's own rows, by target type. A row reads
+// `label`, or `labelOn` when the target's plain name (colour tags and the "(level: N)" suffix
+// removed) is one of the row's names, so one row can say Highlight or Unhighlight. The companion
+// adds a row once the target has `minVerbs` rows of the game's own, and never more than
+// `rowsPerTarget` rows of ours under one target (the Hide row counts as one of them).
+inline constexpr int kMaxRows      = 8;
+inline constexpr int kMaxRowNames  = 96;
+inline constexpr int kRowNameLen   = 64;
+inline constexpr int kRowInts      = 3;
+inline constexpr int kMaxClickVerbs = 16;
+struct Row {
+    char          label[kVerbLen];
+    char          labelOn[kVerbLen];
+    std::uint32_t types;                // bit (1 << kType*) per target type the row applies to
+    std::uint32_t minVerbs;             // 1 = under every such target, 2 = only targets with a choice
+    std::uint32_t kind;                 // the launcher's id for the row, reported on a click
+    std::uint32_t nameFirst, nameCount; // the row's names in `names`
+};
+
 inline constexpr std::uint32_t kFlagHooked = 1u << 0;
 // Set when a reorder was withheld because the live records did not pass the structural check
 // (every row must decode a verb). Cleared on the next write that passes.
@@ -107,6 +126,33 @@ struct Share {
     volatile std::uint32_t markRows;        // launcher -> companion
     volatile std::uint32_t markCount;
     std::uint32_t          markTiles[kMaxMarkTiles];
+
+    // The row table, launcher-written under rowSeq (odd while being rewritten).
+    volatile std::uint32_t rowSeq;
+    std::uint32_t          rowCount;
+    std::uint32_t          rowsPerTarget;   // 1..3
+    Row                    rows[kMaxRows];
+    char                   names[kMaxRowNames][kRowNameLen];
+
+    // The last click on a row of the table: the row's kind, whether it read labelOn, the target's
+    // type, the actor (NPC and player rows) or the tile as (y << 32) | x (ground rows), the game
+    // row's three placement arguments, and the target text as the game wrote it.
+    volatile std::uint32_t rowClickSeq;
+    std::uint32_t          rowClickKind;
+    std::uint32_t          rowClickOn;
+    std::int32_t           rowClickType;
+    std::uint64_t          rowClickActor;
+    std::uint32_t          rowClickInts[kRowInts];
+    char                   rowClickTarget[kTargetLen];
+
+    // [0] table rows added, [1] menu builds seen, [2] game rows seen while a table was set,
+    // [3] subjects that did not fit
+    std::uint32_t          rowDiag[4];
+
+    // With a click on a table row: the game's own options for the same target, top to bottom as the
+    // menu showed them (rows of ours left out). Written before rowClickSeq is bumped.
+    std::uint32_t          rowClickVerbCount;
+    char                   rowClickVerbs[kMaxClickVerbs][kVerbLen];
 };
 
 template <std::size_t N>

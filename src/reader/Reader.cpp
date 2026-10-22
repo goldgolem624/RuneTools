@@ -9939,7 +9939,7 @@ bool BuildOverlayFrame(std::uint32_t pid, bool want_players, bool want_npcs,
                        bool want_objects, bool want_specials, int grid_radius, bool interactable,
                        bool want_true_tile,
                        const std::vector<std::string>& highlight_names,
-                       const std::vector<int>& outline_uids,
+                       const std::vector<OutlineNpcReq>& outline_uids,
                        const std::vector<OutlineLocReq>& outline_locs,
                        const std::vector<GuideSite>& guide_sites,
                        OverlayFrame& out) {
@@ -10128,10 +10128,12 @@ bool BuildOverlayFrame(std::uint32_t pid, bool want_players, bool want_npcs,
 
             if (type == 1 && have_box && !outline_uids.empty()) {
                 int uid = rpm<std::int32_t>(h, *sec + kUid).value_or(0);
-                if (std::find(outline_uids.begin(), outline_uids.end(), uid) != outline_uids.end()) {
+                const auto req = std::find_if(outline_uids.begin(), outline_uids.end(), [&](const OutlineNpcReq& r) { return r.uid == uid; });
+                if (req != outline_uids.end()) {
                     OverlayPoint op;
                     op.wx = cE; op.wy = cN; op.wz = cU; op.kind = 1;
                     op.uid = uid;                 // the launcher's anti-flicker hold keys on it
+                    op.rgb = req->rgb;
                     op.has_box3d = true;
                     op.bmin[0] = bmnE; op.bmin[1] = bmnN; op.bmin[2] = bmnU;
                     op.bmax[0] = bmxE; op.bmax[1] = bmxN; op.bmax[2] = bmxU;
@@ -10664,6 +10666,7 @@ bool BuildOverlayFrame(std::uint32_t pid, bool want_players, bool want_npcs,
             auto meta = resolve_loc(h, oroot, rq.id);
             OverlayPoint op;
             op.kind = 0;                      // empty label: neutral inspect style
+            op.rgb = rq.rgb;
             const RuntimeObj* best = nullptr; int bestD = 0x7fffffff;
             for (const auto& r : oruntime) {
                 if (r.config_id != rq.id || r.plane != rq.plane) continue;

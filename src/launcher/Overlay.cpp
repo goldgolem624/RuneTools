@@ -655,7 +655,7 @@ void DrawFrame(Gdiplus::Graphics& g, const Config& cfg,
                     v[c] = Gdiplus::PointF(sx, sy);
                 }
                 if (okAll) {
-                    Pen edge(Color(245, 70, 224, 192), 2.0f);
+                    Pen edge(hp.rgb ? Color(245, (hp.rgb >> 16) & 255, (hp.rgb >> 8) & 255, hp.rgb & 255) : Color(245, 70, 224, 192), 2.0f);
                     static const int E[12][2] = { {0,1},{1,3},{3,2},{2,0},{4,5},{5,7},{7,6},{6,4},{0,4},{1,5},{2,6},{3,7} };
                     for (auto& e : E) g.DrawLine(&edge, v[e[0]], v[e[1]]);
                     continue;
@@ -1573,13 +1573,15 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
             return true;
         };
         for (const auto& hp : hls) {
+            // an outline asked for in a colour of its own keeps it; the rest take the type colours
+            const int oR = hp.rgb ? (hp.rgb >> 16) & 255 : kTxtR, oG = hp.rgb ? (hp.rgb >> 8) & 255 : kTxtG, oB = hp.rgb ? hp.rgb & 255 : kTxtB;
             if (hp.has_box3d && hp.label.empty()) {
-                if (box3d(hp, 1.4f, kTxtR, kTxtG, kTxtB, 190)) continue;
+                if (box3d(hp, hp.rgb ? 2.0f : 1.4f, oR, oG, oB, hp.rgb ? 235 : 190)) continue;
             }
             float sx, sy;
             if (!WorldToScreen(f->matrix, vpX, vpY, vpW, vpH, hp.wx, hp.wy, hp.wz, sx, sy)) continue;
             if (sx < -60 || sx > W + 60 || sy < -60 || sy > H + 60) continue;
-            const bool boxed = hp.has_box3d && box3d(hp, 1.6f, kAccR, kAccG, kAccB, 235);
+            const bool boxed = hp.has_box3d && box3d(hp, 1.6f, hp.rgb ? oR : kAccR, hp.rgb ? oG : kAccG, hp.rgb ? oB : kAccB, 235);
             if (!boxed) {
                 float rad = 14.0f + 3.0f * pulse;
                 line(sx - rad, sy - rad, sx + rad, sy - rad, 2.4f, kAccR, kAccG, kAccB, 255);
@@ -3467,7 +3469,7 @@ void SetOutlineLocs(std::uint32_t pid, const std::vector<rtx::reader::OutlineLoc
     ensure_thread();
 }
 
-void SetOutline(std::uint32_t pid, const std::vector<int>& uids) {
+void SetOutline(std::uint32_t pid, const std::vector<rtx::reader::OutlineNpcReq>& uids) {
     if (!pid) return;
     {
         std::lock_guard<std::mutex> lk(g_mu);

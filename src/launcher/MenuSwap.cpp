@@ -3,9 +3,11 @@
 
 #include <Windows.h>
 
+#include <cstdlib>
 #include <cstring>
 #include <iterator>
 #include <string>
+#include <vector>
 
 namespace rtx::launcher::menuswap {
 namespace {
@@ -106,6 +108,86 @@ bool SetMarkRows(std::uint32_t pid, bool on, const std::vector<std::uint32_t>& m
     return v.sh->hideReady != 0;
 }
 
+bool SetRows(std::uint32_t pid, const std::string& rows, std::uint32_t perTarget) {
+    View v(pid);
+    if (!v) return false;
+    auto* sh = v.sh;
+    sh->rowSeq = sh->rowSeq + 1;            // odd: mid-update
+    MemoryBarrier();
+    std::uint32_t n = 0, names = 0;
+    std::size_t i = 0;
+    while (i <= rows.size() && n < (std::uint32_t)rtx::menu::kMaxRows) {
+        std::size_t e = rows.find('\n', i);
+        if (e == std::string::npos) e = rows.size();
+        if (e > i) {
+            const std::string line = rows.substr(i, e - i);
+            std::vector<std::string> f;
+            std::size_t p = 0;
+            while (f.size() < 6) {
+                const std::size_t t = line.find('\t', p);
+                f.push_back(line.substr(p, t == std::string::npos ? std::string::npos : t - p));
+                if (t == std::string::npos) break;
+                p = t + 1;
+            }
+            while (f.size() < 6) f.emplace_back();
+            if (!f[0].empty() && f[0].size() < (std::size_t)rtx::menu::kVerbLen && f[1].size() < (std::size_t)rtx::menu::kVerbLen) {
+                rtx::menu::Row& r = sh->rows[n];
+                std::memset(&r, 0, sizeof(r));
+                std::memcpy(r.label, f[0].data(), f[0].size());
+                std::memcpy(r.labelOn, f[1].data(), f[1].size());
+                r.types = (std::uint32_t)std::strtoul(f[2].c_str(), nullptr, 10);
+                r.minVerbs = (std::uint32_t)std::strtoul(f[3].c_str(), nullptr, 10);
+                r.kind = (std::uint32_t)std::strtoul(f[4].c_str(), nullptr, 10);
+                r.nameFirst = names;
+                std::size_t q = 0;
+                while (q <= f[5].size() && names < (std::uint32_t)rtx::menu::kMaxRowNames) {
+                    std::size_t bar = f[5].find('|', q);
+                    if (bar == std::string::npos) bar = f[5].size();
+                    if (bar > q && bar - q < (std::size_t)rtx::menu::kRowNameLen) {
+                        std::memset(sh->names[names], 0, rtx::menu::kRowNameLen);
+                        std::memcpy(sh->names[names], f[5].data() + q, bar - q);
+                        ++names;
+                    }
+                    if (bar == f[5].size()) break;
+                    q = bar + 1;
+                }
+                r.nameCount = names - r.nameFirst;
+                ++n;
+            }
+        }
+        if (e == rows.size()) break;
+        i = e + 1;
+    }
+    sh->rowCount = n;
+    sh->rowsPerTarget = perTarget < 1 ? 1 : perTarget > 3 ? 3 : perTarget;
+    MemoryBarrier();
+    sh->rowSeq = sh->rowSeq + 1;            // even: complete
+    return sh->hideReady != 0;
+}
+
+bool LastRowClick(std::uint32_t pid, RowClick& out) {
+    View v(pid);
+    if (!v) return false;
+    const auto* sh = v.sh;
+    for (int i = 0; i < 4; ++i) {
+        const std::uint32_t seq = sh->rowClickSeq;
+        out.seq = seq; out.kind = sh->rowClickKind; out.on = sh->rowClickOn; out.type = sh->rowClickType; out.actor = sh->rowClickActor;
+        for (int k = 0; k < 3; ++k) out.ints[k] = sh->rowClickInts[k];
+        out.target.clear();
+        append_escaped(out.target, sh->rowClickTarget, rtx::menu::kTargetLen);
+        out.verbs.clear();
+        std::uint32_t nv = sh->rowClickVerbCount;
+        if (nv > (std::uint32_t)rtx::menu::kMaxClickVerbs) nv = rtx::menu::kMaxClickVerbs;
+        for (std::uint32_t k = 0; k < nv; ++k) {
+            std::string v;
+            append_escaped(v, sh->rowClickVerbs[k], rtx::menu::kVerbLen);
+            if (!v.empty()) out.verbs.push_back(v);
+        }
+        if (sh->rowClickSeq == seq) return true;
+    }
+    return false;
+}
+
 bool HideClick(std::uint32_t pid, std::uint32_t& seq, int& kind, std::uint64_t& actor) {
     View v(pid);
     if (!v) return false;
@@ -161,6 +243,9 @@ std::string StatusJson(std::uint32_t pid) {
     out += ",\"enabled\":"; out += sh->enable ? "true" : "false";
     out += ",\"unverified\":"; out += (sh->flags & rtx::menu::kFlagUnverified) ? "true" : "false";
     out += ",\"pinCount\":" + std::to_string(sh->pinCount);
+    out += ",\"rows\":" + std::to_string(sh->rowCount) + ",\"rowsPer\":" + std::to_string(sh->rowsPerTarget) + ",\"rowsReady\":" + (sh->hideReady ? "true" : "false");
+    out += ",\"rowDiag\":[" + std::to_string(sh->rowDiag[0]) + "," + std::to_string(sh->rowDiag[1]) + "," +
+           std::to_string(sh->rowDiag[2]) + "," + std::to_string(sh->rowDiag[3]) + "]";
     out += ",\"seq\":"     + std::to_string(sh->seq);
     out += ",\"handle\":"  + std::to_string(sh->handle);
     out += ",\"reordered\":" + std::to_string(sh->diag[1]);
