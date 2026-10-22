@@ -19,8 +19,14 @@ bool SceneDepth(VkImage* img, VkFormat* fmt, VkImageLayout* layout);
 // The characters' depth: the game writes it in a depth-only pass of its own and never into the
 // scenery's depth image (characters are tested against the scenery, not added to it).
 bool ActorDepth(VkImage* img, VkFormat* fmt, VkImageLayout* layout);
+// Whether the characters' depth image was drawn into in the last frame. The image itself is kept
+// between frames (ActorDepth), so a frame without it does not tear the compositor's view down.
+bool ActorDepthActive();
 struct ImageInfo { VkImageUsageFlags usage; VkSampleCountFlagBits samples; VkImageCreateFlags flags; unsigned w, h, mips, layers; };
 bool LookupImage(VkImage img, ImageInfo* out);   // create info recorded by the vkCreateImage hook
+// The sample count of a depth image, from the render pass it was last a depth attachment of: what is
+// known of an image created before the image hook was in place. False when no pass described it.
+bool DepthAttachmentSamples(VkImage img, VkSampleCountFlagBits* out);
 void SetHideScene(bool on);
 // Drawing inside the game's frame. Between the pass that finishes the scene and the pass that
 // starts the interface, `recorder` is handed the game's command buffer and a render pass over the
@@ -28,17 +34,17 @@ void SetHideScene(bool on);
 // bound in that command buffer is put back afterwards.
 void SetInFrameTrial(bool on);
 void SetSceneRecorder(bool (*recorder)(VkCommandBuffer cmd, VkRenderPass rp, VkFramebuffer fb, std::uint32_t w, std::uint32_t h, unsigned look));
-// The other place: inside the game's interface pass itself, after the draws that copy the scene in
-// and before its first interface batch. `borrow` runs before the game begins that pass and `giveBack`
-// after it ends, since no image can change layout in between.
+// The other place: where the game's interface starts, after the draws that copy the scene in and
+// before its first interface batch (or, when the game draws its interface into a target of its own,
+// over the scene image before anything else begins). `borrow` runs before the game begins that pass
+// and `giveBack` after it ends, since no image can change layout in between. `sceneBegins` runs when
+// the game begins a frame's scene pass: the camera that frame is drawn with is taken there.
 struct PassRecorder {
     bool (*borrow)(VkCommandBuffer cmd, VkImage passDepth);
     void (*giveBack)(VkCommandBuffer cmd);
     bool (*record)(VkCommandBuffer cmd, VkRenderPass gameRp, std::uint32_t w, std::uint32_t h, bool borrowed, unsigned look);
     void (*trial)(int where, unsigned look);
-    bool (*wantsScene)();
-    bool (*recordScene)(VkCommandBuffer cmd, VkRenderPass gameRp, std::uint32_t w, std::uint32_t h, VkSampleCountFlagBits samples, unsigned look);
-    void (*sceneColour)(VkImage img, VkFormat fmt, VkImageLayout layout, VkSampleCountFlagBits samples);
+    void (*sceneBegins)();
 };
 void SetPassRecorder(const PassRecorder& r);
 void SetTimingEnabled(bool on);

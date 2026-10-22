@@ -243,6 +243,7 @@ void VKAPI_CALL HookDestroySwapchain(VkDevice dev, VkSwapchainKHR sc, const VkAl
 }
 
 VkResult VKAPI_CALL HookQueuePresent(VkQueue queue, const VkPresentInfoKHR* info);
+bool DepthImageInfo(VkImage img, const char* what, rtx::vkprobe::ImageInfo* out);   // below
 void VKAPI_CALL HookDestroyDevice(VkDevice dev, const VkAllocationCallbacks* a);
 
 bool AttachDeviceHooks() {
@@ -327,12 +328,13 @@ int PresentInner(VkQueue queue, const VkPresentInfoKHR* info, VkPresentInfoKHR* 
         rtx::vkprobe::SetTargetExtent(w, h);
         VkImage dimg = VK_NULL_HANDLE; VkFormat dfmt = VK_FORMAT_UNDEFINED; VkImageLayout dlay = VK_IMAGE_LAYOUT_UNDEFINED;
         rtx::vkprobe::ImageInfo ii{};
-        if (rtx::vkprobe::SceneDepth(&dimg, &dfmt, &dlay) && rtx::vkprobe::LookupImage(dimg, &ii))
+        if (rtx::vkprobe::SceneDepth(&dimg, &dfmt, &dlay) && DepthImageInfo(dimg, "scene", &ii))
             rtx::vkcomposite::SetSceneDepth(dimg, dfmt, dlay, ii.usage, ii.samples, ii.flags);
         else rtx::vkcomposite::SetSceneDepth(VK_NULL_HANDLE, VK_FORMAT_UNDEFINED, VK_IMAGE_LAYOUT_UNDEFINED, 0, VK_SAMPLE_COUNT_1_BIT, 0);
-        if (rtx::vkprobe::ActorDepth(&dimg, &dfmt, &dlay) && rtx::vkprobe::LookupImage(dimg, &ii))
+        if (rtx::vkprobe::ActorDepth(&dimg, &dfmt, &dlay) && DepthImageInfo(dimg, "character", &ii))
             rtx::vkcomposite::SetActorDepth(dimg, dfmt, dlay, ii.usage, ii.samples);
         else rtx::vkcomposite::SetActorDepth(VK_NULL_HANDLE, VK_FORMAT_UNDEFINED, VK_IMAGE_LAYOUT_UNDEFINED, 0, VK_SAMPLE_COUNT_1_BIT);
+        rtx::vkcomposite::SetActorActive(rtx::vkprobe::ActorDepthActive());
         rtx::present::RenderOverlay(rtx::present::VkBackend(), g_hwnd, (int)w, (int)h);
         VkSemaphore s = rtx::vkcomposite::Submit(queue, wc, waits);
         if (s) { chain[n++] = s; waits = &chain[n - 1]; wc = 1; }
@@ -340,6 +342,28 @@ int PresentInner(VkQueue queue, const VkPresentInfoKHR* info, VkPresentInfoKHR* 
     if (n) { local->waitSemaphoreCount = wc; local->pWaitSemaphores = waits; }
     g_frames.fetch_add(1, std::memory_order_relaxed);
     return n;
+}
+
+// The image table's record of a depth image, or for one the game made before the image hook was in
+// place, what its render pass says: the sample count, with the usage the game gives every depth image
+// it makes (sampled, transfer both ways, depth attachment). Without this a scene depth made early has
+// no record, the compositor gets no depth, and the in-frame markers draw over players and scenery.
+bool DepthImageInfo(VkImage img, const char* what, rtx::vkprobe::ImageInfo* out) {
+    if (rtx::vkprobe::LookupImage(img, out)) return true;
+    VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT;
+    if (!rtx::vkprobe::DepthAttachmentSamples(img, &samples)) return false;
+    *out = {};
+    out->usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+                 VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+    out->samples = samples;
+    static VkImage s_said[2] = {};
+    const int k = what[0] == 's' ? 0 : 1;
+    if (s_said[k] != img) {
+        s_said[k] = img;
+        Log("%s depth image %p is not in the image table (made before the hooks): taken from its render pass, samples %d, usage 0x27",
+            what, (void*)img, (int)samples);
+    }
+    return true;
 }
 
 VkResult VKAPI_CALL HookQueuePresent(VkQueue queue, const VkPresentInfoKHR* info) {
@@ -491,7 +515,7 @@ bool Arm(VkDevice dev) {
     rtx::vkcomposite::SetCmdHook(rtx::vkprobe::OnOverlayCmd);
     rtx::vkprobe::SetSceneRecorder(rtx::vkcomposite::RecordScene);
     rtx::vkprobe::SetPassRecorder({ rtx::vkcomposite::SceneDepthBorrow, rtx::vkcomposite::SceneDepthReturn, rtx::vkcomposite::RecordInPass, rtx::vkcomposite::SetTrial,
-                                    rtx::vkcomposite::WantsScenePass, rtx::vkcomposite::RecordInScenePass, rtx::vkcomposite::SetSceneColour });
+                                    rtx::vkcomposite::SceneBegins });
     if (rtx::vkprobe::Attach(dev, g_realGDPA, pdp.limits.timestampPeriod, Log, OnImageDestroyedCb))
         rtx::vkcomposite::SetAlwaysRecord(true);
     return true;

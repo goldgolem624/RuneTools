@@ -33,6 +33,9 @@ std::atomic<bool>     g_timing{ true };
 std::atomic<bool>     g_probeNext{ false };
 std::atomic<unsigned> g_frame{ 0 };
 std::atomic<unsigned> g_worldProbeAt{ 0 };   // frame of the one probe taken with the game world on screen; 0 = not planned yet
+// Where this frame's in-frame work went: the pass its camera was taken at, and the pass and draw the
+// markers went in ahead of; -1 = not this frame.
+std::atomic<int> g_diagScenePass{ -1 }, g_diagIfacePass{ -1 }, g_diagIfaceDraw{ -1 };
 std::atomic<unsigned> g_dispatchOutside{ 0 };
 std::atomic<unsigned> g_targetW{ 0 }, g_targetH{ 0 };
 
@@ -70,6 +73,7 @@ PFN_vkCmdBindIndexBuffer         rBindIndexBuffer = nullptr;
 PFN_vkCmdSetViewport             rSetViewport = nullptr;
 PFN_vkCmdSetScissor              rSetScissor = nullptr;
 PFN_vkBeginCommandBuffer         rBeginCommandBuffer = nullptr;
+PFN_vkEndCommandBuffer           rEndCommandBuffer = nullptr;
 bool (*g_sceneRecorder)(VkCommandBuffer, VkRenderPass, VkFramebuffer, std::uint32_t, std::uint32_t, unsigned) = nullptr;
 PassRecorder g_passRecorder{};
 PFN_vkCmdPushConstants           rPushConstants = nullptr;
@@ -77,7 +81,7 @@ PFN_vkCmdPushConstants           rPushConstants = nullptr;
 // `look` is handed to the recorder.
 std::atomic<int>      g_where{ 1 };
 std::atomic<unsigned> g_look{ 0 };
-std::atomic<unsigned> g_statArmed{ 0 }, g_statDrew{ 0 }, g_statScene{ 0 };
+std::atomic<unsigned> g_statArmed{ 0 }, g_statDrew{ 0 }, g_statScene{ 0 }, g_statInjected{ 0 };
 struct DrawRec { unsigned verts; VkShaderModule frag; std::uint8_t depth; };
 std::mutex g_recMu; std::vector<DrawRec> g_rec; std::string g_recDesc;   // the scene depth pass of the last probe frame, draw by draw   // interface passes found, and those our markers went into
 PFN_vkDestroyFramebuffer         fDestroyFramebuffer = nullptr;
@@ -87,7 +91,11 @@ PFN_vkCmdWriteTimestamp          fCmdWriteTimestamp = nullptr;
 PFN_vkResetQueryPool             fResetQueryPool = nullptr;
 
 struct ViewInfo { VkImage image; VkFormat fmt; VkImageAspectFlags aspect; };
-struct RpInfo   { std::vector<VkFormat> fmts; std::vector<VkAttachmentLoadOp> loads; std::vector<VkImageLayout> finals; };
+struct RpInfo   { std::vector<VkFormat> fmts; std::vector<VkAttachmentLoadOp> loads; std::vector<VkImageLayout> finals;
+                  std::vector<VkSampleCountFlagBits> samples; };   // samples empty: a pass made before the hooks
+// The sample count of every depth image seen as a pass's depth attachment, from that pass's
+// description: what is known of an image the image hook never saw created.
+std::unordered_map<VkImage, VkSampleCountFlagBits> g_depthAttachSamples;
 struct FbInfo   { VkRenderPass rp; std::uint32_t w, h; std::vector<VkImageView> views; };
 
 std::mutex g_mapMu;
@@ -112,7 +120,12 @@ struct Pass {
     VkImage depthImg; VkFormat depthFmt; VkImageLayout depthFinal;
     std::uint32_t w, h;
     int query;      // pair index in the slot's pool, -1 = none
+    // every frame: the colour image, the sizes of the first draws, and what the in-frame work did here
+    VkImage colourImg;
+    unsigned firstAll[6], firstAllCount;
+    unsigned marks; int injectAt;   // marks: kMarkCamera, kMarkArmed, kMarkCopy, kMarkInjected, kMarkOver
 };
+enum : unsigned { kMarkCamera = 1, kMarkArmed = 2, kMarkCopy = 4, kMarkInjected = 8, kMarkOver = 16 };
 constexpr int kSlots = 3;
 constexpr unsigned kMaxPairs = 256;
 std::mutex        g_passMu;
@@ -130,6 +143,7 @@ VkImageLayout g_sceneLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 VkImage       g_actorImg = VK_NULL_HANDLE;
 VkFormat      g_actorFmt = VK_FORMAT_UNDEFINED;
 VkImageLayout g_actorLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+bool          g_actorActive = false;   // the characters' pass was found in the last frame (the image stays between frames)
 
 struct ResStat { std::uint32_t key[4]; unsigned count; };
 std::vector<ResStat> g_images, g_buffers;
@@ -147,6 +161,9 @@ struct ThreadState {
     std::uint8_t depth = 0;             // depth state of the bound pipeline, while a probe frame is near
     unsigned depthTest = 0, depthWrite = 0, depthOff = 0, depthOps = 0;
     unsigned first[8] = {}, firstCount = 0;
+    unsigned firstAll[6] = {}, firstAllCount = 0;   // every frame
+    unsigned passMarks = 0; int injectAt = -1;      // the pass about to begin or open now, see Pass::marks
+    int lastPass = -1;                              // index of the pass that ended last on this thread
     VkShaderModule frag = VK_NULL_HANDLE;   // of the bound pipeline, probe frames
     // probe frames, the pass that writes the scene depth: every draw's size and material
     DrawRec recs[160]; unsigned recCount = 0;
@@ -155,8 +172,17 @@ struct ThreadState {
     VkFormat curColour = VK_FORMAT_UNDEFINED; std::uint32_t curColours = 0, curW = 0, curH = 0; bool curDepth = false;
     // the interface pass while it is open and nothing of ours is in it yet; the scene depth while it is lent out
     bool inject = false, borrowed = false; VkCommandBuffer lentIn = VK_NULL_HANDLE;
-    // the scene colour pass while it is open and nothing of ours is in it yet
-    bool injectScene = false; VkSampleCountFlagBits sceneSamples = VK_SAMPLE_COUNT_1_BIT; unsigned sceneFrame = ~0u;
+    // The colour image of the pass open now, and the image the frame's finished scene was copied into
+    // (a full-screen quad in an interface-shaped pass): the markers go only into that image.
+    VkImage curColourImg = VK_NULL_HANDLE, copyImg = VK_NULL_HANDLE, armedImg = VK_NULL_HANDLE; unsigned copyFrame = ~0u;
+    // the frame whose scene pass has begun on this thread (the frame's camera is taken then)
+    unsigned sceneFrame = ~0u;
+    // The interface-shaped pass open now (armed), and one of this frame that ended without the
+    // interface starting in it (compOpen): the game then draws its interface somewhere else, a target
+    // of its own at another size, and the markers go over that pass's image once anything else begins.
+    bool armed = false, compOpen = false; VkCommandBuffer compCmd = VK_NULL_HANDLE; unsigned compFrame = ~0u;
+    VkFramebuffer compFb = VK_NULL_HANDLE; VkRenderPass compRp = VK_NULL_HANDLE;
+    std::uint32_t compW = 0, compH = 0; VkImage compDepth = VK_NULL_HANDLE; int compPass = -1;
     // The frame the world was last drawn in, and the frame the interface pass was last taken in.
     // Together they place the interface pass in the frame without relying on which pass ran before it.
     unsigned sceneSeenFrame = ~0u, ifaceFrame = ~0u;
@@ -275,6 +301,8 @@ int EndPass() {
             p.draws += t.draws; p.indirect += t.indirect; p.dispatch += t.dispatch; p.skipped += t.skipped;
             p.depthTest += t.depthTest; p.depthWrite += t.depthWrite; p.depthOff += t.depthOff; p.depthOps |= t.depthOps;
             for (unsigned i = 0; i < t.firstCount && p.firstCount < 8; ++i) p.first[p.firstCount++] = t.first[i];
+            p.colourImg = t.curColourImg; p.marks |= t.passMarks; p.injectAt = t.injectAt;
+            for (unsigned i = 0; i < t.firstAllCount && p.firstAllCount < 6; ++i) p.firstAll[p.firstAllCount++] = t.firstAll[i];
             // the draw-by-draw record, kept for the one pass that writes the scene depth
             if (t.recCount && t.depthWrite >= 20 && t.curDepth) {
                 std::lock_guard<std::mutex> lk2(g_recMu);
@@ -286,8 +314,10 @@ int EndPass() {
     t.prevFb = t.curFb; t.prevRp = t.curRp; t.prevColour = t.curColour; t.prevColours = t.curColours;
     t.prevW = t.curW; t.prevH = t.curH; t.prevDepth = t.curDepth; t.prevDraws = t.draws + t.indirect;
     t.curFb = VK_NULL_HANDLE; t.curRp = VK_NULL_HANDLE;
+    t.lastPass = t.pass;
     t.inPass = false; t.pass = -1; t.draws = t.indirect = t.dispatch = t.skipped = 0;
     t.depthTest = t.depthWrite = t.depthOff = t.depthOps = 0; t.firstCount = 0; t.recCount = 0;
+    t.firstAllCount = 0; t.passMarks = 0; t.injectAt = -1; t.curColourImg = VK_NULL_HANDLE;
     return query;
 }
 void CloseQuery(VkCommandBuffer cmd, int slot, int query) {
@@ -328,6 +358,7 @@ void FromRenderPass(const VkRenderPassBeginInfo* info, VkFormat* colors, VkAttac
                 auto v = g_views.find(fb->second.views[i]);
                 if (v != g_views.end()) depthImg = v->second.image;
             }
+            if (depthImg && i < rp->second.samples.size()) g_depthAttachSamples[depthImg] = rp->second.samples[i];
         } else if (nc < 8) { colors[nc] = f; loads[nc] = rp->second.loads[i]; ++nc; }
     }
     if (fb != g_fbs.end() && w == 0) { w = fb->second.w; h = fb->second.h; }
@@ -416,6 +447,7 @@ void VKAPI_CALL HookSetScissor(VkCommandBuffer cmd, std::uint32_t first, std::ui
 }
 VkResult VKAPI_CALL HookBeginCommandBuffer(VkCommandBuffer cmd, const VkCommandBufferBeginInfo* info) {
     if (tb.cmd == cmd && !tb.ours) tb = Bound{};   // recorded afresh: nothing is bound in it
+    if (t.compCmd == cmd) t.compOpen = false;
     return rBeginCommandBuffer(cmd, info);
 }
 
@@ -429,16 +461,12 @@ bool CallBorrow(VkCommandBuffer cmd, VkImage passDepth) {
 void CallGiveBack(VkCommandBuffer cmd) {
     __try { g_passRecorder.giveBack(cmd); } __except (EXCEPTION_EXECUTE_HANDLER) {}
 }
-bool CallSceneRecord(VkCommandBuffer cmd, VkRenderPass rp, std::uint32_t w, std::uint32_t h, VkSampleCountFlagBits samples) {
-    __try { return g_passRecorder.recordScene(cmd, rp, w, h, samples, g_look.load(std::memory_order_relaxed)); } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
-}
-bool CallWantsScene() {
-    __try { return g_passRecorder.wantsScene(); } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+bool CallSceneBegins() {
+    __try { g_passRecorder.sceneBegins(); return true; } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
 }
 // The scene colour pass: client size, one 16 bit colour attachment, on the depth image the scene
-// depth was taken from, the first such pass of the frame. Our markers go in ahead of its first
-// draw with the GPU's depth test against that depth, and everything the game draws after them
-// in the pass paints over them where it is in front, as it does over the game's own markers.
+// depth was taken from, the first such pass of the frame. Nothing of ours goes into it: when it
+// begins, the camera the game draws this frame's world with is taken for the frame's markers.
 bool IsScenePass(const VkFormat* colours, std::uint32_t nc, VkImage depthImg, std::uint32_t w, std::uint32_t h) {
     const unsigned tw = g_targetW.load(), th = g_targetH.load();
     if (nc != 1 || colours[0] != VK_FORMAT_R16G16B16A16_SFLOAT || !depthImg || !tw || w != tw || h != th) return false;
@@ -463,67 +491,70 @@ bool OnSceneDepth(VkImage depthImg, std::uint32_t w, std::uint32_t h) {
 // scene image. That pass is part of the game's post-processing, and at low detail settings it runs
 // at a fraction of the client size or not at all, so the interface pass was never found and the
 // whole feature quietly fell back to drawing over the game instead of inside it.
-bool InterfacePassBegins(const VkFormat* colours, const VkAttachmentLoadOp* loads, std::uint32_t nc,
-                         VkFormat depth, VkImage depthImg, std::uint32_t w, std::uint32_t h) {
+VkImage ColourImageOf(VkFramebuffer fbh, VkRenderPass rph) {
+    std::lock_guard<std::mutex> lk(g_mapMu);
+    auto fb = g_fbs.find(fbh); auto rp = g_rps.find(rph);
+    if (fb == g_fbs.end() || rp == g_rps.end()) return VK_NULL_HANDLE;
+    for (size_t i = 0; i < fb->second.views.size() && i < rp->second.fmts.size(); ++i) {
+        if (IsDepth(rp->second.fmts[i])) continue;
+        auto v = g_views.find(fb->second.views[i]);
+        return v != g_views.end() ? v->second.image : VK_NULL_HANDLE;
+    }
+    return VK_NULL_HANDLE;
+}
+bool InterfaceShaped(const VkFormat* colours, const VkAttachmentLoadOp* loads, std::uint32_t nc,
+                     VkFormat depth, VkImage depthImg, std::uint32_t w, std::uint32_t h) {
     if (nc != 1 || colours[0] != VK_FORMAT_R8G8B8A8_UNORM || loads[0] != VK_ATTACHMENT_LOAD_OP_LOAD) return false;
     if (depth == VK_FORMAT_UNDEFINED || !depthImg) return false;
     const unsigned tw = g_targetW.load(), th = g_targetH.load();
     if (!tw || w != tw || h != th) return false;
-    const unsigned f = g_frame.load(std::memory_order_relaxed);
-    if (t.sceneSeenFrame != f || t.ifaceFrame == f) return false;
     std::lock_guard<std::mutex> lk(g_passMu);
     return depthImg != g_sceneImg;
 }
+bool InterfacePassBegins(const VkFormat* colours, const VkAttachmentLoadOp* loads, std::uint32_t nc,
+                         VkFormat depth, VkImage depthImg, std::uint32_t w, std::uint32_t h) {
+    const unsigned f = g_frame.load(std::memory_order_relaxed);
+    if (t.sceneSeenFrame != f || t.ifaceFrame == f) return false;
+    return InterfaceShaped(colours, loads, nc, depth, depthImg, w, h);
+}
 
-void ArmScenePass(VkCommandBuffer cmd, VkImage depthImg, VkFramebuffer fbh, VkRenderPass rph) {
-    if (!g_passRecorder.recordScene || !g_passRecorder.wantsScene) return;
+void ScenePassBegins() {
+    if (!g_passRecorder.sceneBegins) return;
     const unsigned f = g_frame.load(std::memory_order_relaxed);
     if (t.sceneFrame == f) return;                       // one scene pass per frame; a later one is effects
-    if (!CallWantsScene()) return;
-    ImageInfo ii{};
-    if (!rtx::vkprobe::LookupImage(depthImg, &ii)) return;
-    t.sceneFrame = f; t.sceneSamples = ii.samples; t.injectScene = true; t.lentIn = cmd;
-    // the pass's colour target, for the marks to be read back at the interface pass
-    if (g_passRecorder.sceneColour) {
-        VkImage col = VK_NULL_HANDLE; VkFormat fmt = VK_FORMAT_UNDEFINED; VkImageLayout lay = VK_IMAGE_LAYOUT_UNDEFINED; VkSampleCountFlagBits smp = ii.samples;
-        {
-            std::lock_guard<std::mutex> lk(g_mapMu);
-            auto fb = g_fbs.find(fbh); auto rp = g_rps.find(rph);
-            if (fb != g_fbs.end() && rp != g_rps.end())
-                for (size_t i = 0; i < fb->second.views.size() && i < rp->second.fmts.size(); ++i) {
-                    if (IsDepth(rp->second.fmts[i])) continue;
-                    auto v = g_views.find(fb->second.views[i]);
-                    if (v != g_views.end()) { col = v->second.image; fmt = v->second.fmt; lay = rp->second.finals[i]; }
-                    break;
-                }
-        }
-        ImageInfo ci{};
-        if (col && rtx::vkprobe::LookupImage(col, &ci)) smp = ci.samples;
-        if (col) g_passRecorder.sceneColour(col, fmt, lay, smp);
-    }
-}
-void InjectInScenePass(VkCommandBuffer cmd) {
-    t.injectScene = false;
-    if (cmd != t.lentIn) return;
-    tb.ours = true;
-    const bool drew = CallSceneRecord(cmd, t.curRp, t.curW, t.curH, t.sceneSamples);
-    tb.ours = false;
-    if (drew) { RestoreGameState(cmd); g_statScene.fetch_add(1, std::memory_order_relaxed); }
+    t.sceneFrame = f;
+    t.passMarks |= kMarkCamera;
+    g_diagScenePass.store(t.pass, std::memory_order_relaxed);
+    if (CallSceneBegins()) g_statScene.fetch_add(1, std::memory_order_relaxed);
 }
 bool CallPassRecord(VkCommandBuffer cmd, VkRenderPass rp, std::uint32_t w, std::uint32_t h, bool borrowed) {
     __try { return g_passRecorder.record(cmd, rp, w, h, borrowed, g_look.load(std::memory_order_relaxed)); } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
 }
 
-// The interface pass is about to begin: lend the scene depth out for its length.
-void ArmInterfacePass(VkCommandBuffer cmd, VkImage passDepth) {
+// A pass shaped like the interface pass is about to begin: lend the scene depth out for its length.
+// The markers belong in the image the game has just copied the finished scene into (with a
+// full-screen quad), right where its interface starts there. Passes of the same shape that never
+// receive that copy are the game's own interface layers, drawn apart and laid over the frame later
+// (a tooltip that opens with new text is one); markers put into one of those vanished from that
+// frame. So the markers go in at one of two places, both in the scene-copy image:
+// - the first interface batch after the copy (InjectInPass). While something is hovered the game
+//   splits the start of its interface in two, a pass holding only full-screen quads and then one with
+//   the outline's composite quad and the batches, so a pass ending without a batch leaves the frame
+//   open for the next pass of this shape;
+// - anything else beginning after a pass that took the copy but no batch (DrawOverComposite): the
+//   game draws its interface into a target of its own at another size and lays it over this image
+//   later, so the markers go over this pass's image right then.
+void ArmInterfacePass(VkCommandBuffer cmd, VkImage passDepth, VkFramebuffer fb, VkRenderPass rp, std::uint32_t w, std::uint32_t h) {
     if (!g_passRecorder.record || !g_passRecorder.borrow || !g_passRecorder.giveBack) return;
-    t.ifaceFrame = g_frame.load(std::memory_order_relaxed);   // one interface pass a frame
     tb.ours = true;
     t.borrowed = CallBorrow(cmd, passDepth);
     tb.ours = false;
     t.lentIn = cmd;
-    t.inject = true;
+    t.inject = true; t.armed = true; t.armedImg = t.curColourImg;
+    t.passMarks |= kMarkArmed;
+    t.compFb = fb; t.compRp = rp; t.compW = w; t.compH = h; t.compDepth = passDepth;
     g_statArmed.fetch_add(1, std::memory_order_relaxed);
+    g_diagIfacePass.store(t.pass, std::memory_order_relaxed);
 }
 // The interface pass opens by painting the finished scene over the whole target: a strip of 4, or two
 // triangles of 6, depending on the game's graphics settings. Our markers go in after that, ahead of
@@ -531,18 +562,28 @@ void ArmInterfacePass(VkCommandBuffer cmd, VkImage passDepth) {
 // only where their visibility mark left the scene partly see-through: labels vanished, the rest
 // came out washed white.
 constexpr std::uint32_t kSceneCopyMaxVerts = 6;
-// Ahead of the first interface batch (or of the end of the pass, if there is none): our markers.
+// Ahead of the frame's first interface batch, in whichever interface-shaped pass it comes: our markers.
+// A pass that ends without one gives the depth back and leaves the frame open for the next such pass.
 void InjectInPass(VkCommandBuffer cmd) {
     t.inject = false;
     if (cmd != t.lentIn) return;
+    t.ifaceFrame = g_frame.load(std::memory_order_relaxed);   // one interface injection a frame
+    t.compOpen = false;
+    t.passMarks |= kMarkInjected; t.injectAt = (int)t.draws;
+    g_statInjected.fetch_add(1, std::memory_order_relaxed);
     tb.ours = true;
     const bool drew = CallPassRecord(cmd, t.curRp, t.curW, t.curH, t.borrowed);
     tb.ours = false;
-    if (drew) { RestoreGameState(cmd); g_statDrew.fetch_add(1, std::memory_order_relaxed); }
+    if (drew) { RestoreGameState(cmd); g_statDrew.fetch_add(1, std::memory_order_relaxed); g_diagIfaceDraw.store((int)t.draws, std::memory_order_relaxed); }
     static bool s_said = false;
     if (drew && !s_said && g_log) { s_said = true; g_log("in-frame: markers recorded inside the interface pass, %ux%u, scene depth lent %d", t.curW, t.curH, t.borrowed ? 1 : 0); }
 }
 void InterfacePassEnded(VkCommandBuffer cmd) {
+    const unsigned f = g_frame.load(std::memory_order_relaxed);
+    if (t.armed && cmd == t.lentIn && t.ifaceFrame != f && t.copyFrame == f && t.copyImg == t.armedImg) {
+        t.compOpen = true; t.compCmd = cmd; t.compFrame = f; t.compPass = t.lastPass;
+    }
+    t.armed = false;
     if (!t.borrowed || cmd != t.lentIn) { t.borrowed = false; return; }
     t.borrowed = false;
     tb.ours = true;
@@ -554,6 +595,77 @@ struct TrialPass { VkImageLayout layout; VkRenderPass rp; };
 std::vector<TrialPass> g_trialPasses;                          // under g_mapMu
 struct Retired { VkFramebuffer fb; unsigned frame; };
 std::vector<Retired> g_retired;                                // under g_mapMu: framebuffers still in use by the GPU
+
+// The markers over the image of an interface-shaped pass that has already ended, in a render pass of
+// our own on that pass's attachments: same formats, contents kept, handed back in the layouts the
+// game's pass left them in. Our interface pipelines work in it as they do in the game's pass.
+struct CompPass { VkFormat colour, depth; VkImageLayout colourLayout, depthLayout; VkRenderPass rp; };
+std::vector<CompPass> g_compPasses;                            // under g_mapMu
+void DrawOverComposite(VkCommandBuffer cmd) {
+    t.compOpen = false;
+    const unsigned f = g_frame.load(std::memory_order_relaxed);
+    if (t.compFrame != f || t.ifaceFrame == f || !g_passRecorder.record) return;
+    if (!rCreateRenderPass || !rCreateFramebuffer || !rBeginRP || !rEndRP || !fDestroyFramebuffer) return;
+    VkImageView views[2] = {}; VkFormat fmts[2] = {}; VkImageLayout lays[2] = {}; VkRenderPass ours = VK_NULL_HANDLE;
+    {
+        std::lock_guard<std::mutex> lk(g_mapMu);
+        auto fb = g_fbs.find(t.compFb); auto rp = g_rps.find(t.compRp);
+        if (fb == g_fbs.end() || rp == g_rps.end() || fb->second.views.size() != 2 || rp->second.fmts.size() != 2) return;
+        for (int i = 0; i < 2; ++i) {   // colour first, then depth, in whichever order the game lists them
+            const int at = IsDepth(rp->second.fmts[i]) ? 1 : 0;
+            if (views[at]) return;
+            if (!rp->second.samples.empty() && rp->second.samples[i] != VK_SAMPLE_COUNT_1_BIT) return;
+            views[at] = fb->second.views[i]; fmts[at] = rp->second.fmts[i]; lays[at] = rp->second.finals[i];
+        }
+        if (!views[0] || !views[1] || lays[0] == VK_IMAGE_LAYOUT_UNDEFINED || lays[1] == VK_IMAGE_LAYOUT_UNDEFINED) return;
+        for (const auto& p : g_compPasses)
+            if (p.colour == fmts[0] && p.depth == fmts[1] && p.colourLayout == lays[0] && p.depthLayout == lays[1]) ours = p.rp;
+    }
+    if (!ours) {
+        VkAttachmentDescription att[2]{};
+        for (int i = 0; i < 2; ++i) {
+            att[i].format = fmts[i]; att[i].samples = VK_SAMPLE_COUNT_1_BIT;
+            att[i].loadOp = VK_ATTACHMENT_LOAD_OP_LOAD; att[i].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+            att[i].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_LOAD; att[i].stencilStoreOp = VK_ATTACHMENT_STORE_OP_STORE;
+            att[i].initialLayout = lays[i]; att[i].finalLayout = lays[i];
+        }
+        VkAttachmentReference colourRef{ 0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL };
+        VkAttachmentReference depthRef{ 1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL };
+        VkSubpassDescription sub{}; sub.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+        sub.colorAttachmentCount = 1; sub.pColorAttachments = &colourRef; sub.pDepthStencilAttachment = &depthRef;
+        VkRenderPassCreateInfo ci{ VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO };
+        ci.attachmentCount = 2; ci.pAttachments = att; ci.subpassCount = 1; ci.pSubpasses = &sub;
+        if (rCreateRenderPass(g_dev, &ci, nullptr, &ours) != VK_SUCCESS || !ours) return;
+        std::lock_guard<std::mutex> lk(g_mapMu);
+        g_compPasses.push_back({ fmts[0], fmts[1], lays[0], lays[1], ours });
+    }
+    VkFramebufferCreateInfo fi{ VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO };
+    fi.renderPass = ours; fi.attachmentCount = 2; fi.pAttachments = views; fi.width = t.compW; fi.height = t.compH; fi.layers = 1;
+    VkFramebuffer fb = VK_NULL_HANDLE;
+    if (rCreateFramebuffer(g_dev, &fi, nullptr, &fb) != VK_SUCCESS || !fb) return;
+    { std::lock_guard<std::mutex> lk(g_mapMu); g_retired.push_back({ fb, f }); }
+
+    t.ifaceFrame = f;   // one interface injection a frame
+    g_statInjected.fetch_add(1, std::memory_order_relaxed);
+    tb.ours = true;
+    const bool borrowed = CallBorrow(cmd, t.compDepth);
+    VkRenderPassBeginInfo bi{ VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO };
+    bi.renderPass = ours; bi.framebuffer = fb; bi.renderArea = { { 0, 0 }, { t.compW, t.compH } };
+    rBeginRP(cmd, &bi, VK_SUBPASS_CONTENTS_INLINE);
+    const bool drew = CallPassRecord(cmd, ours, t.compW, t.compH, borrowed);
+    rEndRP(cmd);
+    if (borrowed) CallGiveBack(cmd);
+    tb.ours = false;
+    RestoreGameState(cmd);
+    if (drew) g_statDrew.fetch_add(1, std::memory_order_relaxed);
+    {
+        std::lock_guard<std::mutex> lk(g_passMu);
+        auto& passes = g_slotPasses[t.slot];
+        if (t.compPass >= 0 && (size_t)t.compPass < passes.size()) passes[(size_t)t.compPass].marks |= kMarkOver;
+    }
+    static bool s_said = false;
+    if (drew && !s_said && g_log) { s_said = true; g_log("in-frame: markers recorded over the scene image ahead of an interface drawn apart, %ux%u, scene depth lent %d", t.compW, t.compH, borrowed ? 1 : 0); }
+}
 
 bool SceneIsFinished(const VkFormat* colours, const VkAttachmentLoadOp* loads, std::uint32_t nc, VkFormat depth,
                      std::uint32_t w, std::uint32_t h) {
@@ -631,16 +743,18 @@ void VKAPI_CALL HookBeginRP(VkCommandBuffer cmd, const VkRenderPassBeginInfo* in
         VkFormat colors[8]; VkAttachmentLoadOp loads[8]; std::uint32_t nc, w, h;
         VkFormat depth; VkAttachmentLoadOp dload; VkImage dimg; VkImageLayout dfinal;
         FromRenderPass(info, colors, loads, nc, depth, dload, dimg, dfinal, w, h);
-        t.inject = false; t.injectScene = false;
+        if (t.compOpen && cmd == t.compCmd && !InterfaceShaped(colors, loads, nc, depth, dimg, w, h)) DrawOverComposite(cmd);
+        t.inject = false;
+        t.curColourImg = ColourImageOf(info->framebuffer, info->renderPass);
         const bool trial = g_inFrameTrial.load(std::memory_order_relaxed);
         if (trial && OnSceneDepth(dimg, w, h)) t.sceneSeenFrame = g_frame.load(std::memory_order_relaxed);
-        if (trial && IsScenePass(colors, nc, dimg, w, h)) ArmScenePass(cmd, dimg, info->framebuffer, info->renderPass);
+        if (trial && IsScenePass(colors, nc, dimg, w, h)) ScenePassBegins();
         if (trial) {
             const int where = g_where.load(std::memory_order_relaxed);
             // Inside the interface pass: the pass is recognised on its own terms. Into the finished
             // scene ahead of it: that one draws into the pass before, so it still has to be the
             // post-processed scene image and keeps the stricter test.
-            if (where == 1) { if (InterfacePassBegins(colors, loads, nc, depth, dimg, w, h)) ArmInterfacePass(cmd, dimg); }
+            if (where == 1) { if (InterfacePassBegins(colors, loads, nc, depth, dimg, w, h)) ArmInterfacePass(cmd, dimg, info->framebuffer, info->renderPass, w, h); }
             else if (where == 0) { if (SceneIsFinished(colors, loads, nc, depth, w, h)) DrawUnderInterface(cmd, w, h); }
         }
         t.curFb = info->framebuffer; t.curRp = info->renderPass; t.curColour = nc ? colors[0] : VK_FORMAT_UNDEFINED;
@@ -655,16 +769,18 @@ void VKAPI_CALL HookBeginRP2(VkCommandBuffer cmd, const VkRenderPassBeginInfo* i
         VkFormat colors[8]; VkAttachmentLoadOp loads[8]; std::uint32_t nc, w, h;
         VkFormat depth; VkAttachmentLoadOp dload; VkImage dimg; VkImageLayout dfinal;
         FromRenderPass(info, colors, loads, nc, depth, dload, dimg, dfinal, w, h);
-        t.inject = false; t.injectScene = false;
+        if (t.compOpen && cmd == t.compCmd && !InterfaceShaped(colors, loads, nc, depth, dimg, w, h)) DrawOverComposite(cmd);
+        t.inject = false;
+        t.curColourImg = ColourImageOf(info->framebuffer, info->renderPass);
         const bool trial = g_inFrameTrial.load(std::memory_order_relaxed);
         if (trial && OnSceneDepth(dimg, w, h)) t.sceneSeenFrame = g_frame.load(std::memory_order_relaxed);
-        if (trial && IsScenePass(colors, nc, dimg, w, h)) ArmScenePass(cmd, dimg, info->framebuffer, info->renderPass);
+        if (trial && IsScenePass(colors, nc, dimg, w, h)) ScenePassBegins();
         if (trial) {
             const int where = g_where.load(std::memory_order_relaxed);
             // Inside the interface pass: the pass is recognised on its own terms. Into the finished
             // scene ahead of it: that one draws into the pass before, so it still has to be the
             // post-processed scene image and keeps the stricter test.
-            if (where == 1) { if (InterfacePassBegins(colors, loads, nc, depth, dimg, w, h)) ArmInterfacePass(cmd, dimg); }
+            if (where == 1) { if (InterfacePassBegins(colors, loads, nc, depth, dimg, w, h)) ArmInterfacePass(cmd, dimg, info->framebuffer, info->renderPass, w, h); }
             else if (where == 0) { if (SceneIsFinished(colors, loads, nc, depth, w, h)) DrawUnderInterface(cmd, w, h); }
         }
         t.curFb = info->framebuffer; t.curRp = info->renderPass; t.curColour = nc ? colors[0] : VK_FORMAT_UNDEFINED;
@@ -675,6 +791,7 @@ void VKAPI_CALL HookBeginRP2(VkCommandBuffer cmd, const VkRenderPassBeginInfo* i
     rBeginRP2(cmd, info, sb);
 }
 void VKAPI_CALL HookBeginRendering(VkCommandBuffer cmd, const VkRenderingInfo* info) {
+    if (t.compOpen && cmd == t.compCmd) DrawOverComposite(cmd);
     if (info) {
         VkFormat colors[8]; VkAttachmentLoadOp loads[8]; std::uint32_t nc = 0;
         VkFormat depth = VK_FORMAT_UNDEFINED; VkAttachmentLoadOp dload = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
@@ -699,9 +816,15 @@ void VKAPI_CALL HookBeginRendering(VkCommandBuffer cmd, const VkRenderingInfo* i
     }
     rBeginRendering(cmd, info);
 }
-void VKAPI_CALL HookEndRP(VkCommandBuffer cmd) { t.injectScene = false; if (t.inject) InjectInPass(cmd); int slot = t.slot; int q = EndPass(); rEndRP(cmd); InterfacePassEnded(cmd); CloseQuery(cmd, slot, q); }
-void VKAPI_CALL HookEndRP2(VkCommandBuffer cmd, const VkSubpassEndInfo* e) { t.injectScene = false; if (t.inject) InjectInPass(cmd); int slot = t.slot; int q = EndPass(); rEndRP2(cmd, e); InterfacePassEnded(cmd); CloseQuery(cmd, slot, q); }
+void VKAPI_CALL HookEndRP(VkCommandBuffer cmd) { t.inject = false; int slot = t.slot; int q = EndPass(); rEndRP(cmd); InterfacePassEnded(cmd); CloseQuery(cmd, slot, q); }
+void VKAPI_CALL HookEndRP2(VkCommandBuffer cmd, const VkSubpassEndInfo* e) { t.inject = false; int slot = t.slot; int q = EndPass(); rEndRP2(cmd, e); InterfacePassEnded(cmd); CloseQuery(cmd, slot, q); }
 void VKAPI_CALL HookEndRendering(VkCommandBuffer cmd) { int slot = t.slot; int q = EndPass(); rEndRendering(cmd); CloseQuery(cmd, slot, q); }
+// A command buffer that ends right after an interface-shaped pass without the interface: the markers
+// go over that pass's image here, while the buffer is still open.
+VkResult VKAPI_CALL HookEndCommandBuffer(VkCommandBuffer cmd) {
+    if (t.compOpen && cmd == t.compCmd) DrawOverComposite(cmd);
+    return rEndCommandBuffer(cmd);
+}
 
 void VKAPI_CALL HookBindPipeline(VkCommandBuffer cmd, VkPipelineBindPoint bp, VkPipeline pipe) {
     if (bp == VK_PIPELINE_BIND_POINT_GRAPHICS) {
@@ -722,8 +845,18 @@ void VKAPI_CALL HookBindPipeline(VkCommandBuffer cmd, VkPipelineBindPoint bp, Vk
     rBindPipeline(cmd, bp, pipe);
 }
 
-void VKAPI_CALL HookDraw(VkCommandBuffer c, std::uint32_t a, std::uint32_t b, std::uint32_t d, std::uint32_t e) { if (t.injectScene) InjectInScenePass(c); if (t.inject && a > kSceneCopyMaxVerts) InjectInPass(c); if (t.skip) { ++t.skipped; return; } ++t.draws; TallyDepth(a); rDraw(c, a, b, d, e); }
-void VKAPI_CALL HookDrawIndexed(VkCommandBuffer c, std::uint32_t a, std::uint32_t b, std::uint32_t d, std::int32_t e, std::uint32_t f) { if (t.injectScene) InjectInScenePass(c); if (t.inject && a > kSceneCopyMaxVerts) InjectInPass(c); if (t.skip) { ++t.skipped; return; } ++t.draws; TallyDepth(a); rDrawIndexed(c, a, b, d, e, f); }
+// A draw in an armed pass: a full-screen quad copies the finished scene in; the first batch after
+// such a copy, into the same image, is where the interface starts and the markers go.
+void BeforeGameDraw(VkCommandBuffer c, std::uint32_t count) {
+    if (tb.ours) return;
+    if (t.firstAllCount < 6) t.firstAll[t.firstAllCount++] = count;
+    if (!t.inject) return;
+    const unsigned f = g_frame.load(std::memory_order_relaxed);
+    if (count <= kSceneCopyMaxVerts) { t.copyImg = t.curColourImg; t.copyFrame = f; t.passMarks |= kMarkCopy; return; }
+    if (t.copyFrame == f && t.copyImg == t.curColourImg) InjectInPass(c);
+}
+void VKAPI_CALL HookDraw(VkCommandBuffer c, std::uint32_t a, std::uint32_t b, std::uint32_t d, std::uint32_t e) { BeforeGameDraw(c, a); if (t.skip) { ++t.skipped; return; } ++t.draws; TallyDepth(a); rDraw(c, a, b, d, e); }
+void VKAPI_CALL HookDrawIndexed(VkCommandBuffer c, std::uint32_t a, std::uint32_t b, std::uint32_t d, std::int32_t e, std::uint32_t f) { BeforeGameDraw(c, a); if (t.skip) { ++t.skipped; return; } ++t.draws; TallyDepth(a); rDrawIndexed(c, a, b, d, e, f); }
 void VKAPI_CALL HookDrawIndirect(VkCommandBuffer c, VkBuffer b, VkDeviceSize o, std::uint32_t n, std::uint32_t s) { if (t.skip) { ++t.skipped; return; } ++t.indirect; TallyDepth(); rDrawIndirect(c, b, o, n, s); }
 void VKAPI_CALL HookDrawIndexedIndirect(VkCommandBuffer c, VkBuffer b, VkDeviceSize o, std::uint32_t n, std::uint32_t s) { if (t.skip) { ++t.skipped; return; } ++t.indirect; TallyDepth(); rDrawIndexedIndirect(c, b, o, n, s); }
 void VKAPI_CALL HookDrawIndirectCount(VkCommandBuffer c, VkBuffer b, VkDeviceSize o, VkBuffer cb, VkDeviceSize co, std::uint32_t m, std::uint32_t s) { if (t.skip) { ++t.skipped; return; } ++t.indirect; TallyDepth(); rDrawIndirectCount(c, b, o, cb, co, m, s); }
@@ -762,7 +895,7 @@ VkResult VKAPI_CALL HookCreateRenderPass(VkDevice dev, const VkRenderPassCreateI
         RpInfo info;
         for (std::uint32_t i = 0; i < ci->attachmentCount; ++i) {
             info.fmts.push_back(ci->pAttachments[i].format); info.loads.push_back(ci->pAttachments[i].loadOp);
-            info.finals.push_back(ci->pAttachments[i].finalLayout);
+            info.finals.push_back(ci->pAttachments[i].finalLayout); info.samples.push_back(ci->pAttachments[i].samples);
         }
         std::lock_guard<std::mutex> lk(g_mapMu); g_rps[*out] = info;
     }
@@ -774,7 +907,7 @@ VkResult VKAPI_CALL HookCreateRenderPass2(VkDevice dev, const VkRenderPassCreate
         RpInfo info;
         for (std::uint32_t i = 0; i < ci->attachmentCount; ++i) {
             info.fmts.push_back(ci->pAttachments[i].format); info.loads.push_back(ci->pAttachments[i].loadOp);
-            info.finals.push_back(ci->pAttachments[i].finalLayout);
+            info.finals.push_back(ci->pAttachments[i].finalLayout); info.samples.push_back(ci->pAttachments[i].samples);
         }
         std::lock_guard<std::mutex> lk(g_mapMu); g_rps[*out] = info;
     }
@@ -821,6 +954,7 @@ void VKAPI_CALL HookDestroyImage(VkDevice dev, VkImage img, const VkAllocationCa
         {
             std::lock_guard<std::mutex> lk(g_passMu);
             if (g_sceneImg == img) { g_sceneImg = VK_NULL_HANDLE; g_sceneLayout = VK_IMAGE_LAYOUT_UNDEFINED; }
+            if (g_actorImg == img) { g_actorImg = VK_NULL_HANDLE; g_actorLayout = VK_IMAGE_LAYOUT_UNDEFINED; g_actorActive = false; }
         }
         if (g_imageDestroyed) g_imageDestroyed(img);
     }
@@ -880,6 +1014,7 @@ HookDef g_defs[] = {
     { (void**)&rSetScissor, (void*)HookSetScissor, "vkCmdSetScissor", false },
     { (void**)&rPushConstants, (void*)HookPushConstants, "vkCmdPushConstants", false },
     { (void**)&rBeginCommandBuffer, (void*)HookBeginCommandBuffer, "vkBeginCommandBuffer", false },
+    { (void**)&rEndCommandBuffer, (void*)HookEndCommandBuffer, "vkEndCommandBuffer", false },
 };
 
 void CreateShare() {
@@ -984,7 +1119,7 @@ void Detach() {
     }
     std::lock_guard<std::mutex> lk(g_mapMu);
     g_views.clear(); g_rps.clear(); g_fbs.clear(); g_depthPipes.clear(); g_dynDepthPipes.clear();
-    g_sceneImg = VK_NULL_HANDLE; g_actorImg = VK_NULL_HANDLE;
+    g_sceneImg = VK_NULL_HANDLE; g_actorImg = VK_NULL_HANDLE; g_actorActive = false;
 }
 
 void SetTargetExtent(unsigned w, unsigned h) { g_targetW.store(w); g_targetH.store(h); }
@@ -1003,11 +1138,24 @@ bool LookupImage(VkImage img, ImageInfo* out) {
     return true;
 }
 
+bool DepthAttachmentSamples(VkImage img, VkSampleCountFlagBits* out) {
+    std::lock_guard<std::mutex> lk(g_mapMu);
+    auto it = g_depthAttachSamples.find(img);
+    if (it == g_depthAttachSamples.end()) return false;
+    *out = it->second;
+    return true;
+}
+
 bool ActorDepth(VkImage* img, VkFormat* fmt, VkImageLayout* layout) {
     std::lock_guard<std::mutex> lk(g_passMu);
     if (!g_actorImg) return false;
     *img = g_actorImg; *fmt = g_actorFmt; *layout = g_actorLayout;
     return true;
+}
+
+bool ActorDepthActive() {
+    std::lock_guard<std::mutex> lk(g_passMu);
+    return g_actorImg && g_actorActive;
 }
 
 bool SceneDepth(VkImage* img, VkFormat* fmt, VkImageLayout* layout) {
@@ -1045,7 +1193,8 @@ void FrameBegin() {
     const unsigned f = g_frame.fetch_add(1, std::memory_order_relaxed) + 1;
     if (f % 30 == 0 && g_inFrameTrial.load(std::memory_order_relaxed)) ApplyTrialSettings();
     if (f % 1800 == 0 && g_inFrameTrial.load(std::memory_order_relaxed) && g_log)
-        g_log("in-frame: last 1800 frames, interface pass found %u times, markers drawn in %u, drawn in the scene pass %u", g_statArmed.exchange(0), g_statDrew.exchange(0), g_statScene.exchange(0));
+        g_log("in-frame: last 1800 frames, interface-shaped passes armed %u, injected in %u, markers drawn in %u, scene camera taken in %u",
+              g_statArmed.exchange(0), g_statInjected.exchange(0), g_statDrew.exchange(0), g_statScene.exchange(0));
     if (fDestroyFramebuffer) {
         // the trial's framebuffers, once the GPU is sure to be done with them
         std::lock_guard<std::mutex> lk(g_mapMu);
@@ -1072,6 +1221,16 @@ void FrameBegin() {
         if (current.size() >= 40) { if (!s_worldSince) s_worldSince = f; } else s_worldSince = 0;
         if (s_worldSince && !g_worldProbeAt.load() && f - s_worldSince == 600) g_worldProbeAt.store(f + 4);
         if (f == g_worldProbeAt.load() && f != 0) probe = true;
+        // A world frame with another number of passes than the one before it (a hover outline, an
+        // effect starting) is probed once in a while, so the log shows where the in-frame marks
+        // went while the frame changed shape.
+        static size_t s_prevPasses = 0; static unsigned s_shapeProbe = 0, s_shapeProbes = 0;
+        if (current.size() >= 40 && s_prevPasses >= 40 && current.size() != s_prevPasses && f >= s_shapeProbe + 300 &&
+            s_shapeProbes < 12 && g_inFrameTrial.load(std::memory_order_relaxed)) {
+            s_shapeProbe = f; ++s_shapeProbes; g_probeNext.store(true);
+            if (g_log) g_log("frame shape: %zu passes after %zu, probing the next frame", current.size(), s_prevPasses);
+        }
+        s_prevPasses = current.size();
         // Scene depth: the client-size depth image that the most drawing goes to, over every pass
         // that uses it. The scenery's pre-pass, its colour pass, the characters' colour pass and the
         // effects all share that one image; the interface pass has a depth image too, but only its
@@ -1106,8 +1265,12 @@ void FrameBegin() {
             if (actor->depthImg != g_actorImg && g_log)
                 g_log("character depth image %p: %s (%u draws)", (void*)actor->depthImg, actor->desc, actor->draws + actor->skipped);
             g_actorImg = actor->depthImg; g_actorFmt = actor->depthFmt; g_actorLayout = actor->depthFinal;
+            g_actorActive = true;
         }
-        else { g_actorImg = VK_NULL_HANDLE; g_actorLayout = VK_IMAGE_LAYOUT_UNDEFINED; }
+        // A frame with fewer than two character draws (zooming, an empty screen) keeps the image: it is
+        // only not used that frame. Dropping it made the compositor wait for the GPU to tear its view
+        // down and build it again a moment later, every second or two while zooming.
+        else g_actorActive = false;
     }
 
     static std::uint64_t results[kMaxPairs * 4];
@@ -1125,6 +1288,54 @@ void FrameBegin() {
     g_slot.store((cur + 1) % kSlots, std::memory_order_relaxed);
 
     unsigned outside = g_dispatchOutside.exchange(0);
+    const int diagScene = g_diagScenePass.exchange(-1);
+    const int diagIface = g_diagIfacePass.exchange(-1), diagIfaceDraw = g_diagIfaceDraw.exchange(-1);
+    // Whenever the camera or the markers are taken at another pass than the frame before (a pass added
+    // ahead of them renumbers it; a pass taken by mistake shows up by its description), the move is
+    // logged and the next frame probed, a few times a session.
+    {
+        static int s_prev[3] = { -2, -2, -2 }; static unsigned s_lines = 0, s_probes = 0;
+        const int now[3] = { diagScene, diagIface, diagIfaceDraw };
+        if ((now[0] != s_prev[0] || now[1] != s_prev[1]) && current.size() >= 40 && g_log && s_lines < 80) {
+            ++s_lines;
+            const char* sceneDesc = (diagScene >= 0 && (size_t)diagScene < current.size()) ? current[diagScene].desc : "-";
+            const char* ifaceDesc = (diagIface >= 0 && (size_t)diagIface < current.size()) ? current[diagIface].desc : "-";
+            g_log("in-frame shift at frame %u (%zu passes): camera at pass %d -> %d [%s]; interface pass %d -> %d [%s] markers at draw %d -> %d",
+                  f, current.size(), s_prev[0], now[0], sceneDesc, s_prev[1], now[1], ifaceDesc, s_prev[2], now[2]);
+            if (s_probes < 4 && !probe) { ++s_probes; g_probeNext.store(true); }
+        }
+        for (int i = 0; i < 3; ++i) s_prev[i] = now[i];
+    }
+    // The interface section (from the first armed pass on) of a frame laid out differently from the
+    // one before: where the scene copy went, where the markers went, and how, pass by pass.
+    {
+        static std::string s_prevSig; static unsigned s_lines = 0;
+        size_t from = current.size();
+        for (size_t i = 0; i < current.size(); ++i) if (current[i].marks & kMarkArmed) { from = i; break; }
+        std::string sig;
+        for (size_t i = from; i < current.size(); ++i) {
+            char one[96];
+            std::snprintf(one, sizeof(one), "%s|%u|%d;", current[i].desc, current[i].marks, current[i].injectAt);
+            sig += one;
+        }
+        if (from < current.size() && sig != s_prevSig && g_log && s_lines < 400) {
+            const bool first = s_prevSig.empty();
+            s_prevSig = sig;
+            if (!first) {
+                g_log("in-frame layout at frame %u (%zu passes):", f, current.size());
+                ++s_lines;
+                for (size_t i = from; i < current.size() && s_lines < 400; ++i, ++s_lines) {
+                    const Pass& p = current[i];
+                    char sizes[64] = {};
+                    for (unsigned k = 0; k < p.firstAllCount; ++k) { char n[16]; std::snprintf(n, sizeof(n), "%s%u", k ? "," : "", p.firstAll[k]); Cat(sizes, sizeof(sizes), n); }
+                    g_log("  pass %zu: %s image %p draws %u first %s%s%s%s%s", i, p.desc, (void*)p.colourImg, p.draws, sizes,
+                          (p.marks & kMarkArmed) ? " ARMED" : "", (p.marks & kMarkCopy) ? " SCENE-COPY" : "",
+                          (p.marks & kMarkInjected) ? " MARKERS@" : "", (p.marks & kMarkOver) ? " MARKERS-OVER-AFTER" : "",
+                          (p.marks & kMarkInjected) ? std::to_string(p.injectAt).c_str() : "");
+                }
+            }
+        } else if (from < current.size()) s_prevSig = sig;
+    }
     if (!probe || !g_log) return;
     size_t depthPipes, dynPipes, views, rps;
     std::vector<ResStat> images, buffers;
@@ -1135,6 +1346,8 @@ void FrameBegin() {
     }
     g_log("probe frame %u: %zu passes, %u compute dispatches outside passes, %zu depth pipelines (%zu dynamic-depth), %zu render passes, %zu views, scene depth %p",
           f, current.size(), outside, depthPipes, dynPipes, rps, views, (void*)g_sceneImg);
+    g_log("  in-frame: camera taken at pass %d, interface pass armed %d (markers ahead of its draw %d)",
+          diagScene, diagIface, diagIfaceDraw);
     // compare ops as Vulkan numbers them: 0 never, 1 less, 2 equal, 3 less or equal, 4 greater, 5 not equal, 6 greater or equal, 7 always
     for (size_t i = 0; i < current.size(); ++i)
     {

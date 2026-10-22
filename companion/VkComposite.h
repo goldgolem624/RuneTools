@@ -115,19 +115,16 @@ bool RecordScene(VkCommandBuffer cmd, VkRenderPass rp, VkFramebuffer fb, std::ui
 bool SceneDepthBorrow(VkCommandBuffer cmd, VkImage passDepth);
 void SceneDepthReturn(VkCommandBuffer cmd);
 bool RecordInPass(VkCommandBuffer cmd, VkRenderPass gameRp, std::uint32_t w, std::uint32_t h, bool depthBorrowed, unsigned look);
-// The world markers recorded inside the game's SCENE colour pass, ahead of its first draw, with the
-// GPU's depth test against the game's own depth buffer deciding what is in front: the same gate the
-// game's ground markers go through. Only while Behind scenery is Hide; the interface pass then
-// leaves the world markers out. `samples` is the pass's sample count.
-// The scene pass's colour target, where the marks are left; sampled again at the interface pass.
-void SetSceneColour(VkImage img, VkFormat fmt, VkImageLayout layout, VkSampleCountFlagBits samples);
-bool WantsScenePass();
-bool RecordInScenePass(VkCommandBuffer cmd, VkRenderPass gameRp, std::uint32_t w, std::uint32_t h, VkSampleCountFlagBits samples, unsigned look);
+// The game is beginning a frame's scene pass: the camera it draws that frame's world with is taken,
+// with the newest snapshot, for the markers of that frame. Records nothing. Any thread.
+void SceneBegins();
 const char* LastSubmit();                         // one-line description of the last recorded frame
 void OnImageDestroyed(VkImage img);
 // Marker share depth flags and the player's projected reference point (calibration log).
 // The characters' depth image, kept apart from the scenery's by the game; markers are tested against both.
 void SetActorDepth(VkImage img, VkFormat fmt, VkImageLayout layout, VkImageUsageFlags usage, VkSampleCountFlagBits samples);
+// Whether that image holds this frame's characters. Off, the scenery's depth stands in for it and the view is kept.
+void SetActorActive(bool on);
 void SetDepthMode(std::uint32_t flags, const float* ref);   // {x,y,z, a,b, x2,y2,z2}
 // The matrix this frame's markers were projected with, where the game keeps it, the game view
 // {x, y, w, h} and the client size they were projected for. See Reproject in the .cpp.
